@@ -108,4 +108,5 @@ export const defaultPlugins = [
   'org.kernel.LinuxKernelSubsystems',
   'org.kernel.SuspendResumeLatency',
   'org.kernel.Wattson',
+  'com.karmios.nat.DuneGraph',
 ];
