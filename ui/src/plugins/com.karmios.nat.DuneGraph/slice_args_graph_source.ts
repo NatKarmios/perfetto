@@ -24,6 +24,7 @@ import {
 import type {
   BuildGraph,
   DepNode,
+  ForcedBy,
   GraphNode,
   RuleNode,
   GraphSource,
@@ -77,6 +78,7 @@ export class SliceArgsGraphSource implements GraphSource {
           expandedDepIds: asIdArray(
             getPath(args, 'dune', 'dep_outcome', 'expanded'),
           ),
+          forcedBy: parseForcedBy(args),
         });
       } else {
         const id = asId(getPath(args, 'dune', 'rule_id'));
@@ -87,6 +89,8 @@ export class SliceArgsGraphSource implements GraphSource {
           sliceId: it.sliceId,
           staticDepIds: asIdArray(getPath(args, 'dune', 'deps')),
           dynamicDepIds: asIdArrayArray(getPath(args, 'dune', 'dyn_deps')),
+          targetIds: asIdArray(getPath(args, 'dune', 'targets')),
+          forcedBy: parseForcedBy(args),
         });
       }
     }
@@ -97,5 +101,50 @@ export class SliceArgsGraphSource implements GraphSource {
     for (const rule of rules.values()) bySliceId.set(rule.sliceId, rule);
 
     return {deps, rules, bySliceId};
+  }
+}
+
+// Parse a node's `dune.forced_by` args into a {@link ForcedBy}. The `kind`
+// selects which payload field to read; a kind whose expected payload is missing
+// degrades to `UNKNOWN` (rather than a half-populated variant), and an absent /
+// unrecognized kind yields undefined.
+function parseForcedBy(args: unknown): ForcedBy | undefined {
+  const kind = asId(getPath(args, 'dune', 'forced_by', 'kind'));
+  if (kind === undefined) return undefined;
+  const payload = (field: string) =>
+    asId(getPath(args, 'dune', 'forced_by', field));
+  switch (kind) {
+    case 'RULE': {
+      const rule = payload('rule');
+      return rule === undefined ? {kind: 'UNKNOWN'} : {kind: 'RULE', rule};
+    }
+    case 'DEP': {
+      const dep = payload('dep');
+      return dep === undefined ? {kind: 'UNKNOWN'} : {kind: 'DEP', dep};
+    }
+    case 'DYNAMIC_INCLUDES': {
+      const path = payload('dynamic_includes');
+      return path === undefined
+        ? {kind: 'UNKNOWN'}
+        : {kind: 'DYNAMIC_INCLUDES', dynamicIncludes: path};
+    }
+    case 'GEN_RULES': {
+      const path = payload('gen_rules');
+      return path === undefined
+        ? {kind: 'UNKNOWN'}
+        : {kind: 'GEN_RULES', genRules: path};
+    }
+    case 'PFORM': {
+      const path = payload('pform');
+      return path === undefined
+        ? {kind: 'UNKNOWN'}
+        : {kind: 'PFORM', pform: path};
+    }
+    case 'CONFIGURATOR':
+      return {kind: 'CONFIGURATOR'};
+    case 'REQUEST':
+      return {kind: 'REQUEST'};
+    default:
+      return {kind: 'UNKNOWN'};
   }
 }

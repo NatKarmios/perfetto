@@ -16,11 +16,15 @@ import m from 'mithril';
 import type {PerfettoPlugin} from '../../public/plugin';
 import type {Trace} from '../../public/trace';
 import {DuneGraphController} from './controller';
-import {NodeListPanel} from './node_list_panel';
+import {DuneGraphPanel} from './panel';
+import {DuneQueryTab} from './query_tab';
 import './styles.scss';
 
 const PLUGIN_ID = 'com.karmios.nat.DuneGraph';
 const SIDE_PANEL_URI = `${PLUGIN_ID}#Nodes`;
+const QUERY_TAB_URI = `${PLUGIN_ID}#Query`;
+// Omnibox trigger for the Dune-graph SQL mode (':' and '>' are already taken).
+const QUERY_TRIGGER = '@';
 
 export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
@@ -34,8 +38,10 @@ export default class implements PerfettoPlugin {
       uri: SIDE_PANEL_URI,
       title: 'Dune graph',
       icon: 'account_tree',
-      render: () => m(NodeListPanel, {trace, controller}),
+      render: () => m(DuneGraphPanel, {controller}),
     });
+    // Reveal the graph side panel on load rather than making the user open it.
+    trace.sidePanel.showTab(SIDE_PANEL_URI);
 
     trace.commands.registerCommand({
       id: `${PLUGIN_ID}#ShowNodes`,
@@ -47,6 +53,32 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#Reload`,
       name: 'Dune: reload build graph',
       callback: () => controller.reload(),
+    });
+
+    // SQL-over-the-graph: a details-drawer tab fed by an omnibox mode (type a
+    // query after '@') and an equivalent command that activates that mode. The
+    // input reuses the core SQL mode's look (wide black monospace box) via
+    // `pf-omnibox--query-mode`, recoloured orange by `pf-dune-query-mode`.
+    const queryTab = new DuneQueryTab(trace, controller);
+    trace.tabs.registerTab({uri: QUERY_TAB_URI, content: queryTab});
+
+    trace.omnibox.registerMode({
+      trigger: QUERY_TRIGGER,
+      hint: `'${QUERY_TRIGGER}' for Dune graph SQL`,
+      placeholder:
+        'SQL over dune_node / dune_edge — add nodes via node / src / dst / ' +
+        'slice_id columns',
+      className: 'pf-omnibox--query-mode pf-dune-query-mode',
+      onSubmit: (query: string) => {
+        void queryTab.runQuery(query);
+        trace.tabs.showTab(QUERY_TAB_URI);
+      },
+    });
+
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#QueryGraph`,
+      name: 'Dune: query graph',
+      callback: () => trace.omnibox.activateRegisteredMode(QUERY_TRIGGER),
     });
 
     // Load the graph before onTraceLoad resolves so the sidebar has data by the

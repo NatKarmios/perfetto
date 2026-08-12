@@ -25,6 +25,23 @@
  * a rule's dep ids key into `deps`.
  */
 
+/**
+ * Why a node was built - the node's `dune.forced_by` arg. `kind` is the
+ * discriminator; the `RULE` / `DEP` variants carry the id of the rule / dep
+ * that forced this node (which is the *source* of the build edge into it), the
+ * path-bearing variants carry the relevant dune-file / build path, and the rest
+ * carry nothing. See {@link isForcedEdge} for how this drives forced edges.
+ */
+export type ForcedBy =
+  | {readonly kind: 'UNKNOWN'}
+  | {readonly kind: 'RULE'; readonly rule: string}
+  | {readonly kind: 'DEP'; readonly dep: string}
+  | {readonly kind: 'DYNAMIC_INCLUDES'; readonly dynamicIncludes: string}
+  | {readonly kind: 'GEN_RULES'; readonly genRules: string}
+  | {readonly kind: 'PFORM'; readonly pform: string}
+  | {readonly kind: 'CONFIGURATOR'}
+  | {readonly kind: 'REQUEST'};
+
 export interface DepNode {
   readonly kind: 'dep';
   // The `dune.dep` string identifying this dep.
@@ -35,6 +52,8 @@ export interface DepNode {
   readonly resolvedRuleId?: string;
   // Set iff the dep resolved to further deps (`dune.dep_outcome.expanded`).
   readonly expandedDepIds?: readonly string[];
+  // What forced this dep to be built (`dune.forced_by`), if recorded.
+  readonly forcedBy?: ForcedBy;
 }
 
 export interface RuleNode {
@@ -48,9 +67,26 @@ export interface RuleNode {
   // Dynamic deps from the exec-rule slice's `dune.dyn_deps` arg, a list of
   // lists.
   readonly dynamicDepIds?: readonly (readonly string[])[];
+  // The rule's output targets from the exec-rule slice's `dune.targets` arg.
+  // Target paths share the dep id namespace, so a target links to the build-dep
+  // node of the same id when one exists. These are outputs, not dependency
+  // edges, so they are deliberately absent from `edges()`.
+  readonly targetIds?: readonly string[];
+  // What forced this rule to run (`dune.forced_by`), if recorded.
+  readonly forcedBy?: ForcedBy;
 }
 
 export type GraphNode = DepNode | RuleNode;
+
+// Human-readable label for a node, used in lists and the SQL `label` column.
+export function nodeLabel(node: GraphNode): string {
+  return node.kind === 'rule' ? `rule ${node.id}` : node.id;
+}
+
+// Pluralise a count, e.g. `1 dep` / `2 deps`.
+export function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
 
 /**
  * The extracted build graph. Nodes are indexed by id within their kind's
@@ -84,4 +120,175 @@ export interface GraphSource {
 
   // Extract the whole graph. Called on trace load and on explicit reload.
   load(): Promise<BuildGraph>;
+}
+
+// A stable per-node key spanning both id namespaces (dep ids are Dune strings,
+// rule ids are stringified ints, so they could collide numerically).
+export function nodeKey(kind: GraphNode['kind'], id: string): string {
+  return `${kind}:${id}`;
+}
+
+// A directed build edge: `source` depends on `dest` (dest is the prerequisite).
+export interface GraphEdge {
+  readonly source: GraphNode;
+  readonly dest: GraphNode;
+  // Whether this is a *forced* edge (see {@link isForcedEdge}).
+  readonly forced: boolean;
+}
+
+/**
+ * Whether the build edge `source -> dest` is *forced*: i.e. `dest` was forced
+ * into the build by `source`, meaning `dest`'s `forcedBy` names `source`. Since
+ * each node records a single forcer, forced edges pick out - per node - the one
+ * dependency that caused it to be built (a spanning forest of the graph).
+ *
+ * `source` depends on `dest`, so `source` is the potential forcer: a rule
+ * forces the deps it lists (`forcedBy.kind === 'RULE'`), a dep forces the rule
+ * it resolves to and the deps it expands to (`forcedBy.kind === 'DEP'`). The
+ * other `forcedBy` kinds name non-node forcers (dune files, the top-level
+ * request, ...) and so never mark an edge forced.
+ */
+export function isForcedEdge(source: GraphNode, dest: GraphNode): boolean {
+  const fb = dest.forcedBy;
+  if (fb === undefined) return false;
+  return source.kind === 'rule'
+    ? fb.kind === 'RULE' && fb.rule === source.id
+    : fb.kind === 'DEP' && fb.dep === source.id;
+}
+
+/**
+ * A node's outgoing edges: the prerequisite nodes it depends on (rule -> deps
+ * for static/dynamic deps, dep -> rule for a resolved rule, dep -> deps for
+ * expanded deps). Id references are resolved against the graph and dangling
+ * ones skipped. This is the single place the forward edge shape is defined;
+ * {@link edges} and {@link inducedEdges} both build on it.
+ *
+ * @yields each prerequisite {@link GraphNode} this node depends on.
+ */
+export function* outEdges(
+  graph: BuildGraph,
+  node: GraphNode,
+): Iterable<GraphNode> {
+  if (node.kind === 'dep') {
+    if (node.resolvedRuleId !== undefined) {
+      const rule = graph.rules.get(node.resolvedRuleId);
+      if (rule !== undefined) yield rule;
+    }
+    for (const id of node.expandedDepIds ?? []) {
+      const dep = graph.deps.get(id);
+      if (dep !== undefined) yield dep;
+    }
+  } else {
+    for (const id of node.staticDepIds ?? []) {
+      const dep = graph.deps.get(id);
+      if (dep !== undefined) yield dep;
+    }
+    for (const group of node.dynamicDepIds ?? []) {
+      for (const id of group) {
+        const dep = graph.deps.get(id);
+        if (dep !== undefined) yield dep;
+      }
+    }
+  }
+}
+
+/**
+ * The whole graph's edge set (source depends on dest). Both the SQL mirror
+ * (sql_graph.ts) and the reverse index below build from this.
+ *
+ * @yields each build edge as a {@link GraphEdge}.
+ */
+export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
+  for (const source of graph.deps.values()) {
+    for (const dest of outEdges(graph, source)) {
+      yield {source, dest, forced: isForcedEdge(source, dest)};
+    }
+  }
+  for (const source of graph.rules.values()) {
+    for (const dest of outEdges(graph, source)) {
+      yield {source, dest, forced: isForcedEdge(source, dest)};
+    }
+  }
+}
+
+/**
+ * The edges of the subgraph induced by `nodes`: every edge whose source and
+ * dest are both in the set. Walks each node's out-edges (not the whole graph),
+ * so it stays cheap when the selection is small.
+ */
+export function inducedEdges(
+  graph: BuildGraph,
+  nodes: readonly GraphNode[],
+): readonly GraphEdge[] {
+  const inSet = new Set(nodes.map((n) => nodeKey(n.kind, n.id)));
+  const result: GraphEdge[] = [];
+  for (const source of nodes) {
+    for (const dest of outEdges(graph, source)) {
+      if (inSet.has(nodeKey(dest.kind, dest.id))) {
+        result.push({source, dest, forced: isForcedEdge(source, dest)});
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Reverse adjacency of the build graph: maps a node's key to the nodes that
+ * directly depend on it (i.e. that have a build edge pointing at it). Built
+ * once per graph from {@link edges}; used to walk a node's parents/ancestors,
+ * which the forward-only node model can't do.
+ */
+export type ReverseIndex = ReadonlyMap<string, readonly GraphNode[]>;
+
+export function buildReverseIndex(graph: BuildGraph): ReverseIndex {
+  // dest key -> (source key -> source node); the inner map de-dups sources that
+  // reach the same dest via more than one edge (e.g. static + dynamic dep).
+  const byDest = new Map<string, Map<string, GraphNode>>();
+  for (const {source, dest} of edges(graph)) {
+    const destKey = nodeKey(dest.kind, dest.id);
+    let sources = byDest.get(destKey);
+    if (sources === undefined) {
+      sources = new Map();
+      byDest.set(destKey, sources);
+    }
+    sources.set(nodeKey(source.kind, source.id), source);
+  }
+
+  const index = new Map<string, readonly GraphNode[]>();
+  for (const [destKey, sources] of byDest) {
+    index.set(destKey, [...sources.values()]);
+  }
+  return index;
+}
+
+// Nodes that directly depend on `node` (its immediate parents).
+export function directParents(
+  index: ReverseIndex,
+  node: GraphNode,
+): readonly GraphNode[] {
+  return index.get(nodeKey(node.kind, node.id)) ?? [];
+}
+
+// All nodes that transitively depend on `node` (its ancestors), excluding
+// `node` itself. Depth-first over reverse edges with a visited set - build
+// graphs are DAGs, but the guard keeps us safe against accidental cycles.
+export function ancestors(
+  index: ReverseIndex,
+  node: GraphNode,
+): readonly GraphNode[] {
+  const seen = new Set<string>([nodeKey(node.kind, node.id)]);
+  const result: GraphNode[] = [];
+  const stack: GraphNode[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) break;
+    for (const parent of directParents(index, current)) {
+      const key = nodeKey(parent.kind, parent.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(parent);
+      stack.push(parent);
+    }
+  }
+  return result;
 }

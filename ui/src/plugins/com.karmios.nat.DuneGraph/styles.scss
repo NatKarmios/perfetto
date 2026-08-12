@@ -28,11 +28,260 @@
     color: var(--pf-color-text-muted);
   }
 
+  // The two stacked main areas: the selection info (top) and the graph (bottom).
+  &__area {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--pf-color-border);
+  }
+
+  // Selection info sizes to its content but is capped so it never crowds out
+  // the graph area.
+  &__area--info {
+    max-height: 45%;
+    overflow-y: auto;
+  }
+
+  // Graph takes the remaining space.
+  &__area--graph {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  &__area-title {
+    padding: 4px 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__info {
+    padding: 0 8px 8px;
+  }
+
+  &__info-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+  }
+
+  &__info-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+
+  // The dense SQL node_id (e.g. "#42") in the header: unintrusive, a
+  // cross-reference for dune_descendants() / dune_ancestors() queries.
+  &__info-nodeid {
+    flex-shrink: 0;
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__empty-note {
+    padding: 4px 0;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  // The "Forced by …" line under the selection header.
+  &__forced-by {
+    padding: 2px 0 4px;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  // Dependencies / dependants lists: one row per referenced node, divided by a
+  // thin rule.
+  &__refs {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__refs-empty {
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__ref {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 3px 0;
+
+    &:not(:last-child) {
+      border-bottom: 1px solid var(--pf-color-border);
+    }
+  }
+
+  // Small neutral chip marking a special edge kind (DYN / EXP / TGT), distinct
+  // from the coloured kind chip in the header.
+  &__ref-chip {
+    flex-shrink: 0;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    background: var(--pf-color-background-secondary);
+    color: var(--pf-color-text-muted);
+    border: 1px solid var(--pf-color-border);
+  }
+
+  // The referenced id / label. Wraps (dep ids can be long paths); a forced edge
+  // is shown in bold.
+  &__ref-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+
+    &--forced {
+      font-weight: 700;
+    }
+  }
+
+  // The graph view (area 2): a toolbar over a pannable/zoomable SVG canvas.
+  &__graph {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__graph-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+  }
+
+  &__graph-count {
+    margin-right: auto;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__graph-canvas {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  &__svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+
+    &:active {
+      cursor: grabbing;
+    }
+  }
+
+  &__edge {
+    stroke: var(--pf-color-text-muted);
+    stroke-width: 1.5;
+    fill: none;
+
+    // Forced edges stand out in red.
+    &--forced {
+      stroke: var(--pf-color-danger);
+    }
+  }
+
+  &__arrow {
+    fill: var(--pf-color-text-muted);
+
+    &--forced {
+      fill: var(--pf-color-danger);
+    }
+  }
+
+  // A graph node: a coloured dot; its label shows on hover (native <title>).
+  &__dot {
+    cursor: pointer;
+    stroke: transparent;
+    stroke-width: 2;
+
+    &--dep {
+      fill: var(--pf-color-accent);
+    }
+
+    &--rule {
+      fill: var(--pf-color-warning);
+    }
+
+    &--selected {
+      stroke: var(--pf-color-highlight);
+    }
+
+    &:hover {
+      stroke: var(--pf-color-text);
+    }
+  }
+
+  // Floating label shown over the canvas for the hovered dot. Positioned (left/
+  // top) inline from JS; only geometry is inline, appearance stays here.
+  &__hover-label {
+    position: absolute;
+    z-index: 1;
+    transform: translate(-50%, calc(-100% - 8px));
+    max-width: 90%;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--pf-color-background-secondary);
+    border: 1px solid var(--pf-color-border);
+    color: var(--pf-color-text);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+  }
+
   &__status {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 12px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__distance {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 8px 8px;
+    border-top: 1px solid var(--pf-color-border);
+  }
+
+  &__distance-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__distance-node {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__distance-result {
+    font-size: 11px;
     color: var(--pf-color-text-muted);
   }
 
@@ -75,7 +324,8 @@
     }
 
     &--rule {
-      background: var(--pf-color-primary);
+      background: var(--pf-color-warning);
+      color: var(--pf-color-text-on-warning);
     }
   }
 
@@ -90,5 +340,72 @@
     flex-shrink: 0;
     font-size: 11px;
     color: var(--pf-color-text-muted);
+  }
+}
+
+// The "Dune query" details-drawer tab: a full-height DataGrid of query results.
+.pf-dune-query {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+
+  &__grid {
+    flex: 1;
+    min-height: 0;
+  }
+
+  // Echo of the SQL that produced the results, inline in the toolbar row (in a
+  // StackAuto filler). Single line, ellipsised, full text on hover, on a grey
+  // background.
+  &__sql {
+    display: block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--pf-font-monospace, monospace);
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+    background: var(--pf-color-background-secondary);
+  }
+
+  &__status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__count {
+    align-self: center;
+    padding: 0 8px;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  // A src/dst chip cell: the kind chip (reusing the graph panel's `__chip`
+  // classes) alongside the node's label link.
+  &__node {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+}
+
+// The Dune SQL omnibox mode reuses the core `--query-mode` look (wide black
+// monospace box) and only recolours the text + icon orange (vs the core green).
+// The compound selector outranks `.pf-omnibox--query-mode input` regardless of
+// stylesheet order.
+.pf-omnibox--query-mode.pf-dune-query-mode {
+  input {
+    color: #ffa657;
+  }
+
+  &:before {
+    color: #ffa657;
   }
 }

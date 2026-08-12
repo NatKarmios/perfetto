@@ -14,15 +14,15 @@
 
 import m from 'mithril';
 import {classNames} from '../../base/classnames';
-import type {Trace} from '../../public/trace';
 import {EmptyState} from '../../widgets/empty_state';
 import {Spinner} from '../../widgets/spinner';
 import {TextInput} from '../../widgets/text_input';
 import type {DuneGraphController} from './controller';
 import type {GraphNode} from './graph';
+import {nodeLabel, plural} from './graph';
+import {DistancePanel} from './distance_panel';
 
 interface NodeListPanelAttrs {
-  readonly trace: Trace;
   readonly controller: DuneGraphController;
 }
 
@@ -43,6 +43,7 @@ export class NodeListPanel implements m.ClassComponent<NodeListPanelAttrs> {
         }),
       ),
       m('.pf-dune-graph__source', `Source: ${controller.sourceDescription}`),
+      m(DistancePanel, {controller}),
       this.renderBody(attrs),
     );
   }
@@ -101,7 +102,7 @@ export class NodeListPanel implements m.ClassComponent<NodeListPanelAttrs> {
         class: classNames(isSelected && 'pf-dune-graph__row--selected'),
         // Selecting the slice on click is the node -> slice half of the
         // bidirectional highlight.
-        onclick: () => this.selectSlice(attrs.trace, node.sliceId),
+        onclick: () => void attrs.controller.goToNode(node),
       },
       m(
         'span',
@@ -118,33 +119,11 @@ export class NodeListPanel implements m.ClassComponent<NodeListPanelAttrs> {
     );
   }
 
-  // Select the slice a node was extracted from and scroll it into view.
-  //
-  // We resolve the track and reveal its ancestor groups *before* selecting so
-  // that the track's DOM element exists by the time the selection's scroll
-  // runs. Otherwise scrollToSelection's vertical scroll silently no-ops when
-  // the track sits in a collapsed group (the horizontal/time scroll still works
-  // as it doesn't depend on the track being in the DOM).
-  private async selectSlice(trace: Trace, sliceId: number): Promise<void> {
-    const match = (
-      await trace.selection.resolveSqlEvents('slice', [sliceId])
-    )[0];
-    if (match === undefined) return;
-    trace.currentWorkspace.getTrackByUri(match.trackUri)?.reveal();
-    trace.selection.selectTrackEvent(match.trackUri, match.eventId, {
-      scrollToSelection: true,
-    });
-  }
-
   private applyFilter(nodes: readonly GraphNode[]): readonly GraphNode[] {
     const needle = this.filter.trim().toLowerCase();
     if (needle === '') return nodes;
     return nodes.filter((n) => searchText(n).includes(needle));
   }
-}
-
-function nodeLabel(node: GraphNode): string {
-  return node.kind === 'rule' ? `rule ${node.id}` : node.id;
 }
 
 function searchText(node: GraphNode): string {
@@ -176,8 +155,4 @@ function edgeSummary(node: GraphNode): string | undefined {
     parts.push(plural(total, 'dyn-dep'));
   }
   return parts.length > 0 ? parts.join(' · ') : undefined;
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
