@@ -1,0 +1,11 @@
+buildtools
+*.perfetto
+*.nix
+out
+python
+result
+src
+test
+third_party
+tools
+ui
