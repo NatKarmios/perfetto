@@ -217,19 +217,67 @@ export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
  * The edges of the subgraph induced by `nodes`: every edge whose source and
  * dest are both in the set. Walks each node's out-edges (not the whole graph),
  * so it stays cheap when the selection is small.
+ *
+ * If `isHidden` is given, hidden nodes in the set are never emitted as an edge
+ * endpoint but are still traversed *through*: an edge is emitted from each
+ * visible source to the nearest visible node(s) reachable via hidden nodes
+ * only, contracting the hidden run. This is how the graph pane implements
+ * "hide rules" - a chain `dep -> rule -> dep` with the rule hidden collapses to
+ * a single `dep -> dep` edge. Traversal never leaves `nodes` (only nodes
+ * already in the selection are ever walked through), so hiding a kind can only
+ * ever remove nodes from view, never surface a connection that wasn't already
+ * reachable within the selection.
  */
 export function inducedEdges(
   graph: BuildGraph,
   nodes: readonly GraphNode[],
+  isHidden?: (node: GraphNode) => boolean,
 ): readonly GraphEdge[] {
-  const inSet = new Set(nodes.map((n) => nodeKey(n.kind, n.id)));
+  const inSet = new Map(nodes.map((n) => [nodeKey(n.kind, n.id), n] as const));
+  const hidden = (n: GraphNode) => isHidden?.(n) ?? false;
+
   const result: GraphEdge[] = [];
   for (const source of nodes) {
-    for (const dest of outEdges(graph, source)) {
-      if (inSet.has(nodeKey(dest.kind, dest.id))) {
-        result.push({source, dest, forced: isForcedEdge(source, dest)});
+    if (hidden(source)) continue;
+    // dest key -> best edge found to it, so a diamond of hidden paths (or a
+    // rule listing the same dep both statically and dynamically) yields one
+    // edge, preferring a forced one if any path to that dest is forced.
+    const bestByDest = new Map<string, GraphEdge>();
+    // DFS over the induced subgraph, only stepping into nodes that are in the
+    // selection; `forced` tracks whether every hop of the current path so far
+    // was a forced edge. Visited is keyed by node+forced-so-far, since a path
+    // that's still forced can reach further than one that already lost it.
+    const seen = new Set<string>();
+    const stack: Array<{node: GraphNode; forced: boolean}> = [
+      {node: source, forced: true},
+    ];
+    seen.add(`${nodeKey(source.kind, source.id)}|1`);
+    while (stack.length > 0) {
+      const {node: current, forced} = stack.pop()!;
+      for (const next of outEdges(graph, current)) {
+        const nextInSet = inSet.get(nodeKey(next.kind, next.id));
+        if (nextInSet === undefined) continue; // outside the selection
+        const nextForced = forced && isForcedEdge(current, next);
+        if (hidden(nextInSet)) {
+          const key = `${nodeKey(next.kind, next.id)}|${nextForced ? 1 : 0}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          stack.push({node: nextInSet, forced: nextForced});
+          continue;
+        }
+        if (nextInSet === source) continue; // drop self-edges from contraction
+        const destKey = nodeKey(next.kind, next.id);
+        const existing = bestByDest.get(destKey);
+        if (existing === undefined || (nextForced && !existing.forced)) {
+          bestByDest.set(destKey, {
+            source,
+            dest: nextInSet,
+            forced: nextForced,
+          });
+        }
       }
     }
+    result.push(...bestByDest.values());
   }
   return result;
 }

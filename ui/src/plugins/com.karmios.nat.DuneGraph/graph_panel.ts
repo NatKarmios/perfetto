@@ -18,7 +18,7 @@ import {Button} from '../../widgets/button';
 import {EmptyState} from '../../widgets/empty_state';
 import type {DuneGraphController} from './controller';
 import type {GraphNode} from './graph';
-import {inducedEdges, nodeKey, nodeLabel} from './graph';
+import {inducedEdges, nodeKey, nodeLabel, plural} from './graph';
 import {decorateDepPath} from './node_display';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
@@ -61,6 +61,12 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   private layout: GraphLayout = {nodes: [], edges: [], width: 0, height: 0};
   private viewBox: ViewBox = {x: 0, y: 0, w: 1, h: 1};
 
+  // Whether rule nodes are hidden. Their edges are contracted (see
+  // inducedEdges' isHidden param), not deleted: a dep resolving to a hidden
+  // rule that in turn depends on another dep is drawn as a direct edge
+  // between the two deps.
+  private hideRules = false;
+
   // Pointer/pan state. Capture is deferred until a real drag: capturing on
   // pointerdown swallows the click event, so a plain click never reaches a dot.
   private pointerDown = false;
@@ -88,30 +94,50 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       });
     }
 
-    this.ensureLayout(controller, nodes);
+    // Rules are hidden but not removed from the selection: their edges are
+    // contracted through (see inducedEdges' isHidden param) rather than
+    // dropped, so a dep resolving to a hidden rule that depends on another dep
+    // is drawn as a direct edge between the two deps.
+    const visible = this.hideRules
+      ? nodes.filter((n) => n.kind !== 'rule')
+      : nodes;
+    this.ensureLayout(controller, nodes, visible);
 
     return m(
       '.pf-dune-graph__graph',
-      this.renderToolbar(controller, nodes.length),
+      this.renderToolbar(controller, nodes.length, visible.length),
       m(
         '.pf-dune-graph__graph-canvas',
-        this.renderSvg(controller),
-        this.renderHoverLabel(),
+        visible.length === 0
+          ? m(EmptyState, {
+              icon: 'visibility_off',
+              title: 'All nodes hidden',
+            })
+          : [this.renderSvg(controller), this.renderHoverLabel()],
       ),
     );
   }
 
   private renderToolbar(
     controller: DuneGraphController,
-    count: number,
+    total: number,
+    visibleCount: number,
   ): m.Children {
+    const hiddenCount = total - visibleCount;
+    const countLabel =
+      hiddenCount > 0
+        ? `${plural(total, 'node')} (${hiddenCount} hidden)`
+        : plural(total, 'node');
     return m(
       '.pf-dune-graph__graph-toolbar',
-      m(
-        'span.pf-dune-graph__graph-count',
-        `${count} node${count === 1 ? '' : 's'}`,
-      ),
+      m('span.pf-dune-graph__graph-count', countLabel),
       m(Button, {label: 'Fit', icon: 'fit_screen', onclick: () => this.fit()}),
+      m(Button, {
+        label: 'Hide rules',
+        icon: 'visibility_off',
+        active: this.hideRules,
+        onclick: () => (this.hideRules = !this.hideRules),
+      }),
       m(Button, {
         label: 'Clear',
         icon: 'clear',
@@ -182,15 +208,27 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     void controller.goToNode(node);
   }
 
-  // Relayout + refit only when the selected node set changes.
+  // Relayout + refit only when the visible node set (or the hide-rules
+  // toggle) changes.
   private ensureLayout(
     controller: DuneGraphController,
     nodes: readonly GraphNode[],
+    visible: readonly GraphNode[],
   ): void {
-    const sig = nodes.map((n) => nodeKey(n.kind, n.id)).join('|');
+    const sig = `${this.hideRules}|${visible
+      .map((n) => nodeKey(n.kind, n.id))
+      .join('|')}`;
     if (sig === this.sig) return;
     this.sig = sig;
-    this.layout = layoutGraph(nodes, inducedEdges(controller.graph, nodes));
+    // inducedEdges walks the full selection so it can traverse through hidden
+    // rules; layoutGraph only ever sees the visible nodes.
+    const isHiddenRule = this.hideRules
+      ? (n: GraphNode) => n.kind === 'rule'
+      : undefined;
+    this.layout = layoutGraph(
+      visible,
+      inducedEdges(controller.graph, nodes, isHiddenRule),
+    );
     this.fit();
   }
 
