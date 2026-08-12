@@ -160,8 +160,13 @@ export class DuneQueryTab implements Tab {
         EmptyState,
         {icon: 'table_view', title: 'Run a SQL query to add graph nodes'},
         "Use the '&' omnibox mode or the “Dune: query graph” command. " +
-          'Query dune_node / dune_edge / dune_descendants / dune_ancestors - ' +
-          'any node / src / dst / slice_id column becomes addable.',
+          'Query dune_node / dune_edge, or a relation function - bounded ' +
+          'dune_descendants/dune_ancestors(node_id, max_steps, step_kind), ' +
+          'unbounded dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +
+          'dune_children/dune_parents(node_id), or forced-only ' +
+          'dune_forcers/dune_forced(node_id) - any node / src / dst / slice_id ' +
+          'column becomes addable. To see transitive forcing on a result, ' +
+          'LEFT JOIN dune_forced()/dune_forcers() USING (dst_node_id).',
       );
     }
 

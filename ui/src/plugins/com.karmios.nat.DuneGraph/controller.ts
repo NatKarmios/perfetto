@@ -96,16 +96,18 @@ export class DuneGraphController {
     return this.graph.bySliceId.get(sliceId);
   }
 
-  // The dense SQL `node_id` for a node - the value the `dune_descendants` /
-  // `dune_ancestors` functions take - or undefined if the SQL mirror isn't
-  // built yet (still loading / failed).
+  // The dense SQL `node_id` for a node - the value the `dune_*` relation
+  // functions (`dune_descendants`, `dune_ancestors`, `dune_children`,
+  // `dune_parents`, `dune_forcers`, `dune_forced`, see sql_graph.ts) take - or
+  // undefined if the SQL mirror isn't built yet (still loading / failed).
   nodeIdOf(node: GraphNode): number | undefined {
     return this.sqlGraph?.nodeId(node);
   }
 
   // Parents/ancestors are walked in-memory over the reverse index. The same
-  // dependents could be computed in SQL via `graph_reachable_bfs!` over the
-  // reversed `dune_edge` table (the mirror `distances()` already uses).
+  // dependents could be computed in SQL via `dune_all_ancestors` (or
+  // `dune_parents` for one hop) over the `dune_edge` table (the mirror
+  // `distances()` already uses `graph_reachable_bfs!` similarly).
   // TODO(nat): once testing on larger traces, compare the two - if the reverse
   // BFS gets slow in-memory, switch ancestorsOf() to the SQL path (needs a
   // node_id -> GraphNode reverse map and makes the callers async).

@@ -26,7 +26,7 @@
  *   forcing rule id / dep id / dune-file path, or NULL).
  * - `dune_edge(src, dst, forced, src_node_id, dst_node_id)` — a typed PERFETTO
  *   VIEW over the raw `_dune_edge(source_node_id, dest_node_id, dest_kind,
- *   forced)` table, with `src` / `dst` the endpoints' slice ids
+ *   source_kind, forced)` table, with `src` / `dst` the endpoints' slice ids
  *   (`JOINID(slice.id)`, chip-rendered) and the raw node_id endpoints.
  *   Directed edges where "source depends on dest" (dest is the prerequisite /
  *   upstream node):
@@ -34,8 +34,11 @@
  *     dep  -> rule (resolved rule)
  *     dep  -> dep  (expanded deps)
  *   `forced` is 1 iff `dest` was forced into the build by `source` (i.e. dest's
- *   `forcedBy` names source); see `isForcedEdge` in graph.ts. The graph macros
- *   read the raw `_dune_edge` (they need the node_id endpoints).
+ *   `forcedBy` names source); see `isForcedEdge` in graph.ts. `source_kind`
+ *   (alongside `dest_kind`) lets the relation functions below reverse the graph
+ *   with a plain column swap instead of a join back to `_dune_node`. The
+ *   relation functions read the raw `_dune_edge` / `_dune_node` directly (they
+ *   need the node_id endpoints and the un-typed kind columns).
  *
  * Nodes live in two id namespaces (dep ids are Dune strings, rule ids are
  * stringified ints), and the stdlib graph macros require dense integer ids near
@@ -43,9 +46,9 @@
  * `node_id <-> GraphNode` mapping is kept so callers can translate a selected
  * node into a `node_id` and back.
  *
- * It also defines the transitive-relationship SQL helpers
- * `dune_descendants`/`dune_ancestors` (+ `!` list-macro wrappers) - see
- * {@link createRelationFunctions}.
+ * It also defines a small library of transitive-relationship SQL functions -
+ * see {@link createRelationFunctions} for the full inventory (bounded/unbounded
+ * x forward/reverse x all-edges/forced-only, plus one-hop wrappers).
  */
 
 import type {Engine} from '../../trace_processor/engine';
@@ -74,7 +77,9 @@ const INSERT_CHUNK = 500;
 
 // Directed dependency distance between two nodes, broken down by node kind.
 // `total` is the number of hops on a shortest path; `dep`/`rule` are how many
-// of the traversed nodes are deps / rules (so `total === dep + rule`).
+// of the traversed nodes are deps / rules (so `total === dep + rule`). Counts
+// path nodes excluding `fromId` - the same "anchor-relative" convention the
+// relation functions below use.
 export interface Distances {
   readonly total: number;
   readonly dep: number;
@@ -181,6 +186,8 @@ export async function buildSqlGraph(
 
   // One row per edge from the shared edge set. Endpoints are always present
   // (every node was added above); the guard is just for type-narrowing.
+  // `source_kind` (alongside `dest_kind`) lets the relation functions reverse
+  // the graph with a column swap instead of a join back to `_dune_node`.
   const edgeRows: Record<string, SqlValue>[] = [];
   for (const {source, dest, forced} of edges(graph)) {
     const sourceId = idByKey.get(nodeKey(source.kind, source.id));
@@ -190,6 +197,7 @@ export async function buildSqlGraph(
       source_node_id: sourceId,
       dest_node_id: destId,
       dest_kind: dest.kind,
+      source_kind: source.kind,
       forced: forced ? 1 : 0,
     });
   }
@@ -219,9 +227,24 @@ export async function buildSqlGraph(
     engine,
     RAW_EDGE_TABLE,
     'source_node_id INTEGER, dest_node_id INTEGER, dest_kind TEXT, ' +
-      'forced INTEGER',
-    ['source_node_id', 'dest_node_id', 'dest_kind', 'forced'],
+      'source_kind TEXT, forced INTEGER',
+    ['source_node_id', 'dest_node_id', 'dest_kind', 'source_kind', 'forced'],
     edgeRows,
+  );
+
+  // Indexes on the raw tables: without these, the recursive walk in
+  // `boundedBody` does a full scan of `_dune_edge` per frontier row (the
+  // stdlib BFS-backed functions get away without them, since the underlying
+  // C++ BFS reads the edge table once). Plain (non-PERFETTO) indexes on plain
+  // tables; dropped along with the table on the next reload.
+  await engine.query(
+    `CREATE INDEX ${RAW_EDGE_TABLE}_src ON ${RAW_EDGE_TABLE}(source_node_id)`,
+  );
+  await engine.query(
+    `CREATE INDEX ${RAW_EDGE_TABLE}_dst ON ${RAW_EDGE_TABLE}(dest_node_id)`,
+  );
+  await engine.query(
+    `CREATE INDEX ${RAW_NODE_TABLE}_id ON ${RAW_NODE_TABLE}(node_id)`,
   );
 
   // Typed view over the raw node table so `slice_id` (and the ergonomic `node`
@@ -272,7 +295,7 @@ export async function buildSqlGraph(
   await engine.query('INCLUDE PERFETTO MODULE graphs.search');
 
   // Parameterized transitive-relationship functions + list-macro wrappers.
-  await createRelationFunctions(engine);
+  await createRelationFunctions(engine, nodeRows.length);
 
   return {
     nodeId(node: GraphNode): number | undefined {
@@ -295,7 +318,15 @@ export async function buildSqlGraph(
     },
 
     async [Symbol.asyncDispose](): Promise<void> {
-      // Drop the views before the raw tables they read from.
+      // Drop the relation function/macro vtabs first (a stale one left around
+      // after the raw tables are dropped fails opaquely - "no such table:
+      // _dune_edge" - on the next ad-hoc query instead of cleanly), then the
+      // views, then the raw tables they read from. Macros can't be dropped -
+      // there's no `DROP PERFETTO MACRO` - but CREATE OR REPLACE on the next
+      // reload handles them.
+      for (const {name} of RELATION_FUNCTIONS) {
+        await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
+      }
       await engine.tryQuery(`DROP VIEW IF EXISTS ${NODE_TABLE}`);
       await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
       await rawEdgeTable[Symbol.asyncDispose]();
@@ -304,114 +335,306 @@ export async function buildSqlGraph(
   };
 }
 
+// A directed walk direction: 'down' follows edges forward (descendants - what
+// `node_id` depends on), 'up' follows them in reverse (ancestors - what
+// depends on `node_id`).
+type Direction = 'down' | 'up';
+
+// Shared 11-column result shape for every relation function below. `src` is
+// the depender (upstream), `dst` the prerequisite, regardless of which
+// direction the function walks.
+const RELATION_COLS = `
+    src_node_id LONG, src_slice_id JOINID(slice.id), src_kind STRING, src_id STRING,
+    dst_node_id LONG, dst_slice_id JOINID(slice.id), dst_kind STRING, dst_id STRING,
+    distance LONG, rule_distance LONG, dep_distance LONG`;
+
+// Every relation function, and the extra scalar args (beyond `node_id`) its
+// `!` list-macro wrapper forwards. Also doubles as the drop-list on dispose.
+const RELATION_FUNCTIONS: ReadonlyArray<{
+  readonly name: string;
+  readonly extraArgs: readonly string[];
+}> = [
+  {name: 'dune_descendants', extraArgs: ['max_steps', 'step_kind']},
+  {name: 'dune_ancestors', extraArgs: ['max_steps', 'step_kind']},
+  {name: 'dune_all_descendants', extraArgs: []},
+  {name: 'dune_all_ancestors', extraArgs: []},
+  {name: 'dune_children', extraArgs: []},
+  {name: 'dune_parents', extraArgs: []},
+  {name: 'dune_forcers', extraArgs: []},
+  {name: 'dune_forced', extraArgs: []},
+];
+
+// Edge set for a directed walk, consistently shaped as (source_node_id,
+// dest_node_id, dest_kind) regardless of direction: 'up' reverses the graph by
+// swapping the endpoint columns (and `source_kind` becomes `dest_kind`) rather
+// than joining back to `_dune_node`. `forcedOnly` restricts to forced edges
+// (`dune_forcers` / `dune_forced`), so every row a caller gets back is forced
+// by construction.
+function edgeSet(dir: Direction, opts: {forcedOnly?: boolean} = {}): string {
+  const where = opts.forcedOnly ? ' WHERE forced' : '';
+  return dir === 'down'
+    ? `(SELECT source_node_id, dest_node_id, dest_kind
+        FROM ${RAW_EDGE_TABLE}${where})`
+    : `(SELECT dest_node_id AS source_node_id, source_node_id AS dest_node_id,
+        source_kind AS dest_kind FROM ${RAW_EDGE_TABLE}${where})`;
+}
+
+// The value `step_kind` selects as the walk's step-budget counter: every hop
+// (`distance`) when NULL, else only hops landing on that kind. `prefix` lets
+// the same expression be written against a correlated row alias (e.g. `s.`)
+// inside the recursive term, or bare column names in a plain SELECT outside it.
+function countedExpr(prefix: string): string {
+  return `CASE $step_kind
+        WHEN 'dep' THEN ${prefix}dep_distance
+        WHEN 'rule' THEN ${prefix}rule_distance
+        ELSE ${prefix}distance END`;
+}
+
+// Projects a `walk(node_id, distance, rule_distance, dep_distance)` CTE (one
+// row per reached node) into the shared 11-column relation shape, placing the
+// anchor (`param`) on the correct side - `src` for a 'down' walk (anchor is the
+// depender), `dst` for an 'up' walk (anchor is the prerequisite) - and
+// excluding the anchor itself (`distance > 0`) from the result.
+function relationProjection(dir: Direction, param: string): string {
+  const cols =
+    dir === 'down'
+      ? `a.node_id AS src_node_id, sa.id AS src_slice_id, a.kind AS src_kind, a.orig_id AS src_id,
+      w.node_id AS dst_node_id, sw.id AS dst_slice_id, wn.kind AS dst_kind, wn.orig_id AS dst_id`
+      : `w.node_id AS src_node_id, sw.id AS src_slice_id, wn.kind AS src_kind, wn.orig_id AS src_id,
+      a.node_id AS dst_node_id, sa.id AS dst_slice_id, a.kind AS dst_kind, a.orig_id AS dst_id`;
+  return `
+    SELECT
+      ${cols},
+      w.distance AS distance, w.rule_distance AS rule_distance, w.dep_distance AS dep_distance
+    FROM walk w
+    JOIN ${RAW_NODE_TABLE} wn ON wn.node_id = w.node_id
+    JOIN slice sw ON sw.id = wn.slice_id
+    JOIN ${RAW_NODE_TABLE} a ON a.node_id = ${param}
+    JOIN slice sa ON sa.id = a.slice_id
+    WHERE w.distance > 0`;
+}
+
+// The recursive bounded walk backing `dune_descendants` / `dune_ancestors`.
+//
+// `step_kind` selects which already-tracked column acts as the step counter -
+// there are only two node kinds, so no extra walk state is needed. A node
+// expands (takes another hop) only while its OWN counted value is still short
+// of the budget, i.e. the budget is tested "stop at the boundary": with
+// `step_kind='dep', max_steps=3` a node reached at dep_distance=3 does not
+// expand further, so its own children are excluded, but a node it already
+// reached via a *free* (non-counted) hop earlier is still included. Concretely,
+// on an alternating dep/rule chain this includes the rule that produced the
+// 3rd dep, but not a 4th dep past it. `max_steps=0` returns no rows for any
+// `step_kind` (the seed can't expand). An invalid `step_kind` (anything but
+// NULL/'dep'/'rule') returns no rows rather than silently meaning "every hop
+// counts".
+//
+// `UNION` (not ALL) dedupes states so the walk terminates on repeated visits;
+// `nodeCount` (the graph's total node count, inlined as a literal - cheaper
+// than a per-row subquery) is an unconditional depth cap independent of
+// `max_steps`: a simple path can have at most `nodeCount - 1` hops, so this can
+// never change the result on a DAG, but protects against a cyclic input graph
+// (built from trace args at runtime, so not guaranteed acyclic) - without it, a
+// cycle increments `distance` every lap forever and nothing in the UI can
+// interrupt a runaway query.
+//
+// Multiple states can reach the same node at different (rule_distance,
+// dep_distance) splits (a min-hop path need not be a min-`step_kind`-count
+// path), so `walk` collapses to one row per node via `row_number()`, ordered by
+// the counted column first - the reported split is the node's minimum under
+// whichever metric `step_kind` selects, not necessarily its minimum `distance`.
+function boundedBody(dir: Direction, param: string, nodeCount: number): string {
+  return `
+    WITH RECURSIVE
+    states(node_id, distance, rule_distance, dep_distance) AS (
+      SELECT node_id, 0, 0, 0 FROM ${RAW_NODE_TABLE}
+      WHERE node_id = ${param}
+        AND ($step_kind IS NULL OR $step_kind IN ('dep', 'rule'))
+      UNION
+      SELECT e.dest_node_id, s.distance + 1,
+        s.rule_distance + iif(e.dest_kind = 'rule', 1, 0),
+        s.dep_distance + iif(e.dest_kind = 'dep', 1, 0)
+      FROM states s
+      JOIN ${edgeSet(dir)} e ON e.source_node_id = s.node_id
+      WHERE ($max_steps IS NULL OR (${countedExpr('s.')}) < $max_steps)
+        AND s.distance < ${nodeCount}
+    ),
+    walk AS (
+      SELECT node_id, distance, rule_distance, dep_distance FROM (
+        SELECT node_id, distance, rule_distance, dep_distance,
+          row_number() OVER (
+            PARTITION BY node_id
+            ORDER BY (${countedExpr('')}), distance, rule_distance
+          ) AS rn
+        FROM states
+      )
+      WHERE rn = 1
+    )
+    ${relationProjection(dir, param)}`;
+}
+
+// The unbounded fast path backing `dune_all_descendants` / `dune_all_ancestors`
+// / `dune_forcers` / `dune_forced`: the stdlib's cycle-safe C++
+// `graph_reachable_bfs!` (over `edgeSet`, forced-only when `opts.forcedOnly`)
+// followed by a walk of its parent tree that adds up the traversed nodes' kinds
+// - reading `dest_kind` straight off the matching edge rather than joining back
+// to `_dune_node`.
+function bfsBody(
+  dir: Direction,
+  param: string,
+  opts: {forcedOnly?: boolean} = {},
+): string {
+  return `
+    WITH RECURSIVE
+    bfs AS (
+      SELECT node_id, parent_node_id FROM graph_reachable_bfs!(
+        (SELECT source_node_id, dest_node_id FROM ${edgeSet(dir, opts)}),
+        (SELECT ${param} AS node_id))
+    ),
+    walk(node_id, distance, rule_distance, dep_distance) AS (
+      SELECT node_id, 0, 0, 0 FROM bfs WHERE node_id = ${param}
+      UNION ALL
+      SELECT b.node_id, w.distance + 1,
+        w.rule_distance + iif(e.dest_kind = 'rule', 1, 0),
+        w.dep_distance + iif(e.dest_kind = 'dep', 1, 0)
+      FROM bfs b
+      JOIN walk w ON b.parent_node_id = w.node_id
+      JOIN ${edgeSet(dir, opts)} e
+        ON e.source_node_id = b.parent_node_id AND e.dest_node_id = b.node_id
+    )
+    ${relationProjection(dir, param)}`;
+}
+
+// One-hop wrapper body for `dune_children` / `dune_parents`: the bounded walk
+// with `max_steps=1`. More correct than a raw single join on `dune_edge` would
+// be, since the walk's dedup collapses any duplicate edges.
+function wrapperBody(fn: string, param: string): string {
+  return `SELECT * FROM ${fn}(${param}, 1, NULL)`;
+}
+
 /**
  * Defines the parameterized transitive-relationship helpers, exposed for ad-hoc
  * SQL (e.g. via the query tab). All-pairs closure doesn't scale, so these are
- * single-source:
+ * all single-source, and each is implemented the way its question wants to be
+ * answered rather than routed through one general-purpose walk:
  *
- * - `dune_descendants(node_id)` / `dune_ancestors(node_id)` — one BFS returning
- *   every node the argument transitively depends on / is depended on by, as
- *   (src_*, dst_*, distance, rule_distance, dep_distance, forced). `src` is the
- *   ancestor (depender), `dst` the descendant (prerequisite); `distance` counts
- *   path nodes excluding the ancestor, split by kind (distance == rule + dep).
- *   `forced` is 1 iff the descendant is reachable through forced edges only
- *   (some src->dst path where every hop was forced).
- * - `dune_descendants!(starts)` / `dune_ancestors!(starts)` — run the function
- *   for each `node_id` in a table/subquery and union the results.
+ * - `dune_descendants(node_id, max_steps, step_kind)` /
+ *   `dune_ancestors(node_id, max_steps, step_kind)` — the general bounded walk
+ *   (recursive CTE; see `boundedBody`). `max_steps` NULL means unbounded;
+ *   `step_kind` NULL means every hop counts, 'dep'/'rule' means only hops
+ *   landing on that kind count.
+ * - `dune_all_descendants(node_id)` / `dune_all_ancestors(node_id)` — the
+ *   unbounded fast path, built on the stdlib's cycle-safe `graph_reachable_bfs!`
+ *   rather than the hand-rolled recursive walk.
+ * - `dune_children(node_id)` / `dune_parents(node_id)` — one hop (see
+ *   `wrapperBody`).
+ * - `dune_forcers(node_id)` / `dune_forced(node_id)` — the unbounded fast path
+ *   restricted to forced edges only, so every row returned is forced by
+ *   construction; `dune_forcers` walks up (what transitively forced
+ *   `node_id`), `dune_forced` walks down (what `node_id` transitively forced).
  *
- * Descendants walks forward edges counting the child's kind; ancestors walks
- * reversed edges counting the parent's (the node being extended from) kind, so
- * both report the kind split of the path's non-ancestor nodes. CREATE OR REPLACE
- * keeps reload idempotent.
+ * All eight return the same 11-column shape (`RELATION_COLS`):
+ *   (src_*, dst_*, distance, rule_distance, dep_distance)
+ * `src` is the depender (upstream), `dst` the prerequisite, regardless of which
+ * direction the function walks; `distance == rule_distance + dep_distance`.
+ * The distances are anchor-relative: they count the path nodes traversed AWAY
+ * FROM `node_id`, excluding `node_id` itself. (This is a behaviour change for
+ * ancestors, which used to count away from the *far* end of the path instead -
+ * the two directions already agreed on `distance` for a shared (src, dst) pair
+ * but could disagree on the rule/dep split whenever `kind(src) != kind(dst)`.
+ * Anchor-relative counting is required for the `step_kind` budget to mean the
+ * same thing in both directions; the cost is that the two directions can now
+ * disagree on the split for a pair they both report.)
+ *
+ * There's no `forced` column any more - dropping it halves the work of every
+ * unbounded call, which used to run a second forced-only BFS just to compute
+ * it. Per-edge forcing is still on `dune_edge.forced`; to annotate a result
+ * with transitive forced-reachability, join against `dune_forced`/`dune_forcers`:
+ *   SELECT d.*, f.dst_node_id IS NOT NULL AS forced
+ *   FROM dune_descendants(42, NULL, NULL) d
+ *   LEFT JOIN dune_forced(42) f USING (dst_node_id)
+ *
+ * `dune_descendants`/`dune_ancestors` used to take a single `node_id` arg; that
+ * form is gone - a `RETURNS TABLE` function is registered as a virtual table
+ * keyed by name only, so the old and new arity can't coexist. Use
+ * `dune_all_descendants`/`dune_all_ancestors` for the old unbounded behaviour.
+ *
+ * Every function above has a same-named `!` list-macro wrapper taking
+ * `starts TableOrSubquery` in place of `node_id` (plus any trailing scalar
+ * args, see `RELATION_FUNCTIONS`): runs the function once per `node_id` in
+ * `starts` and unions the results, e.g.
+ * `dune_descendants!(starts, max_steps, step_kind)`, `dune_parents!(starts)`.
+ * CREATE OR REPLACE keeps reload idempotent for both functions and macros
+ * (macros can't be dropped - there's no `DROP PERFETTO MACRO` - so a stale one
+ * would otherwise survive a graph rebuild anyway).
  */
-async function createRelationFunctions(engine: Engine): Promise<void> {
-  const cols = `
-    src_node_id LONG, src_slice_id JOINID(slice.id), src_kind STRING, src_id STRING,
-    dst_node_id LONG, dst_slice_id JOINID(slice.id), dst_kind STRING, dst_id STRING,
-    distance LONG, rule_distance LONG, dep_distance LONG, forced LONG`;
+async function createRelationFunctions(
+  engine: Engine,
+  nodeCount: number,
+): Promise<void> {
+  const define = (name: string, args: string, body: string) =>
+    engine.query(`
+      CREATE OR REPLACE PERFETTO FUNCTION ${name}(${args})
+      RETURNS TABLE(${RELATION_COLS}) AS
+      ${body}`);
 
-  // Forward: BFS along source->dest; the walk adds the CHILD's kind each hop.
-  // `fbfs` is the same BFS but restricted to forced edges, so `forced` is 1 iff
-  // the descendant is reachable from the ancestor through forced edges only
-  // (i.e. some path where every hop was forced).
-  await engine.query(`
-    CREATE OR REPLACE PERFETTO FUNCTION dune_descendants(src_node_id LONG)
-    RETURNS TABLE(${cols}) AS
-    WITH RECURSIVE
-    bfs AS (
-      SELECT node_id, parent_node_id FROM graph_reachable_bfs!(
-        (SELECT source_node_id, dest_node_id FROM ${RAW_EDGE_TABLE}),
-        (SELECT $src_node_id AS node_id))),
-    fbfs AS (
-      SELECT node_id FROM graph_reachable_bfs!(
-        (SELECT source_node_id, dest_node_id FROM ${RAW_EDGE_TABLE} WHERE forced),
-        (SELECT $src_node_id AS node_id))),
-    walk(node_id, distance, rule_distance, dep_distance) AS (
-      SELECT node_id, 0, 0, 0 FROM bfs WHERE node_id = $src_node_id
-      UNION ALL
-      SELECT b.node_id, w.distance + 1,
-        w.rule_distance + iif(c.kind = 'rule', 1, 0),
-        w.dep_distance + iif(c.kind = 'dep', 1, 0)
-      FROM bfs b
-      JOIN walk w ON b.parent_node_id = w.node_id
-      JOIN ${RAW_NODE_TABLE} c ON c.node_id = b.node_id)
-    SELECT
-      s.node_id AS src_node_id, ss.id AS src_slice_id, s.kind AS src_kind, s.orig_id AS src_id,
-      d.node_id AS dst_node_id, sd.id AS dst_slice_id, d.kind AS dst_kind, d.orig_id AS dst_id,
-      w.distance AS distance, w.rule_distance AS rule_distance, w.dep_distance AS dep_distance,
-      iif(w.node_id IN (SELECT node_id FROM fbfs), 1, 0) AS forced
-    FROM walk w
-    JOIN ${RAW_NODE_TABLE} s ON s.node_id = $src_node_id
-    JOIN slice ss ON ss.id = s.slice_id
-    JOIN ${RAW_NODE_TABLE} d ON d.node_id = w.node_id
-    JOIN slice sd ON sd.id = d.slice_id
-    WHERE w.distance > 0`);
+  // Base bounded walk.
+  await define(
+    'dune_descendants',
+    'node_id LONG, max_steps LONG, step_kind STRING',
+    boundedBody('down', '$node_id', nodeCount),
+  );
+  await define(
+    'dune_ancestors',
+    'node_id LONG, max_steps LONG, step_kind STRING',
+    boundedBody('up', '$node_id', nodeCount),
+  );
 
-  // Reverse: BFS along dest->source; the walk adds the PARENT's kind each hop.
-  // `fbfs` walks the reversed forced edges, so `forced` is 1 iff the ancestor
-  // reaches the descendant through forced edges only.
-  await engine.query(`
-    CREATE OR REPLACE PERFETTO FUNCTION dune_ancestors(dst_node_id LONG)
-    RETURNS TABLE(${cols}) AS
-    WITH RECURSIVE
-    bfs AS (
-      SELECT node_id, parent_node_id FROM graph_reachable_bfs!(
-        (SELECT dest_node_id AS source_node_id, source_node_id AS dest_node_id FROM ${RAW_EDGE_TABLE}),
-        (SELECT $dst_node_id AS node_id))),
-    fbfs AS (
-      SELECT node_id FROM graph_reachable_bfs!(
-        (SELECT dest_node_id AS source_node_id, source_node_id AS dest_node_id FROM ${RAW_EDGE_TABLE} WHERE forced),
-        (SELECT $dst_node_id AS node_id))),
-    walk(node_id, distance, rule_distance, dep_distance) AS (
-      SELECT node_id, 0, 0, 0 FROM bfs WHERE node_id = $dst_node_id
-      UNION ALL
-      SELECT b.node_id, w.distance + 1,
-        w.rule_distance + iif(p.kind = 'rule', 1, 0),
-        w.dep_distance + iif(p.kind = 'dep', 1, 0)
-      FROM bfs b
-      JOIN walk w ON b.parent_node_id = w.node_id
-      JOIN ${RAW_NODE_TABLE} p ON p.node_id = w.node_id)
-    SELECT
-      a.node_id AS src_node_id, sa.id AS src_slice_id, a.kind AS src_kind, a.orig_id AS src_id,
-      b.node_id AS dst_node_id, sb.id AS dst_slice_id, b.kind AS dst_kind, b.orig_id AS dst_id,
-      w.distance AS distance, w.rule_distance AS rule_distance, w.dep_distance AS dep_distance,
-      iif(w.node_id IN (SELECT node_id FROM fbfs), 1, 0) AS forced
-    FROM walk w
-    JOIN ${RAW_NODE_TABLE} a ON a.node_id = w.node_id
-    JOIN slice sa ON sa.id = a.slice_id
-    JOIN ${RAW_NODE_TABLE} b ON b.node_id = $dst_node_id
-    JOIN slice sb ON sb.id = b.slice_id
-    WHERE w.distance > 0`);
+  // Unbounded fast path.
+  await define(
+    'dune_all_descendants',
+    'node_id LONG',
+    bfsBody('down', '$node_id'),
+  );
+  await define('dune_all_ancestors', 'node_id LONG', bfsBody('up', '$node_id'));
 
-  // List wrappers: run the function per `node_id` in `starts` and union.
-  await engine.query(`
-    CREATE OR REPLACE PERFETTO MACRO dune_descendants(starts TableOrSubquery)
-    RETURNS TableOrSubquery AS
-    (SELECT d.* FROM ($starts) s JOIN dune_descendants(s.node_id) d)`);
-  await engine.query(`
-    CREATE OR REPLACE PERFETTO MACRO dune_ancestors(starts TableOrSubquery)
-    RETURNS TableOrSubquery AS
-    (SELECT d.* FROM ($starts) s JOIN dune_ancestors(s.node_id) d)`);
+  // One hop.
+  await define(
+    'dune_children',
+    'node_id LONG',
+    wrapperBody('dune_descendants', '$node_id'),
+  );
+  await define(
+    'dune_parents',
+    'node_id LONG',
+    wrapperBody('dune_ancestors', '$node_id'),
+  );
+
+  // Forced-edge closure.
+  await define(
+    'dune_forcers',
+    'node_id LONG',
+    bfsBody('up', '$node_id', {forcedOnly: true}),
+  );
+  await define(
+    'dune_forced',
+    'node_id LONG',
+    bfsBody('down', '$node_id', {forcedOnly: true}),
+  );
+
+  // `!` list-macro wrappers: run the function per `node_id` in `starts` and
+  // union the results, forwarding any trailing scalar args unchanged.
+  for (const {name, extraArgs} of RELATION_FUNCTIONS) {
+    const macroParams = [
+      'starts TableOrSubquery',
+      ...extraArgs.map((a) => `${a} Expr`),
+    ];
+    const callArgs = ['s.node_id', ...extraArgs.map((a) => `$${a}`)];
+    await engine.query(`
+      CREATE OR REPLACE PERFETTO MACRO ${name}(${macroParams.join(', ')})
+      RETURNS TableOrSubquery AS
+      (SELECT d.* FROM ($starts) s JOIN ${name}(${callArgs.join(', ')}) d)`);
+  }
 }
 
 // Single-source directed BFS from `fromId`, then walk the BFS parent tree back

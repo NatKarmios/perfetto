@@ -113,7 +113,8 @@
   }
 
   // The dense SQL node_id (e.g. "#42") in the header: unintrusive, a
-  // cross-reference for dune_descendants() / dune_ancestors() queries.
+  // cross-reference for the dune_* relation function queries (see
+  // createRelationFunctions in sql_graph.ts).
   &__info-nodeid {
     flex-shrink: 0;
     font-family: monospace;

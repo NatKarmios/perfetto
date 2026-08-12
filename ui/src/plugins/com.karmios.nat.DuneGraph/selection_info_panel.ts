@@ -115,12 +115,17 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       ),
       m(
         'span.pf-dune-graph__info-actions',
-        // The dense SQL node_id, unintrusive - a cross-reference for
-        // dune_descendants() / dune_ancestors() in the query tab.
+        // The dense SQL node_id, unintrusive - a cross-reference for the
+        // dune_* relation functions in the query tab.
         nodeId !== undefined &&
           m(
             'span.pf-dune-graph__info-nodeid',
-            {title: 'node_id — pass to dune_descendants() / dune_ancestors()'},
+            {
+              title:
+                'node_id — pass to dune_descendants() / dune_ancestors() / ' +
+                'dune_children() / dune_parents() / dune_forcers() / ' +
+                'dune_forced()',
+            },
             `#${nodeId}`,
           ),
         this.renderAddMenu(controller, node),
