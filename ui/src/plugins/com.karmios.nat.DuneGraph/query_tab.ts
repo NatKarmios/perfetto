@@ -39,6 +39,7 @@ import {StackAuto} from '../../widgets/stack';
 import type {DuneGraphController} from './controller';
 import type {GraphNode} from './graph';
 import {nodeKey, nodeLabel} from './graph';
+import {decorateDepPath} from './node_display';
 
 // Columns whose value is a build-dep/exec-rule slice id, so a row maps back to
 // a graph node. A raw `slice_id` renders as a plain slice link; the "chip"
@@ -349,10 +350,16 @@ export class DuneQueryTab implements Tab {
   }
 
   // A src/dst node as a coloured kind chip plus its label, linking to the slice.
-  // Falls back to the raw slice id when the node isn't known.
+  // A dep's path additionally gets a leading build/code icon (its `_build/<dir>/`
+  // prefix folded into the icon tooltip); a rule shows its bare id. Falls back to
+  // the raw slice id when the node isn't known.
   private renderNodeChip(value: SqlValue): m.Children {
     const node = this.nodeForSliceValue(value);
     if (node === undefined) return value === null ? '' : String(value);
+    const {icon, text} =
+      node.kind === 'dep'
+        ? decorateDepPath(node.id)
+        : {icon: undefined, text: nodeLabel(node)};
     return m(
       'span.pf-dune-query__node',
       m(
@@ -366,7 +373,8 @@ export class DuneQueryTab implements Tab {
         },
         node.kind,
       ),
-      this.nodeAnchor(node, nodeLabel(node)),
+      icon,
+      this.nodeAnchor(node, text),
     );
   }
 

@@ -17,21 +17,25 @@ import {classNames} from '../../base/classnames';
 import {Icons} from '../../base/semantic_icons';
 import {Anchor} from '../../widgets/anchor';
 import {Button} from '../../widgets/button';
+import {Icon} from '../../widgets/icon';
 import {EmptyState} from '../../widgets/empty_state';
 import {MenuItem, PopupMenu} from '../../widgets/menu';
 import {Accordion, AccordionSection} from '../../widgets/accordion';
 import type {DuneGraphController} from './controller';
 import type {ForcedBy, GraphNode} from './graph';
 import {isForcedEdge, nodeKey, nodeLabel} from './graph';
+import {decorateDepPath} from './node_display';
 
 interface SelectionInfoPanelAttrs {
   readonly controller: DuneGraphController;
 }
 
 // One entry in the dependencies / dependants lists: a referenced node (or a
-// dangling id), its display label, an optional chip marking a special edge kind
-// (dynamic dep, expanded dep, rule target), and whether the edge is forced.
+// dangling id), the kind it stands for (so the kind chip renders even when the
+// node is dangling), its display label, an optional chip marking a special edge
+// kind (dynamic dep, expanded dep, rule target), and whether the edge is forced.
 interface Ref {
+  readonly kind: GraphNode['kind'];
   readonly label: string;
   readonly node?: GraphNode;
   readonly chip?: string;
@@ -45,8 +49,8 @@ interface Ref {
  *
  * The body is two lists - `dependencies` (nodes this one depends on) and
  * `dependants` (nodes that depend on this one) - each a union of the node's own
- * referenced ids and the graph's accrued edges, with forced edges shown in
- * bold.
+ * referenced ids and the graph's accrued edges, with forced edges marked by a
+ * leading icon.
  */
 export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAttrs> {
   view({attrs}: m.CVnode<SelectionInfoPanelAttrs>): m.Children {
@@ -81,28 +85,46 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     node: GraphNode,
   ): m.Children {
     const nodeId = controller.nodeIdOf(node);
+    // A dep's path gets the leading build/code icon (its `_build/<dir>/` prefix
+    // folded into the icon tooltip); a rule shows its bare id. The full,
+    // undecorated id stays available on the title's hover tooltip.
+    const {icon, text} =
+      node.kind === 'dep'
+        ? decorateDepPath(node.id)
+        : {icon: undefined, text: nodeLabel(node)};
     return m(
       '.pf-dune-graph__info-header',
       m(
-        'span',
-        {
-          class: classNames(
-            'pf-dune-graph__chip',
-            `pf-dune-graph__chip--${node.kind}`,
-          ),
-        },
-        node.kind,
-      ),
-      m('span.pf-dune-graph__info-title', {title: node.id}, nodeLabel(node)),
-      // The dense SQL node_id, unintrusive - a cross-reference for
-      // dune_descendants() / dune_ancestors() in the query tab.
-      nodeId !== undefined &&
+        'span.pf-dune-graph__info-main',
         m(
-          'span.pf-dune-graph__info-nodeid',
-          {title: 'node_id — pass to dune_descendants() / dune_ancestors()'},
-          `#${nodeId}`,
+          'span',
+          {
+            class: classNames(
+              'pf-dune-graph__chip',
+              `pf-dune-graph__chip--${node.kind}`,
+            ),
+          },
+          node.kind,
         ),
-      this.renderAddMenu(controller, node),
+        icon,
+        m(
+          'span.pf-dune-graph__info-title',
+          {title: node.id},
+          m('span.pf-dune-graph__info-title-text', text),
+        ),
+      ),
+      m(
+        'span.pf-dune-graph__info-actions',
+        // The dense SQL node_id, unintrusive - a cross-reference for
+        // dune_descendants() / dune_ancestors() in the query tab.
+        nodeId !== undefined &&
+          m(
+            'span.pf-dune-graph__info-nodeid',
+            {title: 'node_id — pass to dune_descendants() / dune_ancestors()'},
+            `#${nodeId}`,
+          ),
+        this.renderAddMenu(controller, node),
+      ),
     );
   }
 
@@ -145,9 +167,9 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // in the graph; the rest are descriptive text.
   //
   // A RULE/DEP forcer is itself a dependant (the forced edge points from it into
-  // this node), so it already appears - in bold - in the Dependants list; we
-  // only surface this explicit line when the forcer isn't in that list (a
-  // non-node kind, or an edge that didn't resolve).
+  // this node), so it already appears - marked as forced - in the Dependants
+  // list; we only surface this explicit line when the forcer isn't in that list
+  // (a non-node kind, or an edge that didn't resolve).
   private renderForcedBy(
     controller: DuneGraphController,
     node: GraphNode,
@@ -208,8 +230,31 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   }
 
   private renderRef(controller: DuneGraphController, ref: Ref): m.Children {
+    // A dep label is a path, decorated with a leading build/code icon; a rule
+    // label is its bare id.
+    const {icon, text} =
+      ref.kind === 'dep'
+        ? decorateDepPath(ref.label)
+        : {icon: undefined, text: ref.label};
     return m(
       '.pf-dune-graph__ref',
+      // Forced edges lead with an icon (in place of the old bold text).
+      ref.forced &&
+        m(Icon, {
+          icon: 'priority_high',
+          title: 'Forced edge',
+          className: 'pf-dune-graph__forced-icon',
+        }),
+      m(
+        'span',
+        {
+          class: classNames(
+            'pf-dune-graph__chip',
+            `pf-dune-graph__chip--${ref.kind}`,
+          ),
+        },
+        ref.kind,
+      ),
       ref.chip !== undefined &&
         m(
           'span.pf-dune-graph__ref-chip',
@@ -217,15 +262,9 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           ref.chip,
         ),
       m(
-        'span',
-        {
-          class: classNames(
-            'pf-dune-graph__ref-label',
-            ref.forced && 'pf-dune-graph__ref-label--forced',
-          ),
-          title: ref.forced ? 'Forced edge' : undefined,
-        },
-        nodeLink(controller, ref.node, ref.label),
+        'span.pf-dune-graph__ref-label',
+        icon,
+        nodeLink(controller, ref.node, text),
       ),
     );
   }
@@ -252,7 +291,8 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       if (node.resolvedRuleId !== undefined) {
         const rule = rules.get(node.resolvedRuleId);
         refs.push({
-          label: `rule ${node.resolvedRuleId}`,
+          kind: 'rule',
+          label: node.resolvedRuleId,
           node: rule,
           forced: rule !== undefined && isForcedEdge(node, rule),
         });
@@ -274,6 +314,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     for (const parent of controller.parentsOf(node)) {
       seen.add(nodeKey(parent.kind, parent.id));
       refs.push({
+        kind: parent.kind,
         label: nodeLabel(parent),
         node: parent,
         forced: isForcedEdge(parent, node),
@@ -285,6 +326,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         seen.add(nodeKey('dep', id));
         const dep = controller.graph.deps.get(id);
         refs.push({
+          kind: 'dep',
           label: id,
           node: dep,
           forced: dep !== undefined && isForcedEdge(dep, node),
@@ -304,6 +346,7 @@ function depRef(
   chip?: string,
 ): Ref {
   return {
+    kind: 'dep',
     label: id,
     node: dep,
     chip,

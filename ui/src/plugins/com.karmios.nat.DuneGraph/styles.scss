@@ -63,18 +63,53 @@
 
   &__info-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 3px;
     padding: 4px 0;
+  }
+
+  // Chip + icon + title: sized to its content, so `__info-actions` wraps onto
+  // its own line before this shrinks (and only then does the title
+  // ellipsize, if it still doesn't fit on its own line).
+  &__info-main {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    overflow: hidden;
   }
 
   &__info-title {
     flex: 1;
     min-width: 0;
+    font-weight: 500;
+    // `title` (the hover tooltip) lives on this element; the rtl trick that
+    // ellipsizes from the left lives on `__info-title-text` below instead,
+    // so the native tooltip keeps its normal (ltr) layout.
+    display: block;
+    overflow: hidden;
+  }
+
+  // Ellipsize from the left: the tail of a path (e.g. the filename) is more
+  // useful to keep visible than its `_build/<dir>/` prefix.
+  &__info-title-text {
+    display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 500;
+    direction: rtl;
+    text-align: left;
+  }
+
+  // Node id + "Add to graph" menu: wraps onto its own line once
+  // `__info-main` has shrunk to its floor and the two still don't fit.
+  &__info-actions {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: auto;
+    flex-shrink: 0;
   }
 
   // The dense SQL node_id (e.g. "#42") in the header: unintrusive, a
@@ -114,8 +149,8 @@
 
   &__ref {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    align-items: center;
+    gap: 3px;
     padding: 3px 0;
 
     &:not(:last-child) {
@@ -137,15 +172,27 @@
     border: 1px solid var(--pf-color-border);
   }
 
-  // The referenced id / label. Wraps (dep ids can be long paths); a forced edge
-  // is shown in bold.
+  // The referenced id / label. Wraps (dep ids can be long paths).
   &__ref-label {
     min-width: 0;
     overflow-wrap: anywhere;
+  }
 
-    &--forced {
-      font-weight: 700;
-    }
+  // Leading icon on a dep path (build / code), encoding where the path lives.
+  &__path-icon {
+    flex-shrink: 0;
+    margin-right: 2px;
+    font-size: 14px;
+    vertical-align: middle;
+    color: var(--pf-color-text-muted);
+  }
+
+  // Leading icon marking a forced dependency/dependant row (replaces the old
+  // bold); coloured red to match the graph's forced edges.
+  &__forced-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+    color: var(--pf-color-danger);
   }
 
   // The graph view (area 2): a toolbar over a pannable/zoomable SVG canvas.
@@ -391,7 +438,7 @@
   &__node {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 2px;
     min-width: 0;
   }
 }

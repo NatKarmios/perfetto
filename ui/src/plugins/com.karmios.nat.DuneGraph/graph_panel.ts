@@ -19,6 +19,7 @@ import {EmptyState} from '../../widgets/empty_state';
 import type {DuneGraphController} from './controller';
 import type {GraphNode} from './graph';
 import {inducedEdges, nodeKey, nodeLabel} from './graph';
+import {decorateDepPath} from './node_display';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
 
@@ -289,10 +290,18 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     if (ln === undefined) return undefined;
     const pos = this.dotScreenPos(ln);
     if (pos === undefined) return undefined;
+    const {node} = ln;
+    // A dep's path gets the leading build/code icon (prefix folded into its
+    // tooltip); a rule shows its bare id.
+    const {icon, text} =
+      node.kind === 'dep'
+        ? decorateDepPath(node.id)
+        : {icon: undefined, text: nodeLabel(node)};
     return m(
       '.pf-dune-graph__hover-label',
       {style: `left: ${pos.x}px; top: ${pos.y}px`},
-      nodeLabel(ln.node),
+      icon,
+      text,
     );
   }
 

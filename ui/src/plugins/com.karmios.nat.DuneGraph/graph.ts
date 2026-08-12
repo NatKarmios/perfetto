@@ -78,9 +78,11 @@ export interface RuleNode {
 
 export type GraphNode = DepNode | RuleNode;
 
-// Human-readable label for a node, used in lists and the SQL `label` column.
+// Human-readable label for a node, used in lists and the SQL `label` column. The
+// node's kind is conveyed by a chip alongside the label, so a rule shows its bare
+// id (not `rule <id>`).
 export function nodeLabel(node: GraphNode): string {
-  return node.kind === 'rule' ? `rule ${node.id}` : node.id;
+  return node.id;
 }
 
 // Pluralise a count, e.g. `1 dep` / `2 deps`.
