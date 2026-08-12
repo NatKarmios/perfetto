@@ -64,7 +64,10 @@ export class SliceArgsGraphSource implements GraphSource {
     const it = result.iter({sliceId: NUM, name: STR, argsJson: STR_NULL});
     for (; it.valid(); it.next()) {
       if (it.argsJson === null) continue;
-      const args = parseArgsJson(it.argsJson);
+      // Event args are nested under a top-level `debug` dict, so the graph
+      // keys live at `debug.dune.*`. Descend into `debug` once here and the
+      // rest of the extraction navigates from there as before.
+      const args = getPath(parseArgsJson(it.argsJson), 'debug');
 
       if (it.name === DEP_SLICE) {
         const id = asId(getPath(args, 'dune', 'dep'));
