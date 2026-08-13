@@ -110,7 +110,10 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         m(
           'span.pf-dune-graph__info-title',
           {title: node.id},
-          m('span.pf-dune-graph__info-title-text', text),
+          m(
+            'span.pf-dune-graph__info-title-text',
+            m('span.pf-dune-graph__info-title-bidi', text),
+          ),
         ),
       ),
       m(

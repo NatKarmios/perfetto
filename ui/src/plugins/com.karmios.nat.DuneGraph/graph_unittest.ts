@@ -34,7 +34,9 @@ function graphOf(nodes: readonly GraphNode[]): BuildGraph {
 }
 
 // Simplified edge shape for assertions: (source id, dest id, forced).
-function simplify(edges: readonly {source: GraphNode; dest: GraphNode; forced: boolean}[]) {
+function simplify(
+  edges: readonly {source: GraphNode; dest: GraphNode; forced: boolean}[],
+) {
   return edges
     .map((e) => [e.source.id, e.dest.id, e.forced] as const)
     .sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
@@ -76,9 +78,9 @@ describe('inducedEdges', () => {
     const graph = graphOf([a, r1, mid, r2, c]);
     const isHidden = (n: GraphNode) => n.kind === 'rule' || n.id === 'mid';
 
-    expect(simplify(inducedEdges(graph, [a, r1, mid, r2, c], isHidden))).toEqual([
-      ['a', 'c', false],
-    ]);
+    expect(
+      simplify(inducedEdges(graph, [a, r1, mid, r2, c], isHidden)),
+    ).toEqual([['a', 'c', false]]);
   });
 
   it('emits exactly one edge for a diamond of hidden paths', () => {

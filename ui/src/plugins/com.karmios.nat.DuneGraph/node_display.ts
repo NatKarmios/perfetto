@@ -15,16 +15,19 @@
 import m from 'mithril';
 import {Icon} from '../../widgets/icon';
 
-// Matches a leading `_build/<dir>/` prefix, capturing `_build/<dir>` so it can be
-// folded away into the icon tooltip.
-const BUILD_PREFIX = /^(_build\/[^/]+)\//;
+// Matches a leading `_build/<dir>` prefix, capturing `_build/<dir>` so it can be
+// folded away into the icon tooltip. The trailing `/` is optional: a path can
+// end at the context dir (rare) or continue straight into an `@alias` rather
+// than a `/`.
+const BUILD_PREFIX = /^(_build\/[^/@]+)\/?/;
 
 /**
  * How a dep path is shown: a leading icon that encodes where the path lives, plus
  * the (possibly trimmed) display text.
  *
- * - A `_build/<dir>/…` path drops the `_build/<dir>/` prefix and gets a `build`
- *   icon whose tooltip is the stripped prefix.
+ * - A `_build/<dir>` path (optionally followed by `/…` or `@alias`) drops the
+ *   `_build/<dir>/` prefix and gets a `build` icon whose tooltip is the
+ *   stripped prefix.
  * - An absolute path (`/…`) is shown verbatim with no icon.
  * - Anything else is shown verbatim with a `code` icon tooltipped "Source".
  *

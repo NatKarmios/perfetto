@@ -92,7 +92,11 @@
   }
 
   // Ellipsize from the left: the tail of a path (e.g. the filename) is more
-  // useful to keep visible than its `_build/<dir>/` prefix.
+  // useful to keep visible than its `_build/<dir>/` prefix. This `rtl` block
+  // only controls which edge ellipsizes; the actual text sits in an `ltr`
+  // isolate below (`__info-title-bidi`) so that bidi-neutral characters at
+  // the edges of a path (a leading `_`, a trailing `@`) resolve against `ltr`
+  // instead of being reordered to the other end of the line by this `rtl`.
   &__info-title-text {
     display: block;
     overflow: hidden;
@@ -100,6 +104,11 @@
     white-space: nowrap;
     direction: rtl;
     text-align: left;
+  }
+
+  &__info-title-bidi {
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
   // Node id + "Add to graph" menu: wraps onto its own line once
