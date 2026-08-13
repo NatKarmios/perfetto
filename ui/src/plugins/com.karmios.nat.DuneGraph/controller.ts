@@ -13,17 +13,29 @@
 // limitations under the License.
 
 import type {Trace} from '../../public/trace';
+import type {Workspace} from '../../public/workspace';
+import {TrackNode} from '../../public/workspace';
 import type {BuildGraph, GraphNode, GraphSource, ReverseIndex} from './graph';
 import {
   ancestors,
   buildReverseIndex,
+  descendants,
   directParents,
   EMPTY_GRAPH,
+  forcers,
   nodeKey,
+  outEdges,
 } from './graph';
+import {
+  createGraphTrackRenderer,
+  GRAPH_TRACK_NAME,
+  GRAPH_TRACK_URI,
+} from './graph_track';
 import {SliceArgsGraphSource} from './slice_args_graph_source';
 import type {Distances, SqlGraph} from './sql_graph';
 import {buildSqlGraph} from './sql_graph';
+
+const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 
 /**
  * Holds the extracted build graph plus the active source, and knows how to
@@ -45,8 +57,80 @@ export class DuneGraphController {
   // Reverse adjacency (dependents), built lazily and dropped on reload.
   private reverseIndex?: ReverseIndex;
 
+  // Whether rule nodes are hidden from both the graph pane and the timeline
+  // track (see visibleNodes()). Lives here (not in GraphPanel) so it survives
+  // panel remounts and the timeline track can see it too.
+  private hideRulesFlag = false;
+
+  // Bumped by every mutation that can change `visibleNodes`: the single
+  // invalidation key shared by the graph pane's layout cache and the
+  // timeline track's dataset (see graph_track.ts).
+  private version = 0;
+
+  // The dedicated workspace + track projecting the graph selection onto the
+  // timeline, installed once via installTimeline().
+  private timelineWorkspace?: Workspace;
+
   constructor(private readonly trace: Trace) {
     this.source = this.makeSource();
+  }
+
+  // Whether rule nodes are currently hidden.
+  get hideRules(): boolean {
+    return this.hideRulesFlag;
+  }
+
+  toggleHideRules(): void {
+    this.hideRulesFlag = !this.hideRulesFlag;
+    this.version++;
+  }
+
+  // Monotonic version of the visible node set - bump on every mutation that
+  // can change it.
+  get graphVersion(): number {
+    return this.version;
+  }
+
+  // The nodes the graph pane and timeline track should actually show: the
+  // selection, minus rules while hideRules is on. Rules are contracted, not
+  // removed from the underlying selection - see graph.ts's inducedEdges().
+  get visibleNodes(): readonly GraphNode[] {
+    const nodes = this.selectedNodes;
+    return this.hideRulesFlag ? nodes.filter((n) => n.kind !== 'rule') : nodes;
+  }
+
+  // Registers the "Dune graph" timeline track and creates the dedicated
+  // workspace it lives in. Called once from index.ts's onTraceLoad(); the
+  // workspace + track stay live for the lifetime of the trace, so showing the
+  // timeline is just a switchWorkspace() away (see showTimeline()).
+  installTimeline(): void {
+    this.trace.tracks.registerTrack({
+      uri: GRAPH_TRACK_URI,
+      renderer: createGraphTrackRenderer(this.trace, this),
+    });
+    const ws = this.trace.workspaces.createEmptyWorkspace(
+      TIMELINE_WORKSPACE_NAME,
+    );
+    ws.addChildLast(
+      new TrackNode({uri: GRAPH_TRACK_URI, name: GRAPH_TRACK_NAME}),
+    );
+    this.timelineWorkspace = ws;
+  }
+
+  // Switch the timeline to the dedicated "Dune graph" workspace. Getting back
+  // to the default workspace is the core workspace switcher's job - this is a
+  // one-way action, not a toggle.
+  showTimeline(): void {
+    if (this.timelineWorkspace === undefined) return;
+    this.trace.workspaces.switchWorkspace(this.timelineWorkspace);
+  }
+
+  // Whether the timeline is currently showing the "Dune graph" workspace. Not
+  // used for button state (showTimeline() is a plain action) - only so
+  // goToNode() knows whether to select on the derived track or resolve the
+  // node's original track.
+  private get showingTimeline(): boolean {
+    return this.trace.currentWorkspace === this.timelineWorkspace;
   }
 
   get sourceDescription(): string {
@@ -72,6 +156,7 @@ export class DuneGraphController {
     for (const node of nodes) {
       this.selection.set(nodeKey(node.kind, node.id), node);
     }
+    this.version++;
   }
 
   // Remove nodes from the graph selection.
@@ -79,11 +164,13 @@ export class DuneGraphController {
     for (const node of nodes) {
       this.selection.delete(nodeKey(node.kind, node.id));
     }
+    this.version++;
   }
 
   // Remove every node from the graph selection.
   clearGraph(): void {
     this.selection.clear();
+    this.version++;
   }
 
   // Whether a node is currently in the graph selection.
@@ -104,22 +191,39 @@ export class DuneGraphController {
     return this.sqlGraph?.nodeId(node);
   }
 
-  // Parents/ancestors are walked in-memory over the reverse index. The same
-  // dependents could be computed in SQL via `dune_all_ancestors` (or
-  // `dune_parents` for one hop) over the `dune_edge` table (the mirror
-  // `distances()` already uses `graph_reachable_bfs!` similarly).
+  // Parents/ancestors are walked in-memory over the reverse index; children/
+  // descendants forward over the graph directly (no index needed); forcers
+  // walk the single-parent `forcedBy` chain. The same relations could be
+  // computed in SQL via `dune_parents`/`dune_all_ancestors`/`dune_children`/
+  // `dune_all_descendants`/`dune_forcers` over the `dune_edge` table (the
+  // mirror `distances()` already uses `graph_reachable_bfs!` similarly).
   // TODO(nat): once testing on larger traces, compare the two - if the reverse
-  // BFS gets slow in-memory, switch ancestorsOf() to the SQL path (needs a
-  // node_id -> GraphNode reverse map and makes the callers async).
+  // BFS gets slow in-memory, switch to the SQL path (needs a node_id ->
+  // GraphNode reverse map and makes the callers async).
   //
   // Nodes that directly depend on `node` (its immediate parents).
   parentsOf(node: GraphNode): readonly GraphNode[] {
     return directParents(this.reverse(), node);
   }
 
+  // Nodes `node` directly depends on (its immediate children).
+  childrenOf(node: GraphNode): readonly GraphNode[] {
+    return [...outEdges(this.graph, node)];
+  }
+
   // All nodes that transitively depend on `node` (its ancestors).
   ancestorsOf(node: GraphNode): readonly GraphNode[] {
     return ancestors(this.reverse(), node);
+  }
+
+  // All nodes `node` transitively depends on (its descendants).
+  descendantsOf(node: GraphNode): readonly GraphNode[] {
+    return descendants(this.graph, node);
+  }
+
+  // The chain of nodes that transitively forced `node` into the build.
+  forcersOf(node: GraphNode): readonly GraphNode[] {
+    return forcers(this.graph, node);
   }
 
   // Select the slice `node` was extracted from and scroll it into view - the
@@ -131,6 +235,22 @@ export class DuneGraphController {
   // the track sits in a collapsed group (the horizontal/time scroll still works
   // as it doesn't depend on the track being in the DOM).
   async goToNode(node: GraphNode): Promise<void> {
+    // While the timeline is showing the "Dune graph" workspace, the node's
+    // original track isn't present there - resolveSqlEvents would resolve it
+    // anyway (it isn't scoped to the current workspace) and both reveal() and
+    // the scroll would silently no-op. Select directly on the derived track
+    // instead, as long as the node is actually rendered on it. Compared by key
+    // (not reference) to match how the rest of the plugin dedups nodes.
+    const isVisible = this.visibleNodes.some(
+      (n) => nodeKey(n.kind, n.id) === nodeKey(node.kind, node.id),
+    );
+    if (this.showingTimeline && isVisible) {
+      this.trace.currentWorkspace.getTrackByUri(GRAPH_TRACK_URI)?.reveal();
+      this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, node.sliceId, {
+        scrollToSelection: true,
+      });
+      return;
+    }
     const match = (
       await this.trace.selection.resolveSqlEvents('slice', [node.sliceId])
     )[0];
@@ -173,6 +293,7 @@ export class DuneGraphController {
     // neither outlives the nodes it refers to.
     this.selection.clear();
     this.reverseIndex = undefined;
+    this.version++;
     // Drop the previous SQL tables before rebuilding so reload is idempotent.
     await this.sqlGraph?.[Symbol.asyncDispose]();
     this.sqlGraph = undefined;

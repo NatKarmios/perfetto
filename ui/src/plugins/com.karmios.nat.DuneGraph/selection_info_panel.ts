@@ -159,9 +159,13 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     );
   }
 
-  // Dropdown to add the node - or its dependents (parents / ancestors) - to the
-  // graph selection. "Parents" are the nodes that directly depend on this one;
-  // "ancestors" are all nodes that transitively depend on it.
+  // Dropdown to add the node - or one of its relations - to the graph
+  // selection. "Parents"/"ancestors" are nodes that directly/transitively
+  // depend on this one; "children"/"descendants" are nodes it directly/
+  // transitively depends on; "forcers" is the chain of nodes that transitively
+  // forced this one into the build. Every option adds the current node itself
+  // alongside the relation, so the added nodes stay connected to something
+  // already visible.
   private renderAddMenu(
     controller: DuneGraphController,
     node: GraphNode,
@@ -175,22 +179,48 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           rightIcon: Icons.ContextMenu,
         }),
       },
-      m(MenuItem, {
-        label: 'This node',
-        icon: 'add',
-        onclick: () => controller.addToGraph([node]),
-      }),
-      m(MenuItem, {
-        label: 'Parents',
-        icon: 'arrow_upward',
-        onclick: () => controller.addToGraph(controller.parentsOf(node)),
-      }),
-      m(MenuItem, {
-        label: 'Ancestors',
-        icon: 'keyboard_double_arrow_up',
-        onclick: () => controller.addToGraph(controller.ancestorsOf(node)),
-      }),
+      this.addMenuItem(controller, node, 'This node', 'add', () => []),
+      this.addMenuItem(controller, node, 'Parents', 'arrow_upward', () =>
+        controller.parentsOf(node),
+      ),
+      this.addMenuItem(controller, node, 'Children', 'arrow_downward', () =>
+        controller.childrenOf(node),
+      ),
+      this.addMenuItem(
+        controller,
+        node,
+        'Ancestors',
+        'keyboard_double_arrow_up',
+        () => controller.ancestorsOf(node),
+      ),
+      this.addMenuItem(
+        controller,
+        node,
+        'Descendants',
+        'keyboard_double_arrow_down',
+        () => controller.descendantsOf(node),
+      ),
+      this.addMenuItem(controller, node, 'Forcers', 'priority_high', () =>
+        controller.forcersOf(node),
+      ),
     );
+  }
+
+  // One "Add to graph" menu item: adds `node` plus whatever `related` returns.
+  // `related` is only called on click, since some relations (e.g. descendants
+  // of a hot node) can be expensive to walk.
+  private addMenuItem(
+    controller: DuneGraphController,
+    node: GraphNode,
+    label: string,
+    icon: string,
+    related: () => readonly GraphNode[],
+  ): m.Children {
+    return m(MenuItem, {
+      label,
+      icon,
+      onclick: () => controller.addToGraph([node, ...related()]),
+    });
   }
 
   // A rule's context directory (`dune.dir`), as a muted line under the header.

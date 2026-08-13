@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type {BuildGraph, DepNode, GraphNode, RuleNode} from './graph';
-import {inducedEdges, ruleTargetIds} from './graph';
+import {descendants, forcers, inducedEdges, ruleTargetIds} from './graph';
 
 function dep(id: string, opts: Partial<DepNode> = {}): DepNode {
   return {kind: 'dep', id, sliceId: 0, ...opts};
@@ -143,6 +143,94 @@ describe('inducedEdges', () => {
   });
 });
 
+// Sorted ids, for order-independent assertions on descendants()/forcers()
+// results.
+function ids(nodes: readonly GraphNode[]): string[] {
+  return nodes.map((n) => n.id).sort();
+}
+
+describe('descendants', () => {
+  it('walks transitively through dep -> rule -> dep, excluding the start node', () => {
+    const a = dep('a', {resolvedRuleId: 'r1'});
+    const r1 = rule('r1', {staticDepIds: ['b']});
+    const b = dep('b');
+    const graph = graphOf([a, r1, b]);
+
+    expect(ids(descendants(graph, a))).toEqual(['b', 'r1']);
+  });
+
+  it('de-dups a diamond reachable via two paths', () => {
+    const a = dep('a', {expandedDepIds: ['d1', 'd2']});
+    const d1 = dep('d1', {resolvedRuleId: 'r1'});
+    const r1 = rule('r1', {staticDepIds: ['b']});
+    const d2 = dep('d2', {resolvedRuleId: 'r2'});
+    const r2 = rule('r2', {staticDepIds: ['b']});
+    const b = dep('b');
+    const graph = graphOf([a, d1, r1, d2, r2, b]);
+
+    expect(ids(descendants(graph, a))).toEqual(['b', 'd1', 'd2', 'r1', 'r2']);
+  });
+
+  it('skips dangling ids', () => {
+    const a = dep('a', {
+      resolvedRuleId: 'missing',
+      expandedDepIds: ['also-missing'],
+    });
+    const graph = graphOf([a]);
+
+    expect(descendants(graph, a)).toEqual([]);
+  });
+
+  it('terminates on a cycle', () => {
+    const a = dep('a', {expandedDepIds: ['b']});
+    const b = dep('b', {expandedDepIds: ['a']});
+    const graph = graphOf([a, b]);
+
+    expect(ids(descendants(graph, a))).toEqual(['b']);
+  });
+});
+
+describe('forcers', () => {
+  it('walks a multi-hop RULE/DEP forcedBy chain', () => {
+    const req = dep('req'); // stands in for the ultimate forcer node
+    const r1 = rule('r1', {forcedBy: {kind: 'REQUEST'}});
+    const d1 = dep('d1', {forcedBy: {kind: 'RULE', rule: 'r1'}});
+    const r2 = rule('r2', {forcedBy: {kind: 'DEP', dep: 'd1'}});
+    const graph = graphOf([req, r1, d1, r2]);
+
+    expect(ids(forcers(graph, r2))).toEqual(['d1', 'r1']);
+  });
+
+  it('stops at a non-node forcedBy kind', () => {
+    const r1 = rule('r1', {forcedBy: {kind: 'REQUEST'}});
+    const graph = graphOf([r1]);
+
+    expect(forcers(graph, r1)).toEqual([]);
+  });
+
+  it('is empty when forcedBy is absent', () => {
+    const r1 = rule('r1');
+    const graph = graphOf([r1]);
+
+    expect(forcers(graph, r1)).toEqual([]);
+  });
+
+  it('is empty when the named forcer is dangling', () => {
+    const r1 = rule('r1', {forcedBy: {kind: 'DEP', dep: 'missing'}});
+    const graph = graphOf([r1]);
+
+    expect(forcers(graph, r1)).toEqual([]);
+  });
+
+  it('terminates on a cyclic forcedBy', () => {
+    const r1 = rule('r1', {forcedBy: {kind: 'DEP', dep: 'd1'}});
+    const d1 = dep('d1', {forcedBy: {kind: 'RULE', rule: 'r1'}});
+    const graph = graphOf([r1, d1]);
+
+    expect(ids(forcers(graph, r1))).toEqual(['d1']);
+  });
+});
+
 describe('ruleTargetIds', () => {
   it('joins target files then target dirs onto dir', () => {
     const r = rule('r1', {
@@ -151,7 +239,11 @@ describe('ruleTargetIds', () => {
       targetDirs: ['sub'],
     });
 
-    expect(ruleTargetIds(r)).toEqual(['src/foo/a.ml', 'src/foo/a.mli', 'src/foo/sub']);
+    expect(ruleTargetIds(r)).toEqual([
+      'src/foo/a.ml',
+      'src/foo/a.mli',
+      'src/foo/sub',
+    ]);
   });
 
   it('returns relative names verbatim when dir is absent', () => {

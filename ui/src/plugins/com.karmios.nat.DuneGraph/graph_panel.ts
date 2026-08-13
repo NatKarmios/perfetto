@@ -55,17 +55,12 @@ const ARROW_GAP = 2;
  * changes; pan/zoom just move the viewBox.
  */
 export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
-  // Signature of the currently-laid-out node set, so we only relayout/ refit
-  // when the selection actually changes (not on every pan/zoom redraw).
-  private sig = '';
+  // controller.graphVersion as of the last layout, so we only relayout/refit
+  // when the selection actually changes (not on every pan/zoom redraw). -1
+  // never matches a real version, so the first render always lays out.
+  private sig = -1;
   private layout: GraphLayout = {nodes: [], edges: [], width: 0, height: 0};
   private viewBox: ViewBox = {x: 0, y: 0, w: 1, h: 1};
-
-  // Whether rule nodes are hidden. Their edges are contracted (see
-  // inducedEdges' isHidden param), not deleted: a dep resolving to a hidden
-  // rule that in turn depends on another dep is drawn as a direct edge
-  // between the two deps.
-  private hideRules = false;
 
   // Pointer/pan state. Capture is deferred until a real drag: capturing on
   // pointerdown swallows the click event, so a plain click never reaches a dot.
@@ -97,10 +92,9 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     // Rules are hidden but not removed from the selection: their edges are
     // contracted through (see inducedEdges' isHidden param) rather than
     // dropped, so a dep resolving to a hidden rule that depends on another dep
-    // is drawn as a direct edge between the two deps.
-    const visible = this.hideRules
-      ? nodes.filter((n) => n.kind !== 'rule')
-      : nodes;
+    // is drawn as a direct edge between the two deps. visibleNodes (on the
+    // controller, so the timeline track sees the same set) does the filtering.
+    const visible = controller.visibleNodes;
     this.ensureLayout(controller, nodes, visible);
 
     return m(
@@ -135,8 +129,13 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       m(Button, {
         label: 'Hide rules',
         icon: 'visibility_off',
-        active: this.hideRules,
-        onclick: () => (this.hideRules = !this.hideRules),
+        active: controller.hideRules,
+        onclick: () => controller.toggleHideRules(),
+      }),
+      m(Button, {
+        label: 'Timeline',
+        icon: 'timeline',
+        onclick: () => controller.showTimeline(),
       }),
       m(Button, {
         label: 'Clear',
@@ -209,20 +208,19 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 
   // Relayout + refit only when the visible node set (or the hide-rules
-  // toggle) changes.
+  // toggle) changes. controller.graphVersion is bumped by every mutation that
+  // can change either, so it's a cheaper and more complete invalidation key
+  // than re-joining the node set every render.
   private ensureLayout(
     controller: DuneGraphController,
     nodes: readonly GraphNode[],
     visible: readonly GraphNode[],
   ): void {
-    const sig = `${this.hideRules}|${visible
-      .map((n) => nodeKey(n.kind, n.id))
-      .join('|')}`;
-    if (sig === this.sig) return;
-    this.sig = sig;
+    if (controller.graphVersion === this.sig) return;
+    this.sig = controller.graphVersion;
     // inducedEdges walks the full selection so it can traverse through hidden
     // rules; layoutGraph only ever sees the visible nodes.
-    const isHiddenRule = this.hideRules
+    const isHiddenRule = controller.hideRules
       ? (n: GraphNode) => n.kind === 'rule'
       : undefined;
     this.layout = layoutGraph(

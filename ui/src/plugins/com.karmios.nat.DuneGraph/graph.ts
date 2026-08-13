@@ -361,3 +361,67 @@ export function ancestors(
   }
   return result;
 }
+
+// All nodes `node` transitively depends on (its descendants), excluding `node`
+// itself. Mirror of {@link ancestors}, but forward over {@link outEdges} - no
+// index needed, since forward edges are already directly resolvable off the
+// graph.
+export function descendants(
+  graph: BuildGraph,
+  node: GraphNode,
+): readonly GraphNode[] {
+  const seen = new Set<string>([nodeKey(node.kind, node.id)]);
+  const result: GraphNode[] = [];
+  const stack: GraphNode[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) break;
+    for (const child of outEdges(graph, current)) {
+      const key = nodeKey(child.kind, child.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(child);
+      stack.push(child);
+    }
+  }
+  return result;
+}
+
+// The chain of nodes that transitively forced `node` into the build, walking
+// `forcedBy` up to its root (excluding `node` itself). Since each node records
+// a single forcer, this is a single-parent walk, not a search: it resolves a
+// `RULE` forcer via `graph.rules` and a `DEP` forcer via `graph.deps`, and
+// stops as soon as `forcedBy` is absent, names a non-node kind (the dune-file
+// / request / configurator forcers - see {@link ForcedBy}), or names a
+// dangling id. A visited set guards against a cyclic `forcedBy` even though
+// that shouldn't happen in practice.
+//
+// This walks the same spanning forest as {@link isForcedEdge}, so its result
+// is a subset of `ancestors(node)` wherever the forcer also lists `node` as a
+// dependency; a `forcedBy` that doesn't (a trace inconsistency) still yields
+// the node here, faithfully reflecting what the trace recorded.
+export function forcers(
+  graph: BuildGraph,
+  node: GraphNode,
+): readonly GraphNode[] {
+  const seen = new Set<string>([nodeKey(node.kind, node.id)]);
+  const result: GraphNode[] = [];
+  let current: GraphNode | undefined = node;
+  while (current !== undefined) {
+    const fb: ForcedBy | undefined = current.forcedBy;
+    if (fb === undefined) break;
+    const forcer: GraphNode | undefined =
+      fb.kind === 'RULE'
+        ? graph.rules.get(fb.rule)
+        : fb.kind === 'DEP'
+          ? graph.deps.get(fb.dep)
+          : undefined;
+    if (forcer === undefined) break;
+    const key = nodeKey(forcer.kind, forcer.id);
+    if (seen.has(key)) break;
+    seen.add(key);
+    result.push(forcer);
+    current = forcer;
+  }
+  return result;
+}

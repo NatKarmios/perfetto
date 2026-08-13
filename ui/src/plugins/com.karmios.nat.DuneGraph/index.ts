@@ -33,11 +33,14 @@ export default class implements PerfettoPlugin {
 
   async onTraceLoad(trace: Trace): Promise<void> {
     const controller = new DuneGraphController(trace);
+    // Registers the "Dune graph" timeline track + workspace once, so the
+    // graph pane's "Timeline" button is just a switchWorkspace() away.
+    controller.installTimeline();
 
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,
-      title: 'Dune graph',
-      icon: 'account_tree',
+      title: 'Dune',
+      icon: 'landscape',
       render: () => m(DuneGraphPanel, {controller}),
     });
     // Reveal the graph side panel on load rather than making the user open it.
