@@ -70,6 +70,12 @@ export class DuneGraphController {
   // The dedicated workspace + track projecting the graph selection onto the
   // timeline, installed once via installTimeline().
   private timelineWorkspace?: Workspace;
+  // The workspace as of the last onFrame() poll, so a change can be detected
+  // (see installTimeline()/onFrame()). There is no workspace-change event in
+  // Perfetto - not even switchWorkspace() itself is the only way the current
+  // workspace can change (removeWorkspace() also reverts to the default
+  // workspace) - so this has to be polled.
+  private lastWorkspace?: Workspace;
 
   constructor(private readonly trace: Trace) {
     this.source = this.makeSource();
@@ -115,6 +121,51 @@ export class DuneGraphController {
       new TrackNode({uri: GRAPH_TRACK_URI, name: GRAPH_TRACK_NAME}),
     );
     this.timelineWorkspace = ws;
+
+    // Poll for workspace switches (there's no event for it - see
+    // lastWorkspace's comment) so the selection can follow across them. Any
+    // switchWorkspace()/removeWorkspace() call site is inside a mithril click
+    // handler or command callback, which already triggers a redraw next
+    // frame, so this fires within one frame of every real transition -
+    // same mechanism core panels use for their own per-frame hooks (e.g.
+    // dev.perfetto.Timeline's minimap).
+    this.lastWorkspace = this.trace.currentWorkspace;
+    this.trace.trash.use(
+      this.trace.raf.addCanvasRedrawCallback(() => this.onFrame()),
+    );
+  }
+
+  private onFrame(): void {
+    const current = this.trace.currentWorkspace;
+    if (current === this.lastWorkspace) return;
+    const previous = this.lastWorkspace;
+    this.lastWorkspace = current;
+    if (previous !== undefined) this.onWorkspaceChanged(previous);
+  }
+
+  // Keeps a "build-dep"/"exec-rule" selection visible across a workspace
+  // switch, mirroring goToNode()'s two branches: entering the Dune workspace
+  // re-points the selection at the derived track (only if the node is
+  // actually rendered there - see visibleNodes()); leaving it resolves back
+  // to the node's real originating track. A selection that isn't currently on
+  // the relevant track is left untouched - it needs no fixing.
+  private onWorkspaceChanged(previous: Workspace): void {
+    const selection = this.trace.selection.selection;
+    if (selection.kind !== 'track_event') return;
+
+    if (this.showingTimeline) {
+      const node = this.nodeForSliceId(selection.eventId);
+      const isVisible =
+        node !== undefined &&
+        this.visibleNodes.some(
+          (n) => nodeKey(n.kind, n.id) === nodeKey(node.kind, node.id),
+        );
+      if (isVisible) this.selectOnGraphTrack(node.sliceId);
+    } else if (previous === this.timelineWorkspace) {
+      if (selection.trackUri === GRAPH_TRACK_URI) {
+        void this.selectOnOriginalTrack(selection.eventId);
+      }
+    }
   }
 
   // Switch the timeline to the dedicated "Dune graph" workspace. Getting back
@@ -245,14 +296,28 @@ export class DuneGraphController {
       (n) => nodeKey(n.kind, n.id) === nodeKey(node.kind, node.id),
     );
     if (this.showingTimeline && isVisible) {
-      this.trace.currentWorkspace.getTrackByUri(GRAPH_TRACK_URI)?.reveal();
-      this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, node.sliceId, {
-        scrollToSelection: true,
-      });
+      this.selectOnGraphTrack(node.sliceId);
       return;
     }
+    await this.selectOnOriginalTrack(node.sliceId);
+  }
+
+  // Select `sliceId` on the derived "Dune graph" track - the half of
+  // goToNode()/onWorkspaceChanged() used while that workspace is current.
+  // Callers must ensure the id is actually rendered there (see visibleNodes()).
+  private selectOnGraphTrack(sliceId: number): void {
+    this.trace.currentWorkspace.getTrackByUri(GRAPH_TRACK_URI)?.reveal();
+    this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, sliceId, {
+      scrollToSelection: true,
+    });
+  }
+
+  // Resolve `sliceId` back to whatever real track it originated from and
+  // select it there - the half of goToNode()/onWorkspaceChanged() used
+  // outside the "Dune graph" workspace.
+  private async selectOnOriginalTrack(sliceId: number): Promise<void> {
     const match = (
-      await this.trace.selection.resolveSqlEvents('slice', [node.sliceId])
+      await this.trace.selection.resolveSqlEvents('slice', [sliceId])
     )[0];
     if (match === undefined) return;
     this.trace.currentWorkspace.getTrackByUri(match.trackUri)?.reveal();

@@ -31,8 +31,8 @@ import type {
 } from './graph';
 
 // Slice names that encode the build graph.
-const DEP_SLICE = 'build-dep';
-const RULE_SLICE = 'exec-rule';
+export const DEP_SLICE = 'build-dep';
+export const RULE_SLICE = 'exec-rule';
 
 /**
  * A {@link GraphSource} that extracts the graph from slice args.
