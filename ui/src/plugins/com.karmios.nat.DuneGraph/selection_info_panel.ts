@@ -25,6 +25,13 @@ import type {DuneGraphController} from './controller';
 import type {ForcedBy, GraphNode} from './graph';
 import {isForcedEdge, nodeKey, nodeLabel, ruleTargetIds} from './graph';
 import {decorateDepPath} from './node_display';
+import type {
+  PathTreeGroup,
+  PathTreeItem,
+  PathTreeLeaf,
+  PathTreeRow,
+} from './path_tree';
+import {buildPathTree, splitEntry, splitPath} from './path_tree';
 
 interface SelectionInfoPanelAttrs {
   readonly controller: DuneGraphController;
@@ -53,14 +60,29 @@ interface Ref {
  * leading icon.
  */
 export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAttrs> {
+  // Collapse state for the dependants/dependencies path-tree groups, keyed by
+  // `${title}:${group.path}` so the same directory in each list folds
+  // independently. Reset whenever the selection changes (the panel is
+  // re-rendered on a selection poll rather than remounted, so this can't just
+  // live in the constructor).
+  private collapsed = new Set<string>();
+  private selectionKey?: string;
+
   view({attrs}: m.CVnode<SelectionInfoPanelAttrs>): m.Children {
     const {controller} = attrs;
     const node = controller.nodeForSelection();
     if (node === undefined) {
+      this.collapsed.clear();
+      this.selectionKey = undefined;
       return m(EmptyState, {
         icon: 'info',
         title: 'Select a build-dep or exec-rule slice',
       });
+    }
+    const selectionKey = nodeKey(node.kind, node.id);
+    if (selectionKey !== this.selectionKey) {
+      this.collapsed.clear();
+      this.selectionKey = selectionKey;
     }
     const dependants = this.dependants(controller, node);
     return m(
@@ -235,11 +257,15 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     }
   }
 
+  // Groups `refs` into a path tree (deps by their id, rules by their `dir`)
+  // and renders it inside the accordion section; nesting only appears where a
+  // directory actually holds two or more rows.
   private renderRefs(
     controller: DuneGraphController,
     title: string,
     refs: readonly Ref[],
   ): m.Children {
+    const tree = buildPathTree(refs.map(refPathItem));
     return m(
       AccordionSection,
       {summary: `${title} (${refs.length})`, defaultOpen: true},
@@ -247,18 +273,53 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         ? m('.pf-dune-graph__refs-empty', 'None')
         : m(
             '.pf-dune-graph__refs',
-            refs.map((ref) => this.renderRef(controller, ref)),
+            tree.map((row) => this.renderRow(controller, title, row)),
           ),
     );
   }
 
-  private renderRef(controller: DuneGraphController, ref: Ref): m.Children {
-    // A dep label is a path, decorated with a leading build/code icon; a rule
-    // label is its bare id.
-    const {icon, text} =
-      ref.kind === 'dep'
-        ? decorateDepPath(ref.label)
-        : {icon: undefined, text: ref.label};
+  private renderRow(
+    controller: DuneGraphController,
+    title: string,
+    row: PathTreeRow<Ref>,
+  ): m.Children {
+    if (row.kind === 'leaf') {
+      return this.renderRef(controller, row);
+    }
+    // Keyed per-list so the same directory in Dependants and Dependencies
+    // folds independently.
+    const key = `${title}:${row.path}`;
+    const collapsed = this.collapsed.has(key);
+    return m(
+      '.pf-dune-graph__refs-group',
+      m(
+        '.pf-dune-graph__refs-group-header',
+        {
+          onclick: () => {
+            if (collapsed) this.collapsed.delete(key);
+            else this.collapsed.add(key);
+          },
+        },
+        m(Icon, {
+          icon: collapsed ? 'chevron_right' : 'expand_more',
+          className: 'pf-dune-graph__refs-group-caret',
+        }),
+        `${row.label}/`,
+        m('span.pf-dune-graph__refs-group-count', `(${countLeaves(row)})`),
+      ),
+      !collapsed &&
+        m(
+          '.pf-dune-graph__refs-children',
+          row.rows.map((child) => this.renderRow(controller, title, child)),
+        ),
+    );
+  }
+
+  private renderRef(
+    controller: DuneGraphController,
+    row: PathTreeLeaf<Ref>,
+  ): m.Children {
+    const {item: ref, prefix, label} = row;
     return m(
       '.pf-dune-graph__ref',
       // Forced edges lead with an icon (in place of the old bold text).
@@ -286,8 +347,8 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         ),
       m(
         'span.pf-dune-graph__ref-label',
-        icon,
-        nodeLink(controller, ref.node, text),
+        prefix !== '' && m('span.pf-dune-graph__ref-prefix', prefix),
+        nodeLink(controller, ref.node, label),
       ),
     );
   }
@@ -409,4 +470,31 @@ function nodeLink(
 ): m.Children {
   if (node === undefined) return label;
   return m(Anchor, {onclick: () => void controller.goToNode(node)}, label);
+}
+
+// Where a ref files into the path tree: a dep ref's label is itself a path,
+// split into the dir it lives under and its own leaf segment; a rule ref
+// files under its node's `dir` field (top-level when dangling or unset),
+// with its bare id as the leaf (rule ids aren't paths themselves, so they
+// never contribute further nesting beyond their dir).
+function refPathItem(ref: Ref): PathTreeItem<Ref> {
+  if (ref.kind === 'dep') {
+    const {dir, leaf} = splitEntry(ref.label);
+    return {dir, leaf, item: ref};
+  }
+  const dir =
+    ref.node?.kind === 'rule' && ref.node.dir !== undefined
+      ? splitPath(ref.node.dir)
+      : [];
+  return {dir, leaf: {sep: '/', name: ref.label}, item: ref};
+}
+
+// The number of leaves (referenced nodes) nested under a path-tree group, for
+// the muted count shown on its header.
+function countLeaves(row: PathTreeGroup<Ref>): number {
+  let n = 0;
+  for (const child of row.rows) {
+    n += child.kind === 'leaf' ? 1 : countLeaves(child);
+  }
+  return n;
 }

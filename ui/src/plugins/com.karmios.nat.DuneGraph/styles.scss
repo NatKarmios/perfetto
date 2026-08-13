@@ -217,6 +217,55 @@
     color: var(--pf-color-danger);
   }
 
+  // Muted directory prefix merged onto a leaf row (e.g. "G/" collapsed from a
+  // chain of single-child dirs), distinguishing it from the entry's own name.
+  &__ref-prefix {
+    color: var(--pf-color-text-muted);
+  }
+
+  // A directory in the dependencies/dependants path tree: a clickable header
+  // (caret, name, contained-leaf count) plus, when expanded, its children.
+  &__refs-group {
+    display: flex;
+    flex-direction: column;
+
+    &:not(:last-child) {
+      border-bottom: 1px solid var(--pf-color-border);
+    }
+  }
+
+  &__refs-group-header {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 0;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+
+  &__refs-group-caret {
+    flex-shrink: 0;
+    font-size: 14px;
+  }
+
+  &__refs-group-count {
+    margin-left: auto;
+    padding-left: 8px;
+    flex-shrink: 0;
+  }
+
+  // Nested contents of a directory group, indented and rule-divided like
+  // `.pf-tree-children` so hierarchy stays visible without repeating text.
+  &__refs-children {
+    display: flex;
+    flex-direction: column;
+    margin-left: 6px;
+    padding-left: 6px;
+    border-left: 1px solid var(--pf-color-border);
+  }
+
   // The graph view (area 2): a toolbar over a pannable/zoomable SVG canvas.
   &__graph {
     flex: 1;
