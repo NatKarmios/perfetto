@@ -67,11 +67,13 @@ export interface RuleNode {
   // Dynamic deps from the exec-rule slice's `dune.dyn_deps` arg, a list of
   // lists.
   readonly dynamicDepIds?: readonly (readonly string[])[];
-  // The rule's output targets from the exec-rule slice's `dune.targets` arg.
-  // Target paths share the dep id namespace, so a target links to the build-dep
-  // node of the same id when one exists. These are outputs, not dependency
-  // edges, so they are deliberately absent from `edges()`.
-  readonly targetIds?: readonly string[];
+  // The rule's context directory (`dune.dir`); `targetFiles` / `targetDirs` are
+  // relative to it.
+  readonly dir?: string;
+  // The rule's output targets relative to `dir` (`dune.target_files` /
+  // `dune.target_dirs`). Use {@link ruleTargetIds} for the joined ids.
+  readonly targetFiles?: readonly string[];
+  readonly targetDirs?: readonly string[];
   // What forced this rule to run (`dune.forced_by`), if recorded.
   readonly forcedBy?: ForcedBy;
 }
@@ -88,6 +90,23 @@ export function nodeLabel(node: GraphNode): string {
 // Pluralise a count, e.g. `1 dep` / `2 deps`.
 export function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+// Join a target path (`targetFiles` / `targetDirs` entry) onto a rule's `dir`.
+// An absent, empty or `.` dir leaves the relative path unchanged; otherwise a
+// single `/` is inserted (tolerating a `dir` that already ends in one).
+function joinDir(dir: string | undefined, rel: string): string {
+  if (dir === undefined || dir === '' || dir === '.') return rel;
+  return dir.endsWith('/') ? `${dir}${rel}` : `${dir}/${rel}`;
+}
+
+// A rule's output target ids: each of `targetFiles` / `targetDirs` joined onto
+// `dir`. Target paths share the dep id namespace, so a target links to the
+// build-dep node of the same id when one exists. These are outputs, not
+// dependency edges, so they are deliberately absent from `edges()`.
+export function ruleTargetIds(rule: RuleNode): readonly string[] {
+  const rel = [...(rule.targetFiles ?? []), ...(rule.targetDirs ?? [])];
+  return rel.map((t) => joinDir(rule.dir, t));
 }
 
 /**

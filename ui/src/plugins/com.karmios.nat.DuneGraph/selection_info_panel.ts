@@ -23,7 +23,7 @@ import {MenuItem, PopupMenu} from '../../widgets/menu';
 import {Accordion, AccordionSection} from '../../widgets/accordion';
 import type {DuneGraphController} from './controller';
 import type {ForcedBy, GraphNode} from './graph';
-import {isForcedEdge, nodeKey, nodeLabel} from './graph';
+import {isForcedEdge, nodeKey, nodeLabel, ruleTargetIds} from './graph';
 import {decorateDepPath} from './node_display';
 
 interface SelectionInfoPanelAttrs {
@@ -66,6 +66,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     return m(
       '.pf-dune-graph__info',
       this.renderHeader(controller, node),
+      this.renderDir(node),
       this.renderForcedBy(controller, node, dependants),
       m(
         Accordion,
@@ -167,6 +168,20 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         icon: 'keyboard_double_arrow_up',
         onclick: () => controller.addToGraph(controller.ancestorsOf(node)),
       }),
+    );
+  }
+
+  // A rule's context directory (`dune.dir`), as a muted line under the header.
+  // Absent for deps and for rules that didn't record one.
+  private renderDir(node: GraphNode): m.Children {
+    if (node.kind !== 'rule' || node.dir === undefined) return undefined;
+    const {icon, text} = decorateDepPath(node.dir);
+    return m(
+      '.pf-dune-graph__dir',
+      {title: node.dir},
+      m('span.pf-dune-graph__dir-label', 'dir'),
+      icon,
+      text,
     );
   }
 
@@ -329,7 +344,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       });
     }
     if (node.kind === 'rule') {
-      for (const id of node.targetIds ?? []) {
+      for (const id of ruleTargetIds(node)) {
         if (seen.has(nodeKey('dep', id))) continue;
         seen.add(nodeKey('dep', id));
         const dep = controller.graph.deps.get(id);

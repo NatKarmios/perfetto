@@ -137,12 +137,24 @@
     color: var(--pf-color-text-muted);
   }
 
-  // The "Forced by …" line under the selection header.
+  // The "dir" / "Forced by …" lines under the selection header.
+  &__dir,
   &__forced-by {
     padding: 2px 0 4px;
     font-size: 11px;
     color: var(--pf-color-text-muted);
     overflow-wrap: anywhere;
+  }
+
+  &__dir {
+    display: flex;
+    align-items: center;
+  }
+
+  // "dir" field label, distinguishing it from the path text that follows.
+  &__dir-label {
+    margin-right: 4px;
+    font-weight: 500;
   }
 
   // Dependencies / dependants lists: one row per referenced node, divided by a

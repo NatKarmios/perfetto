@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type {BuildGraph, DepNode, GraphNode, RuleNode} from './graph';
-import {inducedEdges} from './graph';
+import {inducedEdges, ruleTargetIds} from './graph';
 
 function dep(id: string, opts: Partial<DepNode> = {}): DepNode {
   return {kind: 'dep', id, sliceId: 0, ...opts};
@@ -140,5 +140,41 @@ describe('inducedEdges', () => {
     const graph = graphOf([a, r1]);
 
     expect(inducedEdges(graph, [a, r1], isRule)).toEqual([]);
+  });
+});
+
+describe('ruleTargetIds', () => {
+  it('joins target files then target dirs onto dir', () => {
+    const r = rule('r1', {
+      dir: 'src/foo',
+      targetFiles: ['a.ml', 'a.mli'],
+      targetDirs: ['sub'],
+    });
+
+    expect(ruleTargetIds(r)).toEqual(['src/foo/a.ml', 'src/foo/a.mli', 'src/foo/sub']);
+  });
+
+  it('returns relative names verbatim when dir is absent', () => {
+    const r = rule('r1', {targetFiles: ['a.ml']});
+
+    expect(ruleTargetIds(r)).toEqual(['a.ml']);
+  });
+
+  it('does not double the separator when dir already ends in /', () => {
+    const r = rule('r1', {dir: 'src/foo/', targetFiles: ['a.ml']});
+
+    expect(ruleTargetIds(r)).toEqual(['src/foo/a.ml']);
+  });
+
+  it('treats a "." dir as no dir', () => {
+    const r = rule('r1', {dir: '.', targetFiles: ['a.ml']});
+
+    expect(ruleTargetIds(r)).toEqual(['a.ml']);
+  });
+
+  it('returns an empty list when there are no target args', () => {
+    const r = rule('r1', {dir: 'src/foo'});
+
+    expect(ruleTargetIds(r)).toEqual([]);
   });
 });

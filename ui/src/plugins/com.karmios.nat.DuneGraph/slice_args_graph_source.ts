@@ -92,7 +92,9 @@ export class SliceArgsGraphSource implements GraphSource {
           sliceId: it.sliceId,
           staticDepIds: asIdArray(getPath(args, 'dune', 'deps')),
           dynamicDepIds: asIdArrayArray(getPath(args, 'dune', 'dyn_deps')),
-          targetIds: asIdArray(getPath(args, 'dune', 'targets')),
+          dir: asId(getPath(args, 'dune', 'dir')),
+          targetFiles: asIdArray(getPath(args, 'dune', 'target_files')),
+          targetDirs: asIdArray(getPath(args, 'dune', 'target_dirs')),
           forcedBy: parseForcedBy(args),
         });
       }
