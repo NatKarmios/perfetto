@@ -26,12 +26,12 @@
 import type {GraphEdge, GraphNode} from './graph';
 import {nodeKey} from './graph';
 
-// Each node renders as a small dot; these are the cell it occupies and the gaps
-// between cells, in layout units (== SVG user units).
+// Each node renders as a small dot; these are the cell it occupies and the gap
+// between cells (equal on both axes, so node-to-node distance reads the same
+// horizontally and vertically), in layout units (== SVG user units).
 export const NODE_WIDTH = 16;
 export const NODE_HEIGHT = 16;
-const H_GAP = 20;
-const V_GAP = 44;
+const GAP = 20;
 
 export interface LayoutNode {
   readonly node: GraphNode;
@@ -95,18 +95,18 @@ export function layoutGraph(
 
   // Widest row sets the content width; every row is centred within it.
   const rowWidth = (count: number) =>
-    count * NODE_WIDTH + Math.max(0, count - 1) * H_GAP;
+    count * NODE_WIDTH + Math.max(0, count - 1) * GAP;
   const totalWidth = Math.max(...rows.map((row) => rowWidth(row.length)));
 
   const layoutByKey = new Map<string, LayoutNode>();
   const layoutNodes: LayoutNode[] = [];
   rows.forEach((row, r) => {
     const xStart = (totalWidth - rowWidth(row.length)) / 2;
-    const y = r * (NODE_HEIGHT + V_GAP);
+    const y = r * (NODE_HEIGHT + GAP);
     row.forEach((node, i) => {
       const ln: LayoutNode = {
         node,
-        x: xStart + i * (NODE_WIDTH + H_GAP),
+        x: xStart + i * (NODE_WIDTH + GAP),
         y,
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
@@ -125,7 +125,7 @@ export function layoutGraph(
     }
   }
 
-  const height = rows.length * (NODE_HEIGHT + V_GAP) - V_GAP;
+  const height = rows.length * (NODE_HEIGHT + GAP) - GAP;
   return {nodes: layoutNodes, edges: layoutEdges, width: totalWidth, height};
 }
 

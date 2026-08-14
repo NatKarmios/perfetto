@@ -311,10 +311,18 @@
     stroke: var(--pf-color-text-muted);
     stroke-width: 1.5;
     fill: none;
+    // Edges recede until one of their endpoints is hovered. `opacity` (not
+    // stroke-opacity) so the arrowhead marker fades along with the line.
+    opacity: 0.5;
+    transition: opacity 0.1s ease;
 
     // Forced edges stand out in red.
     &--forced {
       stroke: var(--pf-color-danger);
+    }
+
+    &--active {
+      opacity: 1;
     }
   }
 
@@ -326,7 +334,8 @@
     }
   }
 
-  // A graph node: a coloured dot; its label shows on hover (native <title>).
+  // A graph node: a coloured dot; its label shows on hover (see the
+  // __hover-label JS overlay below).
   &__dot {
     cursor: pointer;
     stroke: transparent;

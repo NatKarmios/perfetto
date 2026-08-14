@@ -14,6 +14,7 @@
 
 import m from 'mithril';
 import {classNames} from '../../base/classnames';
+import {SimpleResizeObserver} from '../../base/resize_observer';
 import {Button} from '../../widgets/button';
 import {EmptyState} from '../../widgets/empty_state';
 import type {DuneGraphController} from './controller';
@@ -27,40 +28,50 @@ interface GraphPanelAttrs {
   readonly controller: DuneGraphController;
 }
 
-interface ViewBox {
+interface Point {
   readonly x: number;
   readonly y: number;
-  readonly w: number;
-  readonly h: number;
 }
 
-// Empty margin (layout units) left around the content when fitting the viewBox.
+// Empty margin (layout units) left around the content when fitting to the pane.
 const FIT_PADDING = 24;
-// Wheel zoom factor per notch (in = shrink the viewBox).
+// Wheel zoom factor per notch (in = magnify).
 const ZOOM_IN = 1 / 1.1;
 const ZOOM_OUT = 1.1;
-// How far the viewBox may shrink/grow relative to the fitted content width.
-const MIN_ZOOM = 1 / 20;
-const MAX_ZOOM = 5;
+// How far `zoom` (layout units per CSS pixel) may range: up to 5x magnified,
+// down to 1/20th.
+const MIN_ZOOM = 1 / 5;
+const MAX_ZOOM = 20;
 // Pointer travel (px) past which a drag is a pan, not a click.
 const DRAG_THRESHOLD = 3;
 // Rendered node dot radius, and the gap left before the arrowhead at the dest.
 const DOT_RADIUS = 6;
 const ARROW_GAP = 2;
 
+function clampZoom(zoom: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+}
+
 /**
  * Renders the induced subgraph over the controller's selected nodes as a
  * layered SVG diagram: pan by dragging, zoom with the wheel, click a node to
  * jump to its slice. The layout is recomputed only when the selected set
- * changes; pan/zoom just move the viewBox.
+ * changes; a new selection is shown at a fixed 1:1 scale (one layout unit per
+ * CSS pixel), centred on the content - pan/zoom then just move the viewport,
+ * and resizing the pane reveals more or less of the graph rather than
+ * rescaling it. "Fit" is the one explicit way to zoom to the content.
  */
 export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
-  // controller.graphVersion as of the last layout, so we only relayout/refit
+  // controller.graphVersion as of the last layout, so we only relayout/recentre
   // when the selection actually changes (not on every pan/zoom redraw). -1
   // never matches a real version, so the first render always lays out.
   private sig = -1;
   private layout: GraphLayout = {nodes: [], edges: [], width: 0, height: 0};
-  private viewBox: ViewBox = {x: 0, y: 0, w: 1, h: 1};
+  // Layout units per CSS pixel: 1 == 1:1, larger == zoomed out.
+  private zoom = 1;
+  // Layout-space point held at the centre of the pane.
+  private center: Point = {x: 0, y: 0};
+  private resizeObs?: Disposable;
 
   // Pointer/pan state. Capture is deferred until a real drag: capturing on
   // pointerdown swallows the click event, so a plain click never reaches a dot.
@@ -77,6 +88,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   // to place the label in screen space.
   private hoveredKey?: string;
   private svgEl?: SVGSVGElement;
+
+  onremove(): void {
+    this.resizeObs?.[Symbol.dispose]();
+    this.resizeObs = undefined;
+  }
 
   view({attrs}: m.CVnode<GraphPanelAttrs>): m.Children {
     const {controller} = attrs;
@@ -147,7 +163,16 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 
   private renderSvg(controller: DuneGraphController): m.Children {
     const selectedKey = keyOfSelection(controller);
-    const {x, y, w, h} = this.viewBox;
+    // The viewBox is derived from the pane's live pixel size every render, so
+    // it always has exactly the element's aspect ratio - `meet` then degenerates
+    // to a plain 1/zoom scale with no letterboxing, and node spacing stays a
+    // constant number of pixels regardless of how the pane is sized.
+    const rect = this.svgEl?.getBoundingClientRect();
+    const w = (rect === undefined || rect.width === 0 ? 1 : rect.width) * this.zoom;
+    const h =
+      (rect === undefined || rect.height === 0 ? 1 : rect.height) * this.zoom;
+    const x = this.center.x - w / 2;
+    const y = this.center.y - h / 2;
     return m(
       'svg.pf-dune-graph__svg',
       {
@@ -155,6 +180,12 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
         preserveAspectRatio: 'xMidYMid meet',
         oncreate: (vnode: m.VnodeDOM) => {
           if (vnode.dom instanceof SVGSVGElement) this.svgEl = vnode.dom;
+          // The first paint above used a fallback 1x1 rect (the element didn't
+          // exist yet to measure); redraw now that it does.
+          m.redraw();
+          this.resizeObs = new SimpleResizeObserver(vnode.dom, () =>
+            m.redraw(),
+          );
         },
         onwheel: (e: WheelEvent) => this.onWheel(e),
         onpointerdown: (e: PointerEvent) => this.onPointerDown(e),
@@ -165,7 +196,7 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       arrowMarker(),
       m(
         'g.pf-dune-graph__edges',
-        this.layout.edges.map((e) => edgeLine(e)),
+        this.layout.edges.map((e) => edgeLine(e, this.hoveredKey)),
       ),
       m(
         'g.pf-dune-graph__nodes',
@@ -227,13 +258,23 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       visible,
       inducedEdges(controller.graph, nodes, isHiddenRule),
     );
-    this.fit();
+    this.centerContent();
   }
 
+  // Shows a freshly-selected graph at a fixed 1:1 scale, centred on its content.
+  private centerContent(): void {
+    this.zoom = 1;
+    this.center = {x: this.layout.width / 2, y: this.layout.height / 2};
+  }
+
+  // Explicit zoom-to-fit: the only way the scale changes other than the wheel.
   private fit(): void {
+    const rect = this.svgEl?.getBoundingClientRect();
+    if (rect === undefined || rect.width === 0 || rect.height === 0) return;
     const w = Math.max(this.layout.width, NODE_WIDTH) + 2 * FIT_PADDING;
     const h = Math.max(this.layout.height, NODE_HEIGHT) + 2 * FIT_PADDING;
-    this.viewBox = {x: -FIT_PADDING, y: -FIT_PADDING, w, h};
+    this.zoom = clampZoom(Math.max(w / rect.width, h / rect.height));
+    this.center = {x: this.layout.width / 2, y: this.layout.height / 2};
   }
 
   private onWheel(e: WheelEvent): void {
@@ -241,28 +282,21 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     const svg = asSvg(e.currentTarget);
     const ctm = svg?.getScreenCTM();
     if (svg === undefined || ctm === null || ctm === undefined) return;
-    // The exact layout-space point under the cursor, via the real (letterbox-
-    // aware) transform. Mapping by raw viewBox fraction would drift whenever the
-    // viewBox aspect differs from the element's.
+    // The exact layout-space point under the cursor, via the real transform -
+    // more honest than deriving it from the viewBox fraction.
     const cursor = new DOMPoint(e.clientX, e.clientY).matrixTransform(
       ctm.inverse(),
     );
 
-    const vb = this.viewBox;
-    const base = this.layout.width + 2 * FIT_PADDING || 1;
-    let w = vb.w * (e.deltaY < 0 ? ZOOM_IN : ZOOM_OUT);
-    w = Math.max(base * MIN_ZOOM, Math.min(base * MAX_ZOOM, w));
-    const scale = w / vb.w;
-
-    // Zoom scales w and h together, so the viewBox aspect (and thus the
-    // letterbox) is unchanged; holding the cursor point at the same viewBox
-    // fraction therefore keeps it fixed under the cursor on screen.
-    this.viewBox = {
-      x: cursor.x - (cursor.x - vb.x) * scale,
-      y: cursor.y - (cursor.y - vb.y) * scale,
-      w,
-      h: vb.h * scale,
+    const next = clampZoom(this.zoom * (e.deltaY < 0 ? ZOOM_IN : ZOOM_OUT));
+    const scale = next / this.zoom;
+    // Scaling the centre about the cursor point (by the same factor the
+    // viewport is scaling by) keeps that point fixed under the cursor.
+    this.center = {
+      x: cursor.x + (this.center.x - cursor.x) * scale,
+      y: cursor.y + (this.center.y - cursor.y) * scale,
     };
+    this.zoom = next;
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -277,8 +311,6 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 
   private onPointerMove(e: PointerEvent): void {
     if (!this.pointerDown) return;
-    const rect = svgRect(e);
-    if (rect === undefined) return;
     // Begin panning (and capture the pointer, so the drag survives leaving the
     // svg) only once past the threshold - before that a press is still a click.
     if (!this.panning) {
@@ -292,16 +324,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
-    const vb = this.viewBox;
-    // preserveAspectRatio="meet" scales BOTH axes by the same factor (the larger
-    // viewBox/element ratio) and letterboxes the rest, so pixels -> units must
-    // use that one scale on both axes - otherwise x and y pan at different
-    // speeds whenever the viewBox aspect differs from the element's.
-    const unitsPerPx = Math.max(vb.w / rect.width, vb.h / rect.height);
-    this.viewBox = {
-      ...vb,
-      x: vb.x - dx * unitsPerPx,
-      y: vb.y - dy * unitsPerPx,
+    // The viewBox always matches the element's aspect ratio (see renderSvg), so
+    // `zoom` is the one true units-per-pixel scale on both axes.
+    this.center = {
+      x: this.center.x - dx * this.zoom,
+      y: this.center.y - dy * this.zoom,
     };
   }
 
@@ -366,8 +393,9 @@ function keyOfSelection(controller: DuneGraphController): string | undefined {
 
 // A straight line between two node dots (source depends on dest), trimmed to the
 // dot boundaries so it starts/ends at the circles' edges with an arrowhead.
-// Forced edges are drawn red (line + arrowhead via a separate marker).
-function edgeLine(e: LayoutEdge): m.Children {
+// Forced edges are drawn red (line + arrowhead via a separate marker). Edges
+// recede to half-opacity until one of their endpoints is the hovered node.
+function edgeLine(e: LayoutEdge, hoveredKey: string | undefined): m.Children {
   const sx = e.source.x + e.source.width / 2;
   const sy = e.source.y + e.source.height / 2;
   const dx = e.dest.x + e.dest.width / 2;
@@ -375,10 +403,15 @@ function edgeLine(e: LayoutEdge): m.Children {
   const len = Math.hypot(dx - sx, dy - sy) || 1;
   const ux = (dx - sx) / len;
   const uy = (dy - sy) / len;
+  const active =
+    hoveredKey !== undefined &&
+    (nodeKey(e.source.node.kind, e.source.node.id) === hoveredKey ||
+      nodeKey(e.dest.node.kind, e.dest.node.id) === hoveredKey);
   return m('line', {
     'class': classNames(
       'pf-dune-graph__edge',
       e.forced && 'pf-dune-graph__edge--forced',
+      active && 'pf-dune-graph__edge--active',
     ),
     'x1': sx + ux * DOT_RADIUS,
     'y1': sy + uy * DOT_RADIUS,
@@ -418,11 +451,4 @@ function arrowMarker(): m.Children {
 
 function asSvg(target: EventTarget | null): SVGSVGElement | undefined {
   return target instanceof SVGSVGElement ? target : undefined;
-}
-
-function svgRect(e: Event): DOMRect | undefined {
-  const svg = asSvg(e.currentTarget);
-  if (svg === undefined) return undefined;
-  const rect = svg.getBoundingClientRect();
-  return rect.width === 0 || rect.height === 0 ? undefined : rect;
 }
