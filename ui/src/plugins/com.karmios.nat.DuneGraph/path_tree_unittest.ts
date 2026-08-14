@@ -13,7 +13,13 @@
 // limitations under the License.
 
 import type {PathTreeItem, PathTreeRow} from './path_tree';
-import {buildPathTree, splitEntry, splitPath} from './path_tree';
+import {
+  buildPathTree,
+  collectGroupKeys,
+  countLeaves,
+  splitEntry,
+  splitPath,
+} from './path_tree';
 
 // Builds a `PathTreeItem<string>` for a plain path-like id, using the id
 // itself as the payload (so assertions can just compare against the id).
@@ -134,5 +140,42 @@ describe('buildPathTree', () => {
     ]);
     // The 'a' group sorts by its own label ('a'), alongside the leaves.
     expect(simplify(tree)).toEqual([{a: ['one', 'two']}, 'b.ml', 'c.ml']);
+  });
+});
+
+describe('countLeaves', () => {
+  it('counts leaves nested arbitrarily deep, ignoring group boundaries', () => {
+    const tree = buildPathTree([
+      entry('a/one'),
+      entry('a/two'),
+      entry('a/b/three'),
+      entry('a/b/four'),
+    ]);
+    const group = tree[0];
+    if (group.kind !== 'group') throw new Error('expected a group');
+    expect(countLeaves(group)).toBe(4);
+  });
+});
+
+describe('collectGroupKeys', () => {
+  it('collects every nested group path, unprefixed', () => {
+    const tree = buildPathTree([
+      entry('a/one'),
+      entry('a/two'),
+      entry('a/b/three'),
+      entry('a/b/four'),
+    ]);
+    expect(collectGroupKeys(tree)).toEqual(['a', 'a/b']);
+  });
+
+  it('namespaces keys with the given prefix, matching PathTreeView', () => {
+    const tree = buildPathTree([entry('a/one'), entry('a/two')]);
+    expect(collectGroupKeys(tree, 'Dependants')).toEqual(['Dependants:a']);
+  });
+
+  it('returns [] for a tree with no groups', () => {
+    expect(collectGroupKeys(buildPathTree([entry('top-level.ml')]))).toEqual(
+      [],
+    );
   });
 });

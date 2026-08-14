@@ -23,15 +23,22 @@ import {MenuItem, PopupMenu} from '../../widgets/menu';
 import {Accordion, AccordionSection} from '../../widgets/accordion';
 import type {DuneGraphController} from './controller';
 import type {ForcedBy, GraphNode} from './graph';
-import {isForcedEdge, nodeKey, nodeLabel, ruleTargetIds} from './graph';
-import {decorateDepPath} from './node_display';
-import type {
-  PathTreeGroup,
-  PathTreeItem,
-  PathTreeLeaf,
-  PathTreeRow,
-} from './path_tree';
-import {buildPathTree, splitEntry, splitPath} from './path_tree';
+import {
+  forcedByTarget,
+  isForcedEdge,
+  nodeKey,
+  nodeLabel,
+  ruleTargetIds,
+} from './graph';
+import {decorateDepPath, forcedByText, nodePathParts} from './node_display';
+import {
+  groupBulkActions,
+  nodesInGroup,
+  nodeToggleButton,
+} from './node_tree_actions';
+import type {PathTreeItem, PathTreeLeaf} from './path_tree';
+import {buildPathTree} from './path_tree';
+import {PathTreeView} from './path_tree_view';
 
 interface SelectionInfoPanelAttrs {
   readonly controller: DuneGraphController;
@@ -259,32 +266,22 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     );
   }
 
+  // Phrasing comes from `forcedByText` (shared with the query tab's tree
+  // extras); only RULE/DEP additionally get linked to their node here, since
+  // the query tab has no node to link to for a plain SQL column.
   private forcedByContent(
     controller: DuneGraphController,
     fb: ForcedBy,
   ): m.Children {
-    switch (fb.kind) {
-      case 'RULE':
-        return nodeLink(
-          controller,
-          controller.graph.rules.get(fb.rule),
-          `rule ${fb.rule}`,
-        );
-      case 'DEP':
-        return nodeLink(controller, controller.graph.deps.get(fb.dep), fb.dep);
-      case 'DYNAMIC_INCLUDES':
-        return `dynamic_includes (${fb.dynamicIncludes})`;
-      case 'GEN_RULES':
-        return `rule generation (${fb.genRules})`;
-      case 'PFORM':
-        return `variable expansion (${fb.pform})`;
-      case 'CONFIGURATOR':
-        return 'the initial dune configuration';
-      case 'REQUEST':
-        return 'the top-level build request';
-      case 'UNKNOWN':
-        return 'an unknown source';
+    const target = forcedByTarget(fb) ?? undefined;
+    const text = forcedByText(fb.kind, target) ?? 'an unknown source';
+    if (fb.kind === 'RULE') {
+      return nodeLink(controller, controller.graph.rules.get(fb.rule), text);
     }
+    if (fb.kind === 'DEP') {
+      return nodeLink(controller, controller.graph.deps.get(fb.dep), text);
+    }
+    return text;
   }
 
   // Groups `refs` into a path tree (deps by their id, rules by their `dir`)
@@ -301,47 +298,20 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       {summary: `${title} (${refs.length})`, defaultOpen: true},
       refs.length === 0
         ? m('.pf-dune-graph__refs-empty', 'None')
-        : m(
-            '.pf-dune-graph__refs',
-            tree.map((row) => this.renderRow(controller, title, row)),
-          ),
-    );
-  }
-
-  private renderRow(
-    controller: DuneGraphController,
-    title: string,
-    row: PathTreeRow<Ref>,
-  ): m.Children {
-    if (row.kind === 'leaf') {
-      return this.renderRef(controller, row);
-    }
-    // Keyed per-list so the same directory in Dependants and Dependencies
-    // folds independently.
-    const key = `${title}:${row.path}`;
-    const collapsed = this.collapsed.has(key);
-    return m(
-      '.pf-dune-graph__refs-group',
-      m(
-        '.pf-dune-graph__refs-group-header',
-        {
-          onclick: () => {
-            if (collapsed) this.collapsed.delete(key);
-            else this.collapsed.add(key);
-          },
-        },
-        m(Icon, {
-          icon: collapsed ? 'chevron_right' : 'expand_more',
-          className: 'pf-dune-graph__refs-group-caret',
-        }),
-        `${row.label}/`,
-        m('span.pf-dune-graph__refs-group-count', `(${countLeaves(row)})`),
-      ),
-      !collapsed &&
-        m(
-          '.pf-dune-graph__refs-children',
-          row.rows.map((child) => this.renderRow(controller, title, child)),
-        ),
+        : m(PathTreeView<Ref>, {
+            rows: tree,
+            // Namespaced per-list so the same directory in Dependants and
+            // Dependencies folds independently.
+            keyPrefix: title,
+            collapsed: this.collapsed,
+            onToggleGroup: (key) => {
+              if (this.collapsed.has(key)) this.collapsed.delete(key);
+              else this.collapsed.add(key);
+            },
+            renderLeaf: (row) => this.renderRef(controller, row),
+            groupActions: (row) =>
+              groupBulkActions(controller, nodesInGroup(row)),
+          }),
     );
   }
 
@@ -380,6 +350,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         prefix !== '' && m('span.pf-dune-graph__ref-prefix', prefix),
         nodeLink(controller, ref.node, label),
       ),
+      ref.node !== undefined && nodeToggleButton(controller, ref.node),
     );
   }
 
@@ -502,29 +473,11 @@ function nodeLink(
   return m(Anchor, {onclick: () => void controller.goToNode(node)}, label);
 }
 
-// Where a ref files into the path tree: a dep ref's label is itself a path,
-// split into the dir it lives under and its own leaf segment; a rule ref
-// files under its node's `dir` field (top-level when dangling or unset),
-// with its bare id as the leaf (rule ids aren't paths themselves, so they
-// never contribute further nesting beyond their dir).
+// Where a ref files into the path tree: a dep ref's label is itself a path; a
+// rule ref files under its node's `dir` field (top-level when dangling or
+// unset). See `nodePathParts`.
 function refPathItem(ref: Ref): PathTreeItem<Ref> {
-  if (ref.kind === 'dep') {
-    const {dir, leaf} = splitEntry(ref.label);
-    return {dir, leaf, item: ref};
-  }
-  const dir =
-    ref.node?.kind === 'rule' && ref.node.dir !== undefined
-      ? splitPath(ref.node.dir)
-      : [];
-  return {dir, leaf: {sep: '/', name: ref.label}, item: ref};
-}
-
-// The number of leaves (referenced nodes) nested under a path-tree group, for
-// the muted count shown on its header.
-function countLeaves(row: PathTreeGroup<Ref>): number {
-  let n = 0;
-  for (const child of row.rows) {
-    n += child.kind === 'leaf' ? 1 : countLeaves(child);
-  }
-  return n;
+  const dir = ref.node?.kind === 'rule' ? ref.node.dir : undefined;
+  const {dir: dirSegs, leaf} = nodePathParts(ref.kind, ref.label, dir);
+  return {dir: dirSegs, leaf, item: ref};
 }

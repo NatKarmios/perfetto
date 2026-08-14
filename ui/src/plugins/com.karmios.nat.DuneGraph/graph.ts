@@ -80,6 +80,28 @@ export interface RuleNode {
 
 export type GraphNode = DepNode | RuleNode;
 
+// The rule id / dep id / dune-file path a `forcedBy` points at - the forcing
+// rule id / dep id / dune-file path, or null for the payload-less kinds
+// (CONFIGURATOR, REQUEST, UNKNOWN). Backs the `dune_node.forced_by_target` SQL
+// column (see sql_graph.ts) and the display phrasing in
+// `node_display.ts:forcedByText`, so writer and reader stay in step.
+export function forcedByTarget(fb: ForcedBy): string | null {
+  switch (fb.kind) {
+    case 'RULE':
+      return fb.rule;
+    case 'DEP':
+      return fb.dep;
+    case 'DYNAMIC_INCLUDES':
+      return fb.dynamicIncludes;
+    case 'GEN_RULES':
+      return fb.genRules;
+    case 'PFORM':
+      return fb.pform;
+    default:
+      return null;
+  }
+}
+
 // Human-readable label for a node, used in lists and the SQL `label` column. The
 // node's kind is conveyed by a chip alongside the label, so a rule shows its bare
 // id (not `rule <id>`).

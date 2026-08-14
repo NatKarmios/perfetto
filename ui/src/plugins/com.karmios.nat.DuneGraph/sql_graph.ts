@@ -55,8 +55,8 @@ import type {Engine} from '../../trace_processor/engine';
 import {NUM} from '../../trace_processor/query_result';
 import type {SqlValue} from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
-import type {BuildGraph, ForcedBy, GraphNode} from './graph';
-import {edges, nodeKey, nodeLabel} from './graph';
+import type {BuildGraph, GraphNode} from './graph';
+import {edges, forcedByTarget, nodeKey, nodeLabel} from './graph';
 
 // `dune_node` / `dune_edge` are typed PERFETTO VIEWS (so slice-id columns are
 // real SliceTable::Ids and carry the ergonomic `node` / `src` / `dst` chip
@@ -132,26 +132,6 @@ async function materializeTable(
       await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
     },
   };
-}
-
-// The rule id / dep id / dune-file path a `forcedBy` points at, for the
-// `dune_node.forced_by_target` column. Payload-less kinds (CONFIGURATOR,
-// REQUEST, UNKNOWN) have no target.
-function forcedByTarget(fb: ForcedBy): string | null {
-  switch (fb.kind) {
-    case 'RULE':
-      return fb.rule;
-    case 'DEP':
-      return fb.dep;
-    case 'DYNAMIC_INCLUDES':
-      return fb.dynamicIncludes;
-    case 'GEN_RULES':
-      return fb.genRules;
-    case 'PFORM':
-      return fb.pform;
-    default:
-      return null;
-  }
 }
 
 /**

@@ -14,12 +14,87 @@
 
 import m from 'mithril';
 import {Icon} from '../../widgets/icon';
+import type {PathSeg} from './path_tree';
+import {splitEntry, splitPath} from './path_tree';
+import type {GraphNode} from './graph';
 
 // Matches a leading `_build/<dir>` prefix, capturing `_build/<dir>` so it can be
 // folded away into the icon tooltip. The trailing `/` is optional: a path can
 // end at the context dir (rare) or continue straight into an `@alias` rather
 // than a `/`.
 const BUILD_PREFIX = /^(_build\/[^/@]+)\/?/;
+
+/**
+ * Where a node files into a `path_tree.ts` tree: a dep's id is itself a path,
+ * split into the dir it lives under and its own leaf segment; a rule files
+ * under its own `dir` (top-level when unset), with its bare id as the leaf -
+ * rule ids aren't paths themselves, so they never contribute further nesting
+ * beyond `dir`. Shared by the current-selection panel and the query tab's
+ * tree view so both group nodes identically.
+ *
+ * Note this splits the node's *raw* id, not `decorateDepPath`'s trimmed
+ * display text - a `_build/<dir>` prefix becomes a real tree group here,
+ * rather than being folded into a leading icon.
+ */
+export function nodePathParts(
+  kind: GraphNode['kind'],
+  id: string,
+  dir?: string,
+): {dir: PathSeg[]; leaf: PathSeg} {
+  if (kind === 'dep') {
+    return splitEntry(id);
+  }
+  return {
+    dir: dir === undefined ? [] : splitPath(dir),
+    leaf: {sep: '/', name: id},
+  };
+}
+
+// The phrasing table behind a node's `dune.forced_by` (see `ForcedBy` in
+// graph.ts): shared by the current-selection panel's "Forced by" line (which
+// links `target` to its node when RULE/DEP resolve) and the query tab's tree
+// extras (plain text only, straight off the SQL `forced_by_kind` /
+// `forced_by_target` columns - hence taking `kind` as a bare string rather
+// than the typed union).
+//
+// `target` is the forcing rule id / dep id / dune-file path
+// (`forcedByTarget(fb)` in graph.ts), absent for the payload-less kinds and,
+// degenerately, for a RULE/DEP forcer whose target column wasn't selected -
+// that falls back to a generic "a rule" / "a dep" rather than a dangling
+// "rule ". Returns undefined for a kind this table doesn't recognise, so a
+// caller can fall back to showing the raw column(s) instead of a bogus
+// phrase.
+export function forcedByText(
+  kind: string,
+  target?: string,
+): string | undefined {
+  switch (kind) {
+    case 'RULE':
+      return target === undefined ? 'a rule' : `rule ${target}`;
+    case 'DEP':
+      return target === undefined ? 'a dep' : target;
+    case 'DYNAMIC_INCLUDES':
+      return target === undefined
+        ? 'dynamic_includes'
+        : `dynamic_includes (${target})`;
+    case 'GEN_RULES':
+      return target === undefined
+        ? 'rule generation'
+        : `rule generation (${target})`;
+    case 'PFORM':
+      return target === undefined
+        ? 'variable expansion'
+        : `variable expansion (${target})`;
+    case 'CONFIGURATOR':
+      return 'the initial dune configuration';
+    case 'REQUEST':
+      return 'the top-level build request';
+    case 'UNKNOWN':
+      return 'an unknown source';
+    default:
+      return undefined;
+  }
+}
 
 /**
  * How a dep path is shown: a leading icon that encodes where the path lives, plus

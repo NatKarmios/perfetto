@@ -201,6 +201,39 @@ function convertNode<T>(
   };
 }
 
+// The number of leaves nested under a path-tree group, for the muted count
+// shown on its header.
+export function countLeaves<T>(row: PathTreeGroup<T>): number {
+  let n = 0;
+  for (const child of row.rows) {
+    n += child.kind === 'leaf' ? 1 : countLeaves(child);
+  }
+  return n;
+}
+
+// Every group's `PathTreeView` collapse-state key nested anywhere in `rows`
+// (including nested groups), namespaced by the same `keyPrefix` passed to
+// `PathTreeView` - see `groupKey`. Used to build/clear an expand-all or
+// collapse-all selection.
+export function collectGroupKeys<T>(
+  rows: readonly PathTreeRow<T>[],
+  keyPrefix?: string,
+  keys: string[] = [],
+): string[] {
+  for (const row of rows) {
+    if (row.kind !== 'group') continue;
+    keys.push(groupKey(row.path, keyPrefix));
+    collectGroupKeys(row.rows, keyPrefix, keys);
+  }
+  return keys;
+}
+
+// The collapse-state key for a group at `path`, namespaced by `keyPrefix` so
+// e.g. the same directory in two different lists folds independently.
+export function groupKey(path: string, keyPrefix?: string): string {
+  return keyPrefix === undefined ? path : `${keyPrefix}:${path}`;
+}
+
 /**
  * Groups `items` into a tree by their `dir`, introducing a group only where a
  * directory holds two or more rows - a directory chain that only ever leads

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type m from 'mithril';
-import {decorateDepPath} from './node_display';
+import {decorateDepPath, forcedByText} from './node_display';
 
 // The icon is an mithril vnode; tests only care about its `title` attr (the
 // tooltip), which is where the stripped `_build/<dir>` prefix ends up.
@@ -48,5 +48,39 @@ describe('decorateDepPath', () => {
     const {icon, text} = decorateDepPath('foo.ml');
     expect(text).toEqual('foo.ml');
     expect(iconTitle(icon)).toEqual('Source');
+  });
+});
+
+describe('forcedByText', () => {
+  it('phrases RULE and DEP with their target', () => {
+    expect(forcedByText('RULE', '2')).toEqual('rule 2');
+    expect(forcedByText('DEP', 'a/b')).toEqual('a/b');
+  });
+
+  it('phrases the parenthesised kinds with their target', () => {
+    expect(forcedByText('DYNAMIC_INCLUDES', 'dune')).toEqual(
+      'dynamic_includes (dune)',
+    );
+    expect(forcedByText('GEN_RULES', 'dune')).toEqual('rule generation (dune)');
+    expect(forcedByText('PFORM', '%{foo}')).toEqual(
+      'variable expansion (%{foo})',
+    );
+  });
+
+  it('phrases the payload-less kinds regardless of target', () => {
+    expect(forcedByText('CONFIGURATOR')).toEqual(
+      'the initial dune configuration',
+    );
+    expect(forcedByText('REQUEST')).toEqual('the top-level build request');
+    expect(forcedByText('UNKNOWN')).toEqual('an unknown source');
+  });
+
+  it('degrades RULE/DEP to a generic phrase when the target is missing', () => {
+    expect(forcedByText('RULE')).toEqual('a rule');
+    expect(forcedByText('DEP')).toEqual('a dep');
+  });
+
+  it('returns undefined for a kind it does not recognise', () => {
+    expect(forcedByText('SOMETHING_ELSE', 'x')).toBeUndefined();
   });
 });
