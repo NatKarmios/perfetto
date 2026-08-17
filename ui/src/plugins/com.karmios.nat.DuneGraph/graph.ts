@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import type {RuleOutcome} from './graph_blob';
+import type {PerfRun} from './perf';
 
 /**
  * The build graph has two kinds of node, both sourced from the trace's graph
@@ -228,7 +229,9 @@ export interface GraphSource {
   readonly description: string;
 
   // Extract the whole graph. Called on trace load and on explicit reload.
-  load(): Promise<BuildGraph>;
+  // `perf`, when given, collects a per-phase breakdown of the load (see
+  // perf.ts); a source is free to ignore it.
+  load(perf?: PerfRun): Promise<BuildGraph>;
 }
 
 // A stable per-node key spanning both id namespaces (dep ids are Dune strings,

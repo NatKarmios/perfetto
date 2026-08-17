@@ -32,6 +32,8 @@ import {
   joinChunks,
   parseGraphBlob,
 } from './graph_blob';
+import type {PerfRun} from './perf';
+import {measure, measureSync} from './perf';
 
 // Slice tracks carrying lifecycle instants that resolve to graph nodes. Each
 // carries `<track>-start` / `<track>-finish` / `<track>-resolved` instants -
@@ -57,73 +59,84 @@ export class TraceGraphSource implements GraphSource {
     return `graph blob • ${BLOB_TRACK}`;
   }
 
-  async load(): Promise<BuildGraph> {
-    const blob = await this.loadBlob();
-    const lifecycle = await this.loadLifecycle();
+  async load(perf?: PerfRun): Promise<BuildGraph> {
+    const blob = await this.loadBlob(perf);
+    const lifecycle = await this.loadLifecycle(perf);
 
     const deps = new Map<string, DepNode>();
     const rules = new Map<string, RuleNode>();
     const bySliceId = new Map<number, GraphNode>();
 
-    for (const rec of blob.rules) {
-      if (rules.has(rec.ruleId)) continue; // first occurrence wins.
-      const dir = rec.dirId === undefined ? undefined : blob.dict.get(rec.dirId);
-      rules.set(rec.ruleId, {
-        kind: 'rule',
-        id: rec.ruleId,
-        staticDepIds: resolveIds(blob.dict, rec.depIds),
-        dynamicDepIds: rec.dynDepStages.map((stage) =>
-          resolveIds(blob.dict, stage),
-        ),
-        dir,
-        targetFiles: resolveIds(blob.dict, rec.targetFileIds),
-        targetDirs: resolveIds(blob.dict, rec.targetDirIds),
-        forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
-        outcome: rec.outcome,
-      });
-    }
+    measureSync(perf, 'nodes: build rules', (p) => {
+      for (const rec of blob.rules) {
+        if (rules.has(rec.ruleId)) continue; // first occurrence wins.
+        const dir =
+          rec.dirId === undefined ? undefined : blob.dict.get(rec.dirId);
+        rules.set(rec.ruleId, {
+          kind: 'rule',
+          id: rec.ruleId,
+          staticDepIds: resolveIds(blob.dict, rec.depIds),
+          dynamicDepIds: rec.dynDepStages.map((stage) =>
+            resolveIds(blob.dict, stage),
+          ),
+          dir,
+          targetFiles: resolveIds(blob.dict, rec.targetFileIds),
+          targetDirs: resolveIds(blob.dict, rec.targetDirIds),
+          forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
+          outcome: rec.outcome,
+        });
+      }
+      p.rows(rules.size);
+    });
 
-    for (const rec of blob.deps) {
-      const id = blob.dict.get(rec.depId);
-      if (id === undefined || deps.has(id)) continue; // first occurrence wins.
-      deps.set(id, {
-        kind: 'dep',
-        id,
-        depId: rec.depId,
-        resolvedRuleId:
-          rec.resolution.kind === 'rule' ? rec.resolution.ruleId : undefined,
-        expandedDepIds:
-          rec.resolution.kind === 'expanded'
-            ? resolveIds(blob.dict, rec.resolution.depIds)
-            : undefined,
-        isSource: rec.resolution.kind === 'source',
-        unfinished: rec.resolution.kind === 'unfinished',
-        forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
-      });
-    }
+    measureSync(perf, 'nodes: build deps', (p) => {
+      for (const rec of blob.deps) {
+        const id = blob.dict.get(rec.depId);
+        if (id === undefined || deps.has(id)) continue; // first occurrence wins.
+        deps.set(id, {
+          kind: 'dep',
+          id,
+          depId: rec.depId,
+          resolvedRuleId:
+            rec.resolution.kind === 'rule' ? rec.resolution.ruleId : undefined,
+          expandedDepIds:
+            rec.resolution.kind === 'expanded'
+              ? resolveIds(blob.dict, rec.resolution.depIds)
+              : undefined,
+          isSource: rec.resolution.kind === 'source',
+          unfinished: rec.resolution.kind === 'unfinished',
+          forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
+        });
+      }
+      p.rows(deps.size);
+    });
 
     // Attach timing, and index every lifecycle instant (every occurrence, not
     // just the canonical one) back to its owning node so a click on any of
     // them - including a later watch-mode occurrence - resolves.
-    for (const rule of rules.values()) {
-      const occ = lifecycle.byRuleId.get(rule.id) ?? [];
-      const action = lifecycle.actionByRuleId.get(rule.id) ?? [];
-      const withTiming: RuleNode = {
-        ...rule,
-        timing: timingOf(occ),
-        actionTiming: timingOf(action),
-      };
-      rules.set(rule.id, withTiming);
-      for (const o of [...occ, ...action]) {
-        indexOccurrence(bySliceId, o, withTiming);
+    measureSync(perf, 'nodes: attach timing', (p) => {
+      for (const rule of rules.values()) {
+        const occ = lifecycle.byRuleId.get(rule.id) ?? [];
+        const action = lifecycle.actionByRuleId.get(rule.id) ?? [];
+        const withTiming: RuleNode = {
+          ...rule,
+          timing: timingOf(occ),
+          actionTiming: timingOf(action),
+        };
+        rules.set(rule.id, withTiming);
+        for (const o of [...occ, ...action]) {
+          indexOccurrence(bySliceId, o, withTiming);
+        }
       }
-    }
-    for (const dep of deps.values()) {
-      const occ = lifecycle.byDepId.get(dep.depId) ?? [];
-      const withTiming: DepNode = {...dep, timing: timingOf(occ)};
-      deps.set(dep.id, withTiming);
-      for (const o of occ) indexOccurrence(bySliceId, o, withTiming);
-    }
+      for (const dep of deps.values()) {
+        const occ = lifecycle.byDepId.get(dep.depId) ?? [];
+        const withTiming: DepNode = {...dep, timing: timingOf(occ)};
+        deps.set(dep.id, withTiming);
+        for (const o of occ) indexOccurrence(bySliceId, o, withTiming);
+      }
+      p.rows(bySliceId.size);
+      p.note(`${bySliceId.size} slice ids indexed`);
+    });
 
     return {deps, rules, bySliceId};
   }
@@ -133,39 +146,44 @@ export class TraceGraphSource implements GraphSource {
   // empty graph when the `dune-graph` track is absent - a trace that predates
   // the v1 schema, or one recorded without `DUNE_TRACE=+graph`, should fail
   // loudly rather than silently show nothing.
-  private async loadBlob() {
-    const result = await this.engine.query(`
-      select s.name as section,
-        extract_arg(s.arg_set_id, 'debug.dune.version') as version,
-        extract_arg(s.arg_set_id, 'debug.dune.seq') as seq,
-        extract_arg(s.arg_set_id, 'debug.dune.total') as total,
-        extract_arg(s.arg_set_id, 'debug.dune.data') as data
-      from slice s join track t on s.track_id = t.id
-      where t.name = '${BLOB_TRACK}'
-      order by s.name, seq
-    `);
-    const it = result.iter({
-      section: STR,
-      version: LONG,
-      seq: LONG,
-      total: LONG,
-      data: STR,
-    });
-    const chunksBySection = new Map<string, BlobChunk[]>();
-    let rowCount = 0;
-    for (; it.valid(); it.next()) {
-      rowCount++;
-      const list = chunksBySection.get(it.section) ?? [];
-      list.push({
-        name: it.section,
-        version: Number(it.version),
-        seq: Number(it.seq),
-        total: Number(it.total),
-        data: it.data,
+  private async loadBlob(perf?: PerfRun) {
+    const result = await measure(perf, 'blob: query', () =>
+      this.engine.query(`
+        select s.name as section,
+          extract_arg(s.arg_set_id, 'debug.dune.version') as version,
+          extract_arg(s.arg_set_id, 'debug.dune.seq') as seq,
+          extract_arg(s.arg_set_id, 'debug.dune.total') as total,
+          extract_arg(s.arg_set_id, 'debug.dune.data') as data
+        from slice s join track t on s.track_id = t.id
+        where t.name = '${BLOB_TRACK}'
+        order by s.name, seq
+      `),
+    );
+    const chunksBySection = measureSync(perf, 'blob: read chunks', (p) => {
+      const it = result.iter({
+        section: STR,
+        version: LONG,
+        seq: LONG,
+        total: LONG,
+        data: STR,
       });
-      chunksBySection.set(it.section, list);
-    }
-    if (rowCount === 0) {
+      const bySection = new Map<string, BlobChunk[]>();
+      for (; it.valid(); it.next()) {
+        const list = bySection.get(it.section) ?? [];
+        list.push({
+          name: it.section,
+          version: Number(it.version),
+          seq: Number(it.seq),
+          total: Number(it.total),
+          data: it.data,
+        });
+        p.rows(1);
+        p.bytes(it.data.length);
+        bySection.set(it.section, list);
+      }
+      return bySection;
+    });
+    if (chunksBySection.size === 0) {
       throw new Error(
         `No '${BLOB_TRACK}' track found in this trace. Either it predates ` +
           "the v1 Dune graph schema, or it was recorded without " +
@@ -174,58 +192,83 @@ export class TraceGraphSource implements GraphSource {
     }
     const sections = new Map<string, string>();
     for (const name of [DICT_SECTION, RULES_SECTION, DEPS_SECTION]) {
-      sections.set(name, joinChunks(name, chunksBySection.get(name) ?? []));
+      const chunks = chunksBySection.get(name) ?? [];
+      sections.set(
+        name,
+        measureSync(perf, `blob: join ${name}`, (p) => {
+          const payload = joinChunks(name, chunks);
+          p.rows(chunks.length);
+          p.bytes(payload.length);
+          return payload;
+        }),
+      );
     }
-    return parseGraphBlob(sections);
+    return parseGraphBlob(sections, perf);
   }
 
   // Reads every lifecycle instant off the tracks in {@link LIFECYCLE_TRACKS}
   // and pairs them per (track, key) into {@link Occurrence}s.
-  private async loadLifecycle(): Promise<{
+  private async loadLifecycle(perf?: PerfRun): Promise<{
     byRuleId: Map<string, Occurrence[]>;
     byDepId: Map<number, Occurrence[]>;
     actionByRuleId: Map<string, Occurrence[]>;
   }> {
     const tracks = LIFECYCLE_TRACKS.map((t) => `'${t}'`).join(', ');
-    const result = await this.engine.query(`
-      select s.id as sliceId, s.ts as ts, s.name as name, t.name as track,
-        extract_arg(s.arg_set_id, 'debug.dune.rule_id') as ruleId,
-        extract_arg(s.arg_set_id, 'debug.dune.dep_id') as depId,
-        extract_arg(s.arg_set_id, 'debug.dune.dur_ns') as durNs
-      from slice s join track t on s.track_id = t.id
-      where t.name in (${tracks})
-      order by s.ts
-    `);
-    const it = result.iter({
-      sliceId: NUM,
-      ts: LONG,
-      name: STR,
-      track: STR,
-      ruleId: LONG_NULL,
-      depId: LONG_NULL,
-      durNs: LONG_NULL,
+    const result = await measure(perf, 'lifecycle: query', () =>
+      this.engine.query(`
+        select s.id as sliceId, s.ts as ts, s.name as name, t.name as track,
+          extract_arg(s.arg_set_id, 'debug.dune.rule_id') as ruleId,
+          extract_arg(s.arg_set_id, 'debug.dune.dep_id') as depId,
+          extract_arg(s.arg_set_id, 'debug.dune.dur_ns') as durNs
+        from slice s join track t on s.track_id = t.id
+        where t.name in (${tracks})
+        order by s.ts
+      `),
+    );
+    const {ruleRows, depRows, actionRows} = measureSync(
+      perf,
+      'lifecycle: read instants',
+      (p) => {
+        const it = result.iter({
+          sliceId: NUM,
+          ts: LONG,
+          name: STR,
+          track: STR,
+          ruleId: LONG_NULL,
+          depId: LONG_NULL,
+          durNs: LONG_NULL,
+        });
+        const rule: LifecycleRow[] = [];
+        const dep: LifecycleRow[] = [];
+        const action: LifecycleRow[] = [];
+        for (; it.valid(); it.next()) {
+          const row: LifecycleRow = {
+            sliceId: it.sliceId,
+            ts: it.ts,
+            name: it.name,
+            ruleId: it.ruleId === null ? undefined : it.ruleId.toString(),
+            depId: it.depId === null ? undefined : Number(it.depId),
+            durNs: it.durNs === null ? undefined : Number(it.durNs),
+          };
+          if (it.track === RULE_TRACK) rule.push(row);
+          else if (it.track === DEP_TRACK) dep.push(row);
+          else if (it.track === ACTION_TRACK) action.push(row);
+        }
+        p.rows(rule.length + dep.length + action.length);
+        p.note(
+          `${RULE_TRACK} ${rule.length}, ${DEP_TRACK} ${dep.length}, ` +
+            `${ACTION_TRACK} ${action.length}`,
+        );
+        return {ruleRows: rule, depRows: dep, actionRows: action};
+      },
+    );
+    return measureSync(perf, 'lifecycle: pair occurrences', (p) => {
+      const byRuleId = occurrencesByKey(ruleRows, (r) => r.ruleId);
+      const byDepId = occurrencesByKey(depRows, (r) => r.depId);
+      const actionByRuleId = occurrencesByKey(actionRows, (r) => r.ruleId);
+      p.rows(byRuleId.size + byDepId.size + actionByRuleId.size);
+      return {byRuleId, byDepId, actionByRuleId};
     });
-    const ruleRows: LifecycleRow[] = [];
-    const depRows: LifecycleRow[] = [];
-    const actionRows: LifecycleRow[] = [];
-    for (; it.valid(); it.next()) {
-      const row: LifecycleRow = {
-        sliceId: it.sliceId,
-        ts: it.ts,
-        name: it.name,
-        ruleId: it.ruleId === null ? undefined : it.ruleId.toString(),
-        depId: it.depId === null ? undefined : Number(it.depId),
-        durNs: it.durNs === null ? undefined : Number(it.durNs),
-      };
-      if (it.track === RULE_TRACK) ruleRows.push(row);
-      else if (it.track === DEP_TRACK) depRows.push(row);
-      else if (it.track === ACTION_TRACK) actionRows.push(row);
-    }
-    return {
-      byRuleId: occurrencesByKey(ruleRows, (r) => r.ruleId),
-      byDepId: occurrencesByKey(depRows, (r) => r.depId),
-      actionByRuleId: occurrencesByKey(actionRows, (r) => r.ruleId),
-    };
   }
 }
 

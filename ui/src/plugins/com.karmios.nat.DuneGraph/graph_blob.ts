@@ -35,6 +35,9 @@
  * place of `<outcome>`/`<resolution>` and empty `<dep_ids>`/`<dyn_dep_stages>`.
  */
 
+import type {PerfRun} from './perf';
+import {measureSync} from './perf';
+
 export const GRAPH_BLOB_VERSION = 1;
 export const BLOB_TRACK = 'dune-graph';
 
@@ -301,19 +304,40 @@ function parseDepLine(line: string): DepRecord | undefined {
 // `sections` maps section name to its already-joined payload (see
 // {@link joinChunks}); a missing section is treated as empty rather than an
 // error, so a trace with e.g. no build-dep spans at all still parses.
+// `perf`, when given, records one phase per section (see perf.ts); the parser
+// itself stays pure either way.
 export function parseGraphBlob(
   sections: ReadonlyMap<string, string>,
+  perf?: PerfRun,
 ): GraphBlob {
-  const dict = parseDict(sections.get(DICT_SECTION) ?? '');
-  const rules: RuleRecord[] = [];
-  for (const line of lines(sections.get(RULES_SECTION) ?? '')) {
-    const r = parseRuleLine(line);
-    if (r !== undefined) rules.push(r);
-  }
-  const deps: DepRecord[] = [];
-  for (const line of lines(sections.get(DEPS_SECTION) ?? '')) {
-    const d = parseDepLine(line);
-    if (d !== undefined) deps.push(d);
-  }
+  const dictPayload = sections.get(DICT_SECTION) ?? '';
+  const dict = measureSync(perf, `blob: parse ${DICT_SECTION}`, (p) => {
+    const parsed = parseDict(dictPayload);
+    p.rows(parsed.size);
+    p.bytes(dictPayload.length);
+    return parsed;
+  });
+  const rulesPayload = sections.get(RULES_SECTION) ?? '';
+  const rules = measureSync(perf, `blob: parse ${RULES_SECTION}`, (p) => {
+    const parsed: RuleRecord[] = [];
+    for (const line of lines(rulesPayload)) {
+      const r = parseRuleLine(line);
+      if (r !== undefined) parsed.push(r);
+    }
+    p.rows(parsed.length);
+    p.bytes(rulesPayload.length);
+    return parsed;
+  });
+  const depsPayload = sections.get(DEPS_SECTION) ?? '';
+  const deps = measureSync(perf, `blob: parse ${DEPS_SECTION}`, (p) => {
+    const parsed: DepRecord[] = [];
+    for (const line of lines(depsPayload)) {
+      const d = parseDepLine(line);
+      if (d !== undefined) parsed.push(d);
+    }
+    p.rows(parsed.length);
+    p.bytes(depsPayload.length);
+    return parsed;
+  });
   return {dict, rules, deps};
 }

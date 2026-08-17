@@ -18,6 +18,7 @@ import type {Trace} from '../../public/trace';
 import {DuneGraphController} from './controller';
 import {DuneGraphPanel} from './panel';
 import {DuneQueryTab} from './query_tab';
+import {dumpPerfRuns} from './perf';
 import './styles.scss';
 
 const PLUGIN_ID = 'com.karmios.nat.DuneGraph';
@@ -56,6 +57,15 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#Reload`,
       name: 'Dune: reload build graph',
       callback: () => controller.reload(),
+    });
+
+    // Re-prints the per-phase timing/heap breakdown of the last few loads to
+    // the devtools console (each load also prints its own when it finishes).
+    // See perf.ts and PERF_PLAN.LOCAL.md.
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#DumpLoadStats`,
+      name: 'Dune: dump load stats',
+      callback: () => dumpPerfRuns(),
     });
 
     // SQL-over-the-graph: a details-drawer tab fed by an omnibox mode (type a

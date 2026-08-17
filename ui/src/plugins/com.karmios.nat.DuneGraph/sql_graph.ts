@@ -97,6 +97,8 @@ import {
   primarySliceId,
   ruleTargetIds,
 } from './graph';
+import type {PerfRun} from './perf';
+import {measure, measureSync} from './perf';
 
 // `dune_node` / `dune_edge` are typed PERFETTO VIEWS (so slice-id columns are
 // real SliceTable::Ids and carry the ergonomic `node` / `src` / `dst` chip
@@ -160,23 +162,32 @@ async function materializeTable(
   schema: string,
   columns: readonly string[],
   rows: readonly Record<string, SqlValue>[],
+  perf?: PerfRun,
 ): Promise<DroppableTable> {
-  await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
-  await engine.query(`CREATE TABLE ${name} (${schema})`);
-  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
-    const values = rows
-      .slice(i, i + INSERT_CHUNK)
-      .map(
-        (row) =>
-          `(${columns
-            .map((c) => sqlValueToSqliteString(row[c] ?? null))
-            .join(', ')})`,
-      )
-      .join(', ');
-    await engine.query(
-      `INSERT INTO ${name} (${columns.join(', ')}) VALUES ${values}`,
-    );
-  }
+  await measure(perf, `sql: insert ${name}`, async (p) => {
+    await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
+    await engine.query(`CREATE TABLE ${name} (${schema})`);
+    let statements = 0;
+    let sqlChars = 0;
+    for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+      const values = rows
+        .slice(i, i + INSERT_CHUNK)
+        .map(
+          (row) =>
+            `(${columns
+              .map((c) => sqlValueToSqliteString(row[c] ?? null))
+              .join(', ')})`,
+        )
+        .join(', ');
+      const sql = `INSERT INTO ${name} (${columns.join(', ')}) VALUES ${values}`;
+      sqlChars += sql.length;
+      statements++;
+      await engine.query(sql);
+    }
+    p.rows(rows.length);
+    p.bytes(sqlChars);
+    p.note(`${statements} statements`);
+  });
   return {
     name,
     async [Symbol.asyncDispose](): Promise<void> {
@@ -201,6 +212,7 @@ function spanSliceId(timing?: SpanTiming): number | undefined {
 export async function buildSqlGraph(
   engine: Engine,
   graph: BuildGraph,
+  perf?: PerfRun,
 ): Promise<SqlGraph> {
   // Assign a dense node_id to every node, deps first then rules.
   const idByKey = new Map<string, number>();
@@ -223,14 +235,18 @@ export async function buildSqlGraph(
       dur_ns: node.timing?.durNs ?? null,
     });
   };
-  for (const dep of graph.deps.values()) addNode(dep);
-  for (const rule of graph.rules.values()) addNode(rule);
+  measureSync(perf, 'sql: build node rows', (p) => {
+    for (const dep of graph.deps.values()) addNode(dep);
+    for (const rule of graph.rules.values()) addNode(rule);
+    p.rows(nodeRows.length);
+  });
 
   // Detail rows, built in a second pass now that every node_id (including a
   // dep's resolved rule) is assigned.
   const ruleRows: Record<string, SqlValue>[] = [];
   const depRows: Record<string, SqlValue>[] = [];
   const ruleTargetRows: Record<string, SqlValue>[] = [];
+  const detailPhase = perf?.begin('sql: build detail rows');
   for (const rule of graph.rules.values()) {
     const nodeId = idByKey.get(nodeKey('rule', rule.id))!;
     ruleRows.push({
@@ -274,26 +290,35 @@ export async function buildSqlGraph(
       is_source: dep.isSource ? 1 : 0,
     });
   }
+  detailPhase?.rows(ruleRows.length + depRows.length + ruleTargetRows.length);
+  detailPhase?.note(
+    `${ruleRows.length} rules, ${depRows.length} deps, ` +
+      `${ruleTargetRows.length} targets`,
+  );
+  detailPhase?.end();
 
   // One row per edge from the shared edge set. Endpoints are always present
   // (every node was added above); the guard is just for type-narrowing.
   // `source_kind` (alongside `dest_kind`) lets the relation functions reverse
   // the graph with a column swap instead of a join back to `_dune_node`.
   const edgeRows: Record<string, SqlValue>[] = [];
-  for (const {source, dest, forced, edgeKind, dynDepsStage} of edges(graph)) {
-    const sourceId = idByKey.get(nodeKey(source.kind, source.id));
-    const destId = idByKey.get(nodeKey(dest.kind, dest.id));
-    if (sourceId === undefined || destId === undefined) continue;
-    edgeRows.push({
-      source_node_id: sourceId,
-      dest_node_id: destId,
-      dest_kind: dest.kind,
-      source_kind: source.kind,
-      forced: forced ? 1 : 0,
-      edge_kind: edgeKind ?? null,
-      dyn_deps_stage: dynDepsStage ?? null,
-    });
-  }
+  measureSync(perf, 'sql: build edge rows', (p) => {
+    for (const {source, dest, forced, edgeKind, dynDepsStage} of edges(graph)) {
+      const sourceId = idByKey.get(nodeKey(source.kind, source.id));
+      const destId = idByKey.get(nodeKey(dest.kind, dest.id));
+      if (sourceId === undefined || destId === undefined) continue;
+      edgeRows.push({
+        source_node_id: sourceId,
+        dest_node_id: destId,
+        dest_kind: dest.kind,
+        source_kind: source.kind,
+        forced: forced ? 1 : 0,
+        edge_kind: edgeKind ?? null,
+        dyn_deps_stage: dynDepsStage ?? null,
+      });
+    }
+    p.rows(edgeRows.length);
+  });
 
   // Materialize the raw/plain tables (chunked inserts; pre-dropped for
   // idempotent reload). Drop the views first: they read from the raw tables
@@ -316,6 +341,7 @@ export async function buildSqlGraph(
       'dur_ns',
     ],
     nodeRows,
+    perf,
   );
   const rawEdgeTable = await materializeTable(
     engine,
@@ -332,6 +358,7 @@ export async function buildSqlGraph(
       'dyn_deps_stage',
     ],
     edgeRows,
+    perf,
   );
   const ruleTable = await materializeTable(
     engine,
@@ -351,6 +378,7 @@ export async function buildSqlGraph(
       'n_dyn_stages',
     ],
     ruleRows,
+    perf,
   );
   const depTable = await materializeTable(
     engine,
@@ -366,6 +394,7 @@ export async function buildSqlGraph(
       'is_source',
     ],
     depRows,
+    perf,
   );
   const ruleTargetTable = await materializeTable(
     engine,
@@ -373,6 +402,7 @@ export async function buildSqlGraph(
     'node_id INTEGER, path TEXT, is_dir INTEGER',
     ['node_id', 'path', 'is_dir'],
     ruleTargetRows,
+    perf,
   );
 
   // Indexes on the raw tables: without these, the recursive walk in
@@ -380,28 +410,42 @@ export async function buildSqlGraph(
   // stdlib BFS-backed functions get away without them, since the underlying
   // C++ BFS reads the edge table once). Plain (non-PERFETTO) indexes on plain
   // tables; dropped automatically when their table is dropped.
-  await engine.query(
-    `CREATE INDEX ${RAW_EDGE_TABLE}_src ON ${RAW_EDGE_TABLE}(source_node_id)`,
-  );
-  await engine.query(
-    `CREATE INDEX ${RAW_EDGE_TABLE}_dst ON ${RAW_EDGE_TABLE}(dest_node_id)`,
-  );
-  await engine.query(
-    `CREATE INDEX ${RAW_NODE_TABLE}_id ON ${RAW_NODE_TABLE}(node_id)`,
-  );
-  await engine.query(
-    `CREATE UNIQUE INDEX ${RULE_TABLE}_node_id ON ${RULE_TABLE}(node_id)`,
-  );
-  await engine.query(
-    `CREATE UNIQUE INDEX ${DEP_TABLE}_node_id ON ${DEP_TABLE}(node_id)`,
-  );
-  await engine.query(
-    `CREATE INDEX ${RULE_TARGET_TABLE}_node_id ON ${RULE_TARGET_TABLE}(node_id)`,
-  );
-  await engine.query(
-    `CREATE INDEX ${RULE_TARGET_TABLE}_path ON ${RULE_TARGET_TABLE}(path)`,
-  );
+  await measure(perf, `sql: index ${RAW_EDGE_TABLE}`, async (p) => {
+    await engine.query(
+      `CREATE INDEX ${RAW_EDGE_TABLE}_src ON ${RAW_EDGE_TABLE}(source_node_id)`,
+    );
+    await engine.query(
+      `CREATE INDEX ${RAW_EDGE_TABLE}_dst ON ${RAW_EDGE_TABLE}(dest_node_id)`,
+    );
+    p.rows(edgeRows.length * 2);
+    p.note('src + dst');
+  });
+  await measure(perf, 'sql: index node/detail tables', async (p) => {
+    await engine.query(
+      `CREATE INDEX ${RAW_NODE_TABLE}_id ON ${RAW_NODE_TABLE}(node_id)`,
+    );
+    await engine.query(
+      `CREATE UNIQUE INDEX ${RULE_TABLE}_node_id ON ${RULE_TABLE}(node_id)`,
+    );
+    await engine.query(
+      `CREATE UNIQUE INDEX ${DEP_TABLE}_node_id ON ${DEP_TABLE}(node_id)`,
+    );
+    await engine.query(
+      `CREATE INDEX ${RULE_TARGET_TABLE}_node_id ` +
+        `ON ${RULE_TARGET_TABLE}(node_id)`,
+    );
+    await engine.query(
+      `CREATE INDEX ${RULE_TARGET_TABLE}_path ON ${RULE_TARGET_TABLE}(path)`,
+    );
+    p.rows(
+      nodeRows.length +
+        ruleRows.length +
+        depRows.length +
+        2 * ruleTargetRows.length,
+    );
+  });
 
+  const viewPhase = perf?.begin('sql: create views');
   // Typed view over the raw node table so `slice_id` (and the ergonomic `node`
   // chip column) are SliceTable::Ids (joinable / clickable / chip-rendered),
   // which a plain CREATE TABLE can't declare. The id columns are sourced as
@@ -456,12 +500,14 @@ export async function buildSqlGraph(
     JOIN ${RAW_NODE_TABLE} dn ON dn.node_id = e.dest_node_id
     LEFT JOIN slice sd ON sd.id = dn.slice_id
   `);
+  viewPhase?.end();
 
-  // graph_reachable_bfs! lives in this stdlib module.
-  await engine.query('INCLUDE PERFETTO MODULE graphs.search');
-
-  // Parameterized transitive-relationship functions + list-macro wrappers.
-  await createRelationFunctions(engine, nodeRows.length);
+  await measure(perf, 'sql: create relation functions', async () => {
+    // graph_reachable_bfs! lives in this stdlib module.
+    await engine.query('INCLUDE PERFETTO MODULE graphs.search');
+    // Parameterized transitive-relationship functions + list-macro wrappers.
+    await createRelationFunctions(engine, nodeRows.length);
+  });
 
   return {
     nodeId(node: GraphNode): number | undefined {

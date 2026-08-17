@@ -33,6 +33,7 @@ import {
   GRAPH_TRACK_URI,
 } from './graph_track';
 import {TraceGraphSource} from './trace_graph_source';
+import {PerfRun} from './perf';
 import type {Distances, SqlGraph} from './sql_graph';
 import {buildSqlGraph} from './sql_graph';
 
@@ -372,7 +373,12 @@ export class DuneGraphController {
     return sqlGraph.distances(fromId, toId);
   }
 
+  // Loading is the plugin's whole performance story (see PERF_PLAN.LOCAL.md),
+  // so every reload is measured: `perf` collects a per-phase breakdown and
+  // prints it when the load ends, and `Dune: dump load stats` re-prints the
+  // last few runs (see perf.ts).
   async reload(): Promise<void> {
+    const perf = new PerfRun('graph load');
     this.loading = true;
     this.error = undefined;
     // The graph is being rebuilt: drop the selection and the derived index so
@@ -381,16 +387,20 @@ export class DuneGraphController {
     this.reverseIndex = undefined;
     this.version++;
     // Drop the previous SQL tables before rebuilding so reload is idempotent.
-    await this.sqlGraph?.[Symbol.asyncDispose]();
+    await perf.phase('drop previous mirror', async () => {
+      await this.sqlGraph?.[Symbol.asyncDispose]();
+    });
     this.sqlGraph = undefined;
     try {
-      this.graph = await this.source.load();
-      this.sqlGraph = await buildSqlGraph(this.trace.engine, this.graph);
+      this.graph = await this.source.load(perf);
+      this.sqlGraph = await buildSqlGraph(this.trace.engine, this.graph, perf);
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
+      perf.fail(this.error);
       this.graph = EMPTY_GRAPH;
     } finally {
       this.loading = false;
+      perf.finish();
     }
   }
 }
