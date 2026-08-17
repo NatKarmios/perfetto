@@ -24,13 +24,21 @@ import {Accordion, AccordionSection} from '../../widgets/accordion';
 import type {DuneGraphController} from './controller';
 import type {ForcedBy, GraphNode} from './graph';
 import {
+  depResolutionKind,
   forcedByTarget,
   isForcedEdge,
   nodeKey,
   nodeLabel,
   ruleTargetIds,
 } from './graph';
-import {decorateDepPath, forcedByText, nodePathParts} from './node_display';
+import {
+  decorateDepPath,
+  depResolutionLabel,
+  forcedByText,
+  formatDurNs,
+  nodePathParts,
+  outcomeLabel,
+} from './node_display';
 import {
   groupBulkActions,
   nodesInGroup,
@@ -96,6 +104,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       '.pf-dune-graph__info',
       this.renderHeader(controller, node),
       this.renderDir(node),
+      this.renderAction(node),
       this.renderForcedBy(controller, node, dependants),
       m(
         Accordion,
@@ -145,6 +154,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
             m('span.pf-dune-graph__info-title-bidi', text),
           ),
         ),
+        this.renderStatus(node),
       ),
       m(
         'span.pf-dune-graph__info-actions',
@@ -241,6 +251,54 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       m('span.pf-dune-graph__dir-label', 'dir'),
       icon,
       text,
+    );
+  }
+
+  // The header's status chip: how the node resolved (a rule's outcome, or a
+  // dep's resolution) plus its span duration, and a `×N` hint when the span
+  // was seen more than once (watch mode, or a dep built more than once - see
+  // `SpanTiming.occurrenceCount`). Absent entirely for a node whose timing
+  // never resolved to a lifecycle instant.
+  private renderStatus(node: GraphNode): m.Children {
+    const label =
+      node.kind === 'rule'
+        ? outcomeLabel(node.outcome)
+        : depResolutionLabel(depResolutionKind(node));
+    const durNs = node.timing?.durNs;
+    const occurrences = node.timing?.occurrenceCount;
+    return m(
+      'span.pf-dune-graph__status',
+      m('span.pf-dune-graph__status-label', label),
+      durNs !== undefined &&
+        m('span.pf-dune-graph__status-dur', formatDurNs(durNs)),
+      occurrences !== undefined &&
+        occurrences > 1 &&
+        m(
+          'span.pf-dune-graph__status-occ',
+          {title: `Seen ${occurrences} times, e.g. across watch-mode iterations`},
+          `×${occurrences}`,
+        ),
+    );
+  }
+
+  // An executed rule's action interval, as a muted line under `dir` - "action
+  // in flight" per the dune doc, not worker occupancy: it includes scheduler
+  // queue wait and isn't bounded by `-j` (see `RuleNode.actionTiming` in
+  // graph.ts). Absent for a cache hit (no action ran) or one that never
+  // resolved a duration.
+  private renderAction(node: GraphNode): m.Children {
+    if (node.kind !== 'rule') return undefined;
+    const durNs = node.actionTiming?.durNs;
+    if (durNs === undefined) return undefined;
+    return m(
+      '.pf-dune-graph__action',
+      {
+        title:
+          'Time the action was in flight, including scheduler queue wait - ' +
+          'not bounded by -j, so not the same as worker occupancy.',
+      },
+      m('span.pf-dune-graph__dir-label', 'action'),
+      formatDurNs(durNs),
     );
   }
 

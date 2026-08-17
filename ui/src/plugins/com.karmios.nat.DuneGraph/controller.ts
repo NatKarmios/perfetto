@@ -25,13 +25,14 @@ import {
   forcers,
   nodeKey,
   outEdges,
+  primarySliceId,
 } from './graph';
 import {
   createGraphTrackRenderer,
   GRAPH_TRACK_NAME,
   GRAPH_TRACK_URI,
 } from './graph_track';
-import {SliceArgsGraphSource} from './slice_args_graph_source';
+import {TraceGraphSource} from './trace_graph_source';
 import type {Distances, SqlGraph} from './sql_graph';
 import {buildSqlGraph} from './sql_graph';
 
@@ -160,10 +161,14 @@ export class DuneGraphController {
         this.visibleNodes.some(
           (n) => nodeKey(n.kind, n.id) === nodeKey(node.kind, node.id),
         );
-      if (isVisible) this.selectOnGraphTrack(node.sliceId);
+      const nodeId = node === undefined ? undefined : this.nodeIdOf(node);
+      if (isVisible && nodeId !== undefined) this.selectOnGraphTrack(nodeId);
     } else if (previous === this.timelineWorkspace) {
       if (selection.trackUri === GRAPH_TRACK_URI) {
-        void this.selectOnOriginalTrack(selection.eventId);
+        // The derived track's event id is a `node_id`, not a slice id.
+        const node = this.nodeForNodeId(selection.eventId);
+        const sliceId = node === undefined ? undefined : primarySliceId(node);
+        if (sliceId !== undefined) void this.selectOnOriginalTrack(sliceId);
       }
     }
   }
@@ -189,11 +194,16 @@ export class DuneGraphController {
   }
 
   // The node corresponding to the current timeline selection, if a "build-dep"
-  // or "exec-rule" slice is selected. For slice tracks the selection's eventId
-  // is the slice id, which is what the reverse index is keyed on.
+  // or "exec-rule" slice is selected - or, on the derived "Dune graph" track,
+  // if a node's projected interval is selected. The two tracks key their
+  // events differently (a real slice id vs. the SQL mirror's `node_id`), so
+  // this must branch on which track the selection is on.
   nodeForSelection(): GraphNode | undefined {
     const selection = this.trace.selection.selection;
     if (selection.kind !== 'track_event') return undefined;
+    if (selection.trackUri === GRAPH_TRACK_URI) {
+      return this.nodeForNodeId(selection.eventId);
+    }
     return this.graph.bySliceId.get(selection.eventId);
   }
 
@@ -234,6 +244,13 @@ export class DuneGraphController {
     return this.graph.bySliceId.get(sliceId);
   }
 
+  // The graph node behind a dense SQL `node_id` - the derived "Dune graph"
+  // track's event id (see graph_track.ts) - or undefined if the SQL mirror
+  // isn't built yet (still loading / failed).
+  nodeForNodeId(nodeId: number): GraphNode | undefined {
+    return this.sqlGraph?.nodeByNodeId(nodeId);
+  }
+
   // The dense SQL `node_id` for a node - the value the `dune_*` relation
   // functions (`dune_descendants`, `dune_ancestors`, `dune_children`,
   // `dune_parents`, `dune_forcers`, `dune_forced`, see sql_graph.ts) take - or
@@ -259,7 +276,7 @@ export class DuneGraphController {
 
   // Nodes `node` directly depends on (its immediate children).
   childrenOf(node: GraphNode): readonly GraphNode[] {
-    return [...outEdges(this.graph, node)];
+    return [...outEdges(this.graph, node)].map((e) => e.dest);
   }
 
   // All nodes that transitively depend on `node` (its ancestors).
@@ -295,19 +312,23 @@ export class DuneGraphController {
     const isVisible = this.visibleNodes.some(
       (n) => nodeKey(n.kind, n.id) === nodeKey(node.kind, node.id),
     );
-    if (this.showingTimeline && isVisible) {
-      this.selectOnGraphTrack(node.sliceId);
+    const nodeId = this.nodeIdOf(node);
+    if (this.showingTimeline && isVisible && nodeId !== undefined) {
+      this.selectOnGraphTrack(nodeId);
       return;
     }
-    await this.selectOnOriginalTrack(node.sliceId);
+    const sliceId = primarySliceId(node);
+    if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
   }
 
-  // Select `sliceId` on the derived "Dune graph" track - the half of
-  // goToNode()/onWorkspaceChanged() used while that workspace is current.
-  // Callers must ensure the id is actually rendered there (see visibleNodes()).
-  private selectOnGraphTrack(sliceId: number): void {
+  // Select `nodeId` on the derived "Dune graph" track - the half of
+  // goToNode()/onWorkspaceChanged() used while that workspace is current. The
+  // track's rows are keyed by the SQL mirror's `node_id` (see graph_track.ts),
+  // not a slice id. Callers must ensure the id is actually rendered there (see
+  // visibleNodes()).
+  private selectOnGraphTrack(nodeId: number): void {
     this.trace.currentWorkspace.getTrackByUri(GRAPH_TRACK_URI)?.reveal();
-    this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, sliceId, {
+    this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, nodeId, {
       scrollToSelection: true,
     });
   }
@@ -334,7 +355,7 @@ export class DuneGraphController {
   // The single seam to swap while experimenting with where the graph comes
   // from - everything else only sees the GraphSource contract.
   private makeSource(): GraphSource {
-    return new SliceArgsGraphSource(this.trace.engine);
+    return new TraceGraphSource(this.trace.engine);
   }
 
   // Directed dependency distances between two nodes (see {@link Distances}), or

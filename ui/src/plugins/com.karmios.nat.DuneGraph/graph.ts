@@ -12,21 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import type {RuleOutcome} from './graph_blob';
+
 /**
- * The build graph has two kinds of node:
+ * The build graph has two kinds of node, both sourced from the trace's graph
+ * blob (structure) and lifecycle instants (timing) - see `graph_blob.ts` and
+ * `trace_graph_source.ts`:
  *
- * - `dep` nodes come from "build-dep" slices. A dep resolves either to a rule
- *   (`resolvedRuleId`) or to a set of further deps (`expandedDepIds`).
- * - `rule` nodes come from "exec-rule" slices, which carry the rule's static
- *   deps (`dune.deps`) and dynamic deps (`dune.dyn_deps`) in their own args.
+ * - `dep` nodes come from `graph-deps` blob records / `build-dep` instants. A
+ *   dep resolves either to a rule (`resolvedRuleId`) or to a set of further
+ *   deps (`expandedDepIds`), or is a source file, or is unfinished.
+ * - `rule` nodes come from `graph-rules` blob records / `exec-rule` instants,
+ *   which carry the rule's static deps and dynamic deps (a list of stages).
  *
- * Ids live in two namespaces (dep ids are Dune dep strings; rule ids are the
- * stringified `dune.rule_id` int). A dep's `resolvedRuleId` keys into `rules`;
- * a rule's dep ids key into `deps`.
+ * Ids live in two namespaces (dep ids are Dune dep path strings, resolved
+ * through the blob's `graph-dict`; rule ids are the rule's own `rule_id`,
+ * which is per-process and not stable across watch iterations - see
+ * `trace_graph_source.ts`). A dep's `resolvedRuleId` keys into `rules`; a
+ * rule's dep ids key into `deps`.
  */
 
 /**
- * Why a node was built - the node's `dune.forced_by` arg. `kind` is the
+ * Why a node was built - the node's `forced_by` blob field. `kind` is the
  * discriminator; the `RULE` / `DEP` variants carry the id of the rule / dep
  * that forced this node (which is the *source* of the build edge into it), the
  * path-bearing variants carry the relevant dune-file / build path, and the rest
@@ -42,43 +49,83 @@ export type ForcedBy =
   | {readonly kind: 'CONFIGURATOR'}
   | {readonly kind: 'REQUEST'};
 
+// A span's timing, reconstructed by pairing a `-start` instant with its
+// matching `-finish` (or reading a single collapsed `-resolved` instant) - see
+// `trace_graph_source.ts`. `startSliceId`/`finishSliceId` are the instants to
+// navigate to; `durNs` is absent for a span that never got a finish (an
+// unfinished span flushed at EOF - see `RuleOutcome`/`DepResolution`).
+// `occurrenceCount` counts how many same-keyed spans were seen for this node
+// (watch mode, or a dep built more than once) - the node's own timing is
+// always the *first* occurrence, a pairing heuristic since lifecycle instants
+// carry no occurrence index (see the plugin's reported schema gaps).
+export interface SpanTiming {
+  readonly startSliceId?: number;
+  readonly finishSliceId?: number;
+  readonly durNs?: number;
+  readonly occurrenceCount: number;
+}
+
 export interface DepNode {
   readonly kind: 'dep';
-  // The `dune.dep` string identifying this dep.
+  // The dep's resolved path, read through `graph-dict` off its `dep_id`.
   readonly id: string;
-  // The "build-dep" slice this node was extracted from.
-  readonly sliceId: number;
-  // Set iff the dep resolved to a rule (`dune.dep_outcome.rule`).
+  // The blob's intern id for `id`, before resolution - the join key against a
+  // `build-dep` instant's `dep_id` arg.
+  readonly depId: number;
+  // Set iff the dep resolved to a rule.
   readonly resolvedRuleId?: string;
-  // Set iff the dep resolved to further deps (`dune.dep_outcome.expanded`).
+  // Set iff the dep resolved to further deps (an expansion, e.g. alias/glob).
   readonly expandedDepIds?: readonly string[];
-  // What forced this dep to be built (`dune.forced_by`), if recorded.
+  // Set iff the dep is a source file (no rule produces it).
+  readonly isSource: boolean;
+  // Set iff the blob recorded this dep as unfinished (crash/interrupt).
+  readonly unfinished: boolean;
+  // What forced this dep to be built, if recorded.
   readonly forcedBy?: ForcedBy;
+  // Timing off the "build-dep" instants, if any resolved.
+  readonly timing?: SpanTiming;
 }
 
 export interface RuleNode {
   readonly kind: 'rule';
-  // The stringified `dune.rule_id` identifying this rule.
+  // The rule's own `rule_id` (per-process; see the file header).
   readonly id: string;
-  // The "exec-rule" slice this node was extracted from.
-  readonly sliceId: number;
-  // Static deps from the exec-rule slice's `dune.deps` arg.
+  // Static deps, resolved through `graph-dict`.
   readonly staticDepIds?: readonly string[];
-  // Dynamic deps from the exec-rule slice's `dune.dyn_deps` arg, a list of
-  // lists.
+  // Dynamic deps, a list of stages (each resolved through `graph-dict`).
   readonly dynamicDepIds?: readonly (readonly string[])[];
-  // The rule's context directory (`dune.dir`); `targetFiles` / `targetDirs` are
-  // relative to it.
+  // The rule's context directory; `targetFiles` / `targetDirs` are relative to
+  // it. Resolved through `graph-dict` off the blob's `dir_id`.
   readonly dir?: string;
-  // The rule's output targets relative to `dir` (`dune.target_files` /
-  // `dune.target_dirs`). Use {@link ruleTargetIds} for the joined ids.
+  // The rule's output targets relative to `dir`. Use {@link ruleTargetIds} for
+  // the joined ids.
   readonly targetFiles?: readonly string[];
   readonly targetDirs?: readonly string[];
-  // What forced this rule to run (`dune.forced_by`), if recorded.
+  // What forced this rule to run, if recorded.
   readonly forcedBy?: ForcedBy;
+  // How the rule resolved: executed, a cache hit, or (crash/interrupt)
+  // unfinished.
+  readonly outcome: RuleOutcome;
+  // Timing off the "exec-rule" instants, if any resolved.
+  readonly timing?: SpanTiming;
+  // Timing off the "exec-rule-action" instants (executed rules only). Per the
+  // dune doc this measures "action in flight", including scheduler queue wait
+  // - it is *not* bounded by `-j` and should not be read as worker occupancy.
+  readonly actionTiming?: SpanTiming;
 }
 
 export type GraphNode = DepNode | RuleNode;
+
+// Re-exported so callers of graph.ts don't also need to import graph_blob.ts
+// for the node-facing outcome type.
+export type {RuleOutcome} from './graph_blob';
+
+// The one slice a node's "Go to slice" action should navigate to - its
+// lifecycle start, or its finish if no start instant resolved (shouldn't
+// happen in practice, but a finish-only node is still navigable).
+export function primarySliceId(node: GraphNode): number | undefined {
+  return node.timing?.startSliceId ?? node.timing?.finishSliceId;
+}
 
 // The rule id / dep id / dune-file path a `forcedBy` points at - the forcing
 // rule id / dep id / dune-file path, or null for the payload-less kinds
@@ -117,7 +164,9 @@ export function plural(n: number, noun: string): string {
 // Join a target path (`targetFiles` / `targetDirs` entry) onto a rule's `dir`.
 // An absent, empty or `.` dir leaves the relative path unchanged; otherwise a
 // single `/` is inserted (tolerating a `dir` that already ends in one).
-function joinDir(dir: string | undefined, rel: string): string {
+// Exported for sql_graph.ts's `dune_rule_target` rows, which - unlike
+// {@link ruleTargetIds} - need to keep file/dir targets distinguishable.
+export function joinDir(dir: string | undefined, rel: string): string {
   if (dir === undefined || dir === '' || dir === '.') return rel;
   return dir.endsWith('/') ? `${dir}${rel}` : `${dir}/${rel}`;
 }
@@ -129,6 +178,23 @@ function joinDir(dir: string | undefined, rel: string): string {
 export function ruleTargetIds(rule: RuleNode): readonly string[] {
   const rel = [...(rule.targetFiles ?? []), ...(rule.targetDirs ?? [])];
   return rel.map((t) => joinDir(rule.dir, t));
+}
+
+// A dep's resolution, as a short discriminator: `rule` | `source` |
+// `expanded` | `unfinished`. The single place this is derived from a
+// `DepNode`'s flattened fields - `sql_graph.ts`'s `dune_dep.resolution` column
+// and the current-selection panel's status chip both read this rather than
+// re-deriving it. `unfinished` also serves as the fallback for a dep with none
+// of the three outcomes recorded - shouldn't happen given a well-formed blob,
+// but a safe default rather than an invented fourth state.
+export type DepResolutionKind = 'rule' | 'source' | 'expanded' | 'unfinished';
+
+export function depResolutionKind(dep: DepNode): DepResolutionKind {
+  if (dep.unfinished) return 'unfinished';
+  if (dep.isSource) return 'source';
+  if (dep.resolvedRuleId !== undefined) return 'rule';
+  if (dep.expandedDepIds !== undefined) return 'expanded';
+  return 'unfinished';
 }
 
 /**
@@ -171,12 +237,23 @@ export function nodeKey(kind: GraphNode['kind'], id: string): string {
   return `${kind}:${id}`;
 }
 
+// Why a forward edge exists, straight off the node that carries it: a rule's
+// static/dynamic deps, or a dep's resolution (to a rule, or an expansion).
+// Drives `dune_edge.edge_kind`/`dyn_deps_stage` in the SQL mirror.
+export type EdgeKind = 'static' | 'dynamic' | 'resolved' | 'expanded';
+
 // A directed build edge: `source` depends on `dest` (dest is the prerequisite).
 export interface GraphEdge {
   readonly source: GraphNode;
   readonly dest: GraphNode;
   // Whether this is a *forced* edge (see {@link isForcedEdge}).
   readonly forced: boolean;
+  // Set for a direct (one-hop) edge - i.e. every edge `edges()` yields.
+  // Undefined for a contracted, multi-hop edge from `inducedEdges()`'s
+  // hide-rules traversal, which has no single meaningful kind.
+  readonly edgeKind?: EdgeKind;
+  // The dynamic-dep stage index, set iff `edgeKind === 'dynamic'`.
+  readonly dynDepsStage?: number;
 }
 
 /**
@@ -199,6 +276,15 @@ export function isForcedEdge(source: GraphNode, dest: GraphNode): boolean {
     : fb.kind === 'DEP' && fb.dep === source.id;
 }
 
+// One of a node's outgoing edges, tagged with why it exists (see
+// {@link EdgeKind}). Yielded by {@link outEdges}; {@link edges} promotes each
+// to a full {@link GraphEdge}.
+export interface OutEdge {
+  readonly dest: GraphNode;
+  readonly edgeKind: EdgeKind;
+  readonly dynDepsStage?: number;
+}
+
 /**
  * A node's outgoing edges: the prerequisite nodes it depends on (rule -> deps
  * for static/dynamic deps, dep -> rule for a resolved rule, dep -> deps for
@@ -206,30 +292,32 @@ export function isForcedEdge(source: GraphNode, dest: GraphNode): boolean {
  * ones skipped. This is the single place the forward edge shape is defined;
  * {@link edges} and {@link inducedEdges} both build on it.
  *
- * @yields each prerequisite {@link GraphNode} this node depends on.
+ * @yields each prerequisite {@link OutEdge} this node depends on.
  */
 export function* outEdges(
   graph: BuildGraph,
   node: GraphNode,
-): Iterable<GraphNode> {
+): Iterable<OutEdge> {
   if (node.kind === 'dep') {
     if (node.resolvedRuleId !== undefined) {
       const rule = graph.rules.get(node.resolvedRuleId);
-      if (rule !== undefined) yield rule;
+      if (rule !== undefined) yield {dest: rule, edgeKind: 'resolved'};
     }
     for (const id of node.expandedDepIds ?? []) {
       const dep = graph.deps.get(id);
-      if (dep !== undefined) yield dep;
+      if (dep !== undefined) yield {dest: dep, edgeKind: 'expanded'};
     }
   } else {
     for (const id of node.staticDepIds ?? []) {
       const dep = graph.deps.get(id);
-      if (dep !== undefined) yield dep;
+      if (dep !== undefined) yield {dest: dep, edgeKind: 'static'};
     }
-    for (const group of node.dynamicDepIds ?? []) {
+    for (const [stage, group] of (node.dynamicDepIds ?? []).entries()) {
       for (const id of group) {
         const dep = graph.deps.get(id);
-        if (dep !== undefined) yield dep;
+        if (dep !== undefined) {
+          yield {dest: dep, edgeKind: 'dynamic', dynDepsStage: stage};
+        }
       }
     }
   }
@@ -243,13 +331,13 @@ export function* outEdges(
  */
 export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
   for (const source of graph.deps.values()) {
-    for (const dest of outEdges(graph, source)) {
-      yield {source, dest, forced: isForcedEdge(source, dest)};
+    for (const {dest, edgeKind, dynDepsStage} of outEdges(graph, source)) {
+      yield {source, dest, forced: isForcedEdge(source, dest), edgeKind, dynDepsStage};
     }
   }
   for (const source of graph.rules.values()) {
-    for (const dest of outEdges(graph, source)) {
-      yield {source, dest, forced: isForcedEdge(source, dest)};
+    for (const {dest, edgeKind, dynDepsStage} of outEdges(graph, source)) {
+      yield {source, dest, forced: isForcedEdge(source, dest), edgeKind, dynDepsStage};
     }
   }
 }
@@ -295,7 +383,7 @@ export function inducedEdges(
     seen.add(`${nodeKey(source.kind, source.id)}|1`);
     while (stack.length > 0) {
       const {node: current, forced} = stack.pop()!;
-      for (const next of outEdges(graph, current)) {
+      for (const {dest: next} of outEdges(graph, current)) {
         const nextInSet = inSet.get(nodeKey(next.kind, next.id));
         if (nextInSet === undefined) continue; // outside the selection
         const nextForced = forced && isForcedEdge(current, next);
@@ -398,7 +486,7 @@ export function descendants(
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
-    for (const child of outEdges(graph, current)) {
+    for (const {dest: child} of outEdges(graph, current)) {
       const key = nodeKey(child.kind, child.id);
       if (seen.has(key)) continue;
       seen.add(key);

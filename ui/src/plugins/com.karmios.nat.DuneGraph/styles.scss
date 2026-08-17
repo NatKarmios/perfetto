@@ -131,19 +131,48 @@
     color: var(--pf-color-text-muted);
   }
 
+  // The outcome/resolution + duration status, alongside the header title -
+  // shrink-proof (unlike the title, which has `flex: 1` and ellipsizes first)
+  // since it's short and more useful to keep fully visible.
+  &__status {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__status-label {
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--pf-color-background-secondary);
+    border: 1px solid var(--pf-color-border);
+  }
+
+  &__status-occ {
+    font-family: monospace;
+  }
+
   &__empty-note {
     padding: 4px 0;
     font-size: 11px;
     color: var(--pf-color-text-muted);
   }
 
-  // The "dir" / "Forced by …" lines under the selection header.
+  // The "dir" / "action" / "Forced by …" lines under the selection header.
   &__dir,
+  &__action,
   &__forced-by {
     padding: 2px 0 4px;
     font-size: 11px;
     color: var(--pf-color-text-muted);
     overflow-wrap: anywhere;
+  }
+
+  &__action {
+    display: flex;
+    align-items: center;
   }
 
   &__dir {

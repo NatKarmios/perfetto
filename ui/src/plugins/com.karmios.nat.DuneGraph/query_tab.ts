@@ -40,7 +40,12 @@ import {StackAuto} from '../../widgets/stack';
 import type {DuneGraphController} from './controller';
 import type {GraphNode} from './graph';
 import {nodeKey, nodeLabel} from './graph';
-import {decorateDepPath, forcedByText, nodePathParts} from './node_display';
+import {
+  decorateDepPath,
+  forcedByText,
+  formatDurNs,
+  nodePathParts,
+} from './node_display';
 import {
   groupBulkActions,
   nodesInGroup,
@@ -92,6 +97,11 @@ const NODE_DETAIL_COLS = ['kind', 'orig_id', SLICE_ID_COL, 'label'];
 const NODE_ID_COL = 'node_id';
 const FORCED_BY_KIND_COL = 'forced_by_kind';
 const FORCED_BY_TARGET_COL = 'forced_by_target';
+
+// Nanosecond-duration columns from `dune_node`/`dune_rule` (see sql_graph.ts):
+// rendered as a human duration (e.g. "88ms") rather than a raw integer, in
+// both table mode (`buildSchema`) and tree mode (`formatExtraValue`).
+const DURATION_COLS = new Set(['dur_ns', 'action_dur_ns']);
 
 // Preferred default "Group by" column in tree mode, most to least specific.
 const GROUP_COL_PRIORITY = [NODE_COL, SRC_COL, DST_COL, SLICE_ID_COL];
@@ -325,9 +335,11 @@ export class DuneQueryTab implements Tab {
         EmptyState,
         {icon: 'table_view', title: 'Run a SQL query to add graph nodes'},
         "Use the '&' omnibox mode or the “Dune: query graph” command. " +
-          'Query dune_node / dune_edge, or a relation function - bounded ' +
-          'dune_descendants/dune_ancestors(node_id, max_steps, step_kind), ' +
-          'unbounded dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +
+          'Query dune_node / dune_edge, per-kind detail via dune_rule / ' +
+          'dune_dep / dune_rule_target (joined on node_id), or a relation ' +
+          'function - bounded dune_descendants/dune_ancestors(node_id, ' +
+          'max_steps, step_kind), unbounded ' +
+          'dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +
           'dune_children/dune_parents(node_id), or forced-only ' +
           'dune_forcers/dune_forced(node_id) - any node / src / dst / slice_id ' +
           'column becomes addable. To see transitive forcing on a result, ' +
@@ -472,21 +484,37 @@ export class DuneQueryTab implements Tab {
       this.extraCols(response),
       entry.row,
       entry.count,
-      (col, value) => this.formatExtraValue(value, nodeBearing.has(col)),
+      (col, value) => this.formatExtraValue(col, value, nodeBearing.has(col)),
     );
     if (parts.length === 0) return undefined;
     const text = parts.join(', ');
     return m('span.pf-dune-query__extras', {title: text}, text);
   }
 
-  // Only resolves `value` through a node label when `col` is itself a
+  // A `dur_ns`/`action_dur_ns` column renders as a human duration; otherwise,
+  // only resolves `value` through a node label when `col` is itself a
   // node-bearing column (e.g. `dst` when grouping by `src`) - `nodeLabelFor`
   // treats any number/bigint as a slice id, so calling it on an arbitrary
   // numeric column (a `distance`, say) risks a false-positive match against an
   // unrelated slice id.
-  private formatExtraValue(value: SqlValue, nodeBearing: boolean): string {
+  private formatExtraValue(
+    col: string,
+    value: SqlValue,
+    nodeBearing: boolean,
+  ): string {
+    if (DURATION_COLS.has(col)) {
+      const text = this.durationText(value);
+      if (text !== undefined) return text;
+    }
     const label = nodeBearing ? this.nodeLabelFor(value) : undefined;
     return label ?? String(value);
+  }
+
+  // `value` (a `dur_ns`-shaped column) as a human duration, or undefined if
+  // it isn't a number/bigint (e.g. NULL).
+  private durationText(value: SqlValue): string | undefined {
+    if (typeof value !== 'number' && typeof value !== 'bigint') return undefined;
+    return formatDurNs(Number(value));
   }
 
   // Columns shown as a tree leaf's "extras" suffix: every result column
@@ -692,7 +720,9 @@ export class DuneQueryTab implements Tab {
           ? this.sliceLinkDef(col)
           : chipCols.has(col)
             ? this.chipDef(col)
-            : {title: col};
+            : DURATION_COLS.has(col)
+              ? this.durationDef(col)
+              : {title: col};
     }
     // Synthesized chip columns (relation src/dst) aren't in response.columns.
     for (const col of chipCols) {
@@ -723,6 +753,16 @@ export class DuneQueryTab implements Tab {
       cellRenderer: (value) => this.renderNodeChip(value),
       cellFormatter: (value) => this.nodeLabelFor(value) ?? String(value),
       actions: (value) => this.renderNodeToggle(value),
+    };
+  }
+
+  // A `dur_ns`/`action_dur_ns` column: rendered (and exported) as a human
+  // duration rather than a raw nanosecond integer.
+  private durationDef(col: string): ColumnDef {
+    return {
+      title: col,
+      cellRenderer: (value) => this.durationText(value) ?? '',
+      cellFormatter: (value) => this.durationText(value) ?? String(value),
     };
   }
 

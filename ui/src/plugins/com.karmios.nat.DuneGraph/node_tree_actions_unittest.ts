@@ -25,8 +25,8 @@ interface Entry {
   readonly label: string;
 }
 
-function dep(id: string, sliceId: number): DepNode {
-  return {kind: 'dep', id, sliceId};
+function dep(id: string): DepNode {
+  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false};
 }
 
 function leaf(label: string, node?: GraphNode): PathTreeLeaf<Entry> {
@@ -43,8 +43,8 @@ function group(
 
 describe('nodesInGroup', () => {
   it('collects distinct nodes across nested groups, deduped by node key', () => {
-    const a = dep('a', 1);
-    const b = dep('b', 2);
+    const a = dep('a');
+    const b = dep('b');
     const tree = group('root', 'root', [
       leaf('a', a),
       group('nested', 'root/nested', [leaf('b', b), leaf('a-again', a)]),
@@ -53,7 +53,7 @@ describe('nodesInGroup', () => {
   });
 
   it('skips leaves with no node (dangling entries)', () => {
-    const a = dep('a', 1);
+    const a = dep('a');
     const tree = group('root', 'root', [leaf('a', a), leaf('dangling')]);
     expect(nodesInGroup(tree)).toEqual([a]);
   });

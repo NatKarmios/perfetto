@@ -13,26 +13,57 @@
 // limitations under the License.
 
 /**
- * Materializes the in-memory {@link BuildGraph} into two Perfetto SQL tables so
- * the graph can be queried by relationship (e.g. distance between two nodes) in
- * the same SQL engine as the rest of the trace, and drives the distance query.
+ * Materializes the in-memory {@link BuildGraph} into Perfetto SQL tables so the
+ * graph can be queried by relationship (e.g. distance between two nodes) in the
+ * same SQL engine as the rest of the trace, and drives the distance query.
+ *
+ * The mirror is split by kind rather than one wide table: `dune_node` carries
+ * only what's meaningful for *every* node (identity, slice, forcing, timing);
+ * `dune_rule` / `dune_dep` / `dune_rule_target` carry kind-specific detail,
+ * keyed on the same `node_id`. This avoids NULL-heavy rule-only columns on
+ * `dune_node` (e.g. an action duration) and columns whose meaning differs by
+ * kind (a rule's cache-hit outcome vs. a dep's resolution). The detail tables
+ * are keyed *on* `node_id` rather than reached via a foreign key column on
+ * `dune_node`: `kind` already discriminates which detail table applies, so an
+ * FK would be redundant, and every join is a plain `... USING (node_id)`.
  *
  * - `dune_node(node_id, node, kind, orig_id, slice_id, label, forced_by_kind,
- *   forced_by_target)` — one row per node, a typed PERFETTO VIEW over the raw
- *   `_dune_node` table the rows are inserted into. `node` and `slice_id` are
- *   both the node's slice id as a `SliceTable::Id` (`JOINID(slice.id)`); `node`
- *   is the ergonomic column the query tab renders as a chip. `forced_by_kind` /
- *   `forced_by_target` mirror the node's `dune.forced_by` (the target is the
- *   forcing rule id / dep id / dune-file path, or NULL).
- * - `dune_edge(src, dst, forced, src_node_id, dst_node_id)` — a typed PERFETTO
- *   VIEW over the raw `_dune_edge(source_node_id, dest_node_id, dest_kind,
- *   source_kind, forced)` table, with `src` / `dst` the endpoints' slice ids
- *   (`JOINID(slice.id)`, chip-rendered) and the raw node_id endpoints.
- *   Directed edges where "source depends on dest" (dest is the prerequisite /
- *   upstream node):
- *     rule -> dep  (static deps, flattened dynamic deps)
- *     dep  -> rule (resolved rule)
- *     dep  -> dep  (expanded deps)
+ *   forced_by_target, ts, dur_ns)` — one row per node, a typed PERFETTO VIEW
+ *   over the raw `_dune_node` table the rows are inserted into. `node` and
+ *   `slice_id` are both the node's primary lifecycle slice id as a
+ *   `SliceTable::Id` (`JOINID(slice.id)`, LEFT JOINed since a node whose timing
+ *   never resolved has none); `node` is the ergonomic column the query tab
+ *   renders as a chip. `ts`/`dur_ns` come from that same join (`ts` is the
+ *   slice's own timestamp; `dur_ns` is `SpanTiming.durNs`, NULL for an
+ *   unfinished span). `forced_by_kind` / `forced_by_target` mirror the node's
+ *   `forcedBy` (the target is the forcing rule id / dep id / dune-file path,
+ *   or NULL).
+ * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id,
+ *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages)` — one row per rule
+ *   node. `outcome`: `executed` | `local-cache-hit` | `shared-cache-hit` |
+ *   `unfinished`.
+ * - `dune_dep(node_id, dep_id, path, resolution, resolved_rule_node_id,
+ *   is_source)` — one row per dep node. `resolution`: `rule` | `source` |
+ *   `expanded` | `unfinished`; `resolved_rule_node_id` is set iff `resolution
+ *   = 'rule'` and that rule is itself a known node.
+ * - `dune_rule_target(node_id, path, is_dir)` — a rule's output targets
+ *   (`target_files`/`target_dirs`, each joined onto `dir` - see `joinDir` in
+ *   graph.ts), one row per target. `path` shares the dep id namespace, so it
+ *   joins straight onto `dune_dep.path` to find the build-dep node (if any)
+ *   of the same output. Plain tables (not views): their only id-ish column is
+ *   the synthetic `node_id`, which - unlike a real trace-processor table id -
+ *   `JOINID` cannot apply to (see the `dune_node`/`dune_edge` views below for
+ *   where `JOINID` *does* apply, and why).
+ * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage, src_node_id,
+ *   dst_node_id)` — a typed PERFETTO VIEW over the raw
+ *   `_dune_edge(source_node_id, dest_node_id, dest_kind, source_kind, forced,
+ *   edge_kind, dyn_deps_stage)` table, with `src` / `dst` the endpoints'
+ *   lifecycle slice ids (`JOINID(slice.id)`, chip-rendered, LEFT JOINed for the
+ *   same reason as `dune_node`) and the raw node_id endpoints. Directed edges
+ *   where "source depends on dest" (dest is the prerequisite / upstream node):
+ *     rule -> dep  (`edge_kind`: static | dynamic, latter carries `dyn_deps_stage`)
+ *     dep  -> rule (`edge_kind`: resolved)
+ *     dep  -> dep  (`edge_kind`: expanded)
  *   `forced` is 1 iff `dest` was forced into the build by `source` (i.e. dest's
  *   `forcedBy` names source); see `isForcedEdge` in graph.ts. `source_kind`
  *   (alongside `dest_kind`) lets the relation functions below reverse the graph
@@ -55,8 +86,17 @@ import type {Engine} from '../../trace_processor/engine';
 import {NUM} from '../../trace_processor/query_result';
 import type {SqlValue} from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
-import type {BuildGraph, GraphNode} from './graph';
-import {edges, forcedByTarget, nodeKey, nodeLabel} from './graph';
+import type {BuildGraph, GraphNode, SpanTiming} from './graph';
+import {
+  depResolutionKind,
+  edges,
+  forcedByTarget,
+  joinDir,
+  nodeKey,
+  nodeLabel,
+  primarySliceId,
+  ruleTargetIds,
+} from './graph';
 
 // `dune_node` / `dune_edge` are typed PERFETTO VIEWS (so slice-id columns are
 // real SliceTable::Ids and carry the ergonomic `node` / `src` / `dst` chip
@@ -68,6 +108,12 @@ const NODE_TABLE = 'dune_node';
 const RAW_NODE_TABLE = '_dune_node';
 const EDGE_TABLE = 'dune_edge';
 const RAW_EDGE_TABLE = '_dune_edge';
+// The per-kind detail tables: plain tables, not views (see the file header -
+// their only id-ish column, `node_id`, is synthetic, so `JOINID` doesn't
+// apply and there's nothing for a view to add).
+const RULE_TABLE = 'dune_rule';
+const DEP_TABLE = 'dune_dep';
+const RULE_TARGET_TABLE = 'dune_rule_target';
 
 // Rows are inserted in batches: one `INSERT ... VALUES (row), (row), ...` per
 // chunk. A single statement can't materialize the whole graph at once — a long
@@ -89,6 +135,11 @@ export interface Distances {
 export interface SqlGraph extends AsyncDisposable {
   // The dense `node_id` for a graph node, or undefined if it isn't present.
   nodeId(node: GraphNode): number | undefined;
+
+  // The reverse of `nodeId()`: the graph node behind a dense `node_id`, or
+  // undefined if it isn't present. Needed because the derived "Dune graph"
+  // timeline track's rows are keyed by `node_id` (see graph_track.ts).
+  nodeByNodeId(nodeId: number): GraphNode | undefined;
 
   // Directed distances following build-dependency edges from `fromId` to
   // `toId`, or undefined if `toId` is unreachable from `fromId`.
@@ -134,10 +185,18 @@ async function materializeTable(
   };
 }
 
+// The one slice a `SpanTiming` should navigate to - the same formula as
+// graph.ts's `primarySliceId(node)`, but usable on a rule's `actionTiming`
+// too (which isn't itself a node).
+function spanSliceId(timing?: SpanTiming): number | undefined {
+  return timing?.startSliceId ?? timing?.finishSliceId;
+}
+
 /**
- * Builds the `dune_node` / `dune_edge` tables from `graph` and returns a handle
- * that can compute distances and drops both tables when disposed. Rebuilding is
- * idempotent: any pre-existing tables of the same name are dropped first.
+ * Builds the SQL mirror (`dune_node` / `dune_edge` / `dune_rule` / `dune_dep` /
+ * `dune_rule_target`) from `graph` and returns a handle that can compute
+ * distances and drops every table when disposed. Rebuilding is idempotent: any
+ * pre-existing tables of the same name are dropped first.
  */
 export async function buildSqlGraph(
   engine: Engine,
@@ -145,31 +204,83 @@ export async function buildSqlGraph(
 ): Promise<SqlGraph> {
   // Assign a dense node_id to every node, deps first then rules.
   const idByKey = new Map<string, number>();
+  const nodesById = new Map<number, GraphNode>();
   const nodeRows: Record<string, SqlValue>[] = [];
   const addNode = (node: GraphNode) => {
     const key = nodeKey(node.kind, node.id);
     const id = idByKey.size;
     idByKey.set(key, id);
+    nodesById.set(id, node);
     nodeRows.push({
       node_id: id,
       kind: node.kind,
       orig_id: node.id,
-      slice_id: node.sliceId,
+      slice_id: primarySliceId(node) ?? null,
       label: nodeLabel(node),
       forced_by_kind: node.forcedBy?.kind ?? null,
       forced_by_target:
         node.forcedBy === undefined ? null : forcedByTarget(node.forcedBy),
+      dur_ns: node.timing?.durNs ?? null,
     });
   };
   for (const dep of graph.deps.values()) addNode(dep);
   for (const rule of graph.rules.values()) addNode(rule);
+
+  // Detail rows, built in a second pass now that every node_id (including a
+  // dep's resolved rule) is assigned.
+  const ruleRows: Record<string, SqlValue>[] = [];
+  const depRows: Record<string, SqlValue>[] = [];
+  const ruleTargetRows: Record<string, SqlValue>[] = [];
+  for (const rule of graph.rules.values()) {
+    const nodeId = idByKey.get(nodeKey('rule', rule.id))!;
+    ruleRows.push({
+      node_id: nodeId,
+      rule_id: rule.id,
+      dir: rule.dir ?? null,
+      outcome: rule.outcome,
+      action_slice_id: spanSliceId(rule.actionTiming) ?? null,
+      action_dur_ns: rule.actionTiming?.durNs ?? null,
+      n_targets: ruleTargetIds(rule).length,
+      n_static_deps: (rule.staticDepIds ?? []).length,
+      n_dyn_stages: (rule.dynamicDepIds ?? []).length,
+    });
+    for (const path of rule.targetFiles ?? []) {
+      ruleTargetRows.push({
+        node_id: nodeId,
+        path: joinDir(rule.dir, path),
+        is_dir: 0,
+      });
+    }
+    for (const path of rule.targetDirs ?? []) {
+      ruleTargetRows.push({
+        node_id: nodeId,
+        path: joinDir(rule.dir, path),
+        is_dir: 1,
+      });
+    }
+  }
+  for (const dep of graph.deps.values()) {
+    const nodeId = idByKey.get(nodeKey('dep', dep.id))!;
+    const resolvedRuleNodeId =
+      dep.resolvedRuleId === undefined
+        ? undefined
+        : idByKey.get(nodeKey('rule', dep.resolvedRuleId));
+    depRows.push({
+      node_id: nodeId,
+      dep_id: dep.depId,
+      path: dep.id,
+      resolution: depResolutionKind(dep),
+      resolved_rule_node_id: resolvedRuleNodeId ?? null,
+      is_source: dep.isSource ? 1 : 0,
+    });
+  }
 
   // One row per edge from the shared edge set. Endpoints are always present
   // (every node was added above); the guard is just for type-narrowing.
   // `source_kind` (alongside `dest_kind`) lets the relation functions reverse
   // the graph with a column swap instead of a join back to `_dune_node`.
   const edgeRows: Record<string, SqlValue>[] = [];
-  for (const {source, dest, forced} of edges(graph)) {
+  for (const {source, dest, forced, edgeKind, dynDepsStage} of edges(graph)) {
     const sourceId = idByKey.get(nodeKey(source.kind, source.id));
     const destId = idByKey.get(nodeKey(dest.kind, dest.id));
     if (sourceId === undefined || destId === undefined) continue;
@@ -179,19 +290,21 @@ export async function buildSqlGraph(
       dest_kind: dest.kind,
       source_kind: source.kind,
       forced: forced ? 1 : 0,
+      edge_kind: edgeKind ?? null,
+      dyn_deps_stage: dynDepsStage ?? null,
     });
   }
 
-  // Materialize the raw tables (chunked inserts; pre-dropped for idempotent
-  // reload). Drop the views first: they read from the raw tables that
-  // materializeTable recreates.
+  // Materialize the raw/plain tables (chunked inserts; pre-dropped for
+  // idempotent reload). Drop the views first: they read from the raw tables
+  // that materializeTable recreates.
   await engine.tryQuery(`DROP VIEW IF EXISTS ${NODE_TABLE}`);
   await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
   const rawNodeTable = await materializeTable(
     engine,
     RAW_NODE_TABLE,
     'node_id INTEGER, kind TEXT, orig_id TEXT, slice_id INTEGER, label TEXT, ' +
-      'forced_by_kind TEXT, forced_by_target TEXT',
+      'forced_by_kind TEXT, forced_by_target TEXT, dur_ns INTEGER',
     [
       'node_id',
       'kind',
@@ -200,6 +313,7 @@ export async function buildSqlGraph(
       'label',
       'forced_by_kind',
       'forced_by_target',
+      'dur_ns',
     ],
     nodeRows,
   );
@@ -207,16 +321,65 @@ export async function buildSqlGraph(
     engine,
     RAW_EDGE_TABLE,
     'source_node_id INTEGER, dest_node_id INTEGER, dest_kind TEXT, ' +
-      'source_kind TEXT, forced INTEGER',
-    ['source_node_id', 'dest_node_id', 'dest_kind', 'source_kind', 'forced'],
+      'source_kind TEXT, forced INTEGER, edge_kind TEXT, dyn_deps_stage INTEGER',
+    [
+      'source_node_id',
+      'dest_node_id',
+      'dest_kind',
+      'source_kind',
+      'forced',
+      'edge_kind',
+      'dyn_deps_stage',
+    ],
     edgeRows,
+  );
+  const ruleTable = await materializeTable(
+    engine,
+    RULE_TABLE,
+    'node_id INTEGER, rule_id TEXT, dir TEXT, outcome TEXT, ' +
+      'action_slice_id INTEGER, action_dur_ns INTEGER, n_targets INTEGER, ' +
+      'n_static_deps INTEGER, n_dyn_stages INTEGER',
+    [
+      'node_id',
+      'rule_id',
+      'dir',
+      'outcome',
+      'action_slice_id',
+      'action_dur_ns',
+      'n_targets',
+      'n_static_deps',
+      'n_dyn_stages',
+    ],
+    ruleRows,
+  );
+  const depTable = await materializeTable(
+    engine,
+    DEP_TABLE,
+    'node_id INTEGER, dep_id INTEGER, path TEXT, resolution TEXT, ' +
+      'resolved_rule_node_id INTEGER, is_source INTEGER',
+    [
+      'node_id',
+      'dep_id',
+      'path',
+      'resolution',
+      'resolved_rule_node_id',
+      'is_source',
+    ],
+    depRows,
+  );
+  const ruleTargetTable = await materializeTable(
+    engine,
+    RULE_TARGET_TABLE,
+    'node_id INTEGER, path TEXT, is_dir INTEGER',
+    ['node_id', 'path', 'is_dir'],
+    ruleTargetRows,
   );
 
   // Indexes on the raw tables: without these, the recursive walk in
   // `boundedBody` does a full scan of `_dune_edge` per frontier row (the
   // stdlib BFS-backed functions get away without them, since the underlying
   // C++ BFS reads the edge table once). Plain (non-PERFETTO) indexes on plain
-  // tables; dropped along with the table on the next reload.
+  // tables; dropped automatically when their table is dropped.
   await engine.query(
     `CREATE INDEX ${RAW_EDGE_TABLE}_src ON ${RAW_EDGE_TABLE}(source_node_id)`,
   );
@@ -226,13 +389,29 @@ export async function buildSqlGraph(
   await engine.query(
     `CREATE INDEX ${RAW_NODE_TABLE}_id ON ${RAW_NODE_TABLE}(node_id)`,
   );
+  await engine.query(
+    `CREATE UNIQUE INDEX ${RULE_TABLE}_node_id ON ${RULE_TABLE}(node_id)`,
+  );
+  await engine.query(
+    `CREATE UNIQUE INDEX ${DEP_TABLE}_node_id ON ${DEP_TABLE}(node_id)`,
+  );
+  await engine.query(
+    `CREATE INDEX ${RULE_TARGET_TABLE}_node_id ON ${RULE_TARGET_TABLE}(node_id)`,
+  );
+  await engine.query(
+    `CREATE INDEX ${RULE_TARGET_TABLE}_path ON ${RULE_TARGET_TABLE}(path)`,
+  );
 
   // Typed view over the raw node table so `slice_id` (and the ergonomic `node`
   // chip column) are SliceTable::Ids (joinable / clickable / chip-rendered),
   // which a plain CREATE TABLE can't declare. The id columns are sourced as
   // `slice.id` from a join (not the raw INTEGER col) so they genuinely carry the
-  // id type - the same way the stdlib declares JOINID columns. Every raw
-  // slice_id came from the slice table, so the inner join keeps all rows.
+  // id type - the same way the stdlib declares JOINID columns. LEFT JOINed
+  // (unlike the pre-blob-schema plugin's inner join): a node whose timing
+  // never resolved to a lifecycle instant has a NULL `slice_id`, and should
+  // still get a `dune_node` row rather than silently vanish from the mirror.
+  // `ts` comes along for free from the same join - it's the joined slice's own
+  // timestamp, i.e. the span's begin time.
   await engine.query(`
     CREATE PERFETTO VIEW ${NODE_TABLE}(
       node_id LONG,
@@ -242,33 +421,40 @@ export async function buildSqlGraph(
       slice_id JOINID(slice.id),
       label STRING,
       forced_by_kind STRING,
-      forced_by_target STRING
+      forced_by_target STRING,
+      ts LONG,
+      dur_ns LONG
     ) AS
     SELECT n.node_id, s.id AS node, n.kind, n.orig_id, s.id AS slice_id, n.label,
-      n.forced_by_kind, n.forced_by_target
+      n.forced_by_kind, n.forced_by_target, s.ts AS ts, n.dur_ns AS dur_ns
     FROM ${RAW_NODE_TABLE} n
-    JOIN slice s ON s.id = n.slice_id
+    LEFT JOIN slice s ON s.id = n.slice_id
   `);
   // Typed view over the raw edge table exposing `src` / `dst` as SliceTable::Ids
-  // (chip-rendered node columns) plus `forced`, and the raw node_id endpoints
-  // (`src_node_id` / `dst_node_id`, hidden by default in the query tab but handy
-  // for joining back to `dune_node.node_id`). The graph macros read the raw
-  // `_dune_edge` directly.
+  // (chip-rendered node columns) plus `forced`/`edge_kind`/`dyn_deps_stage`, and
+  // the raw node_id endpoints (`src_node_id` / `dst_node_id`, hidden by default
+  // in the query tab but handy for joining back to `dune_node.node_id`). The
+  // graph macros read the raw `_dune_edge` directly. LEFT JOINed to `slice` for
+  // the same reason as `dune_node` above - the join to `_dune_node` itself stays
+  // INNER, since every edge's endpoints are nodes that were added above.
   await engine.query(`
     CREATE PERFETTO VIEW ${EDGE_TABLE}(
       src JOINID(slice.id),
       dst JOINID(slice.id),
       forced LONG,
+      edge_kind STRING,
+      dyn_deps_stage LONG,
       src_node_id LONG,
       dst_node_id LONG
     ) AS
     SELECT ss.id AS src, sd.id AS dst, e.forced AS forced,
+      e.edge_kind AS edge_kind, e.dyn_deps_stage AS dyn_deps_stage,
       e.source_node_id AS src_node_id, e.dest_node_id AS dst_node_id
     FROM ${RAW_EDGE_TABLE} e
     JOIN ${RAW_NODE_TABLE} sn ON sn.node_id = e.source_node_id
-    JOIN slice ss ON ss.id = sn.slice_id
+    LEFT JOIN slice ss ON ss.id = sn.slice_id
     JOIN ${RAW_NODE_TABLE} dn ON dn.node_id = e.dest_node_id
-    JOIN slice sd ON sd.id = dn.slice_id
+    LEFT JOIN slice sd ON sd.id = dn.slice_id
   `);
 
   // graph_reachable_bfs! lives in this stdlib module.
@@ -280,6 +466,10 @@ export async function buildSqlGraph(
   return {
     nodeId(node: GraphNode): number | undefined {
       return idByKey.get(nodeKey(node.kind, node.id));
+    },
+
+    nodeByNodeId(nodeId: number): GraphNode | undefined {
+      return nodesById.get(nodeId);
     },
 
     async distances(
@@ -301,9 +491,9 @@ export async function buildSqlGraph(
       // Drop the relation function/macro vtabs first (a stale one left around
       // after the raw tables are dropped fails opaquely - "no such table:
       // _dune_edge" - on the next ad-hoc query instead of cleanly), then the
-      // views, then the raw tables they read from. Macros can't be dropped -
-      // there's no `DROP PERFETTO MACRO` - but CREATE OR REPLACE on the next
-      // reload handles them.
+      // views, then the raw/plain tables they (or the query tab) read from.
+      // Macros can't be dropped - there's no `DROP PERFETTO MACRO` - but
+      // CREATE OR REPLACE on the next reload handles them.
       for (const {name} of RELATION_FUNCTIONS) {
         await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
       }
@@ -311,6 +501,9 @@ export async function buildSqlGraph(
       await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
       await rawEdgeTable[Symbol.asyncDispose]();
       await rawNodeTable[Symbol.asyncDispose]();
+      await ruleTable[Symbol.asyncDispose]();
+      await depTable[Symbol.asyncDispose]();
+      await ruleTargetTable[Symbol.asyncDispose]();
     },
   };
 }

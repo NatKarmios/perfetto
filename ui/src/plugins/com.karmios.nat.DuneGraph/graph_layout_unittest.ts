@@ -16,11 +16,11 @@ import type {DepNode, GraphEdge, GraphNode, RuleNode} from './graph';
 import {layoutGraph, NODE_WIDTH} from './graph_layout';
 
 function dep(id: string): DepNode {
-  return {kind: 'dep', id, sliceId: 0};
+  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false};
 }
 
 function rule(id: string): RuleNode {
-  return {kind: 'rule', id, sliceId: 0};
+  return {kind: 'rule', id, outcome: 'executed'};
 }
 
 function edge(source: GraphNode, dest: GraphNode): GraphEdge {

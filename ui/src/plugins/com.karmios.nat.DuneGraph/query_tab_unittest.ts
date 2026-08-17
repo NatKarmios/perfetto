@@ -31,19 +31,19 @@ function project(items: readonly PathTreeItem<TreeLeafEntry>[]) {
   }));
 }
 
-function dep(id: string, sliceId: number): DepNode {
-  return {kind: 'dep', id, sliceId};
+function dep(id: string): DepNode {
+  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false};
 }
 
-function rule(id: string, sliceId: number, dir?: string): RuleNode {
-  return {kind: 'rule', id, sliceId, dir};
+function rule(id: string, dir?: string): RuleNode {
+  return {kind: 'rule', id, dir, outcome: 'executed'};
 }
 
 describe('buildNodeTreeItems', () => {
   it('files a dep by its raw id path, a rule by its dir + bare id', () => {
-    const depA = dep('a/b/dep1.ml', 1);
-    const depB = dep('a/b/dep2.ml', 2);
-    const ruleA = rule('42', 3, 'a/b');
+    const depA = dep('a/b/dep1.ml');
+    const depB = dep('a/b/dep2.ml');
+    const ruleA = rule('42', 'a/b');
     const nodes = new Map<number, GraphNode>([
       [1, depA],
       [2, depB],
@@ -63,7 +63,7 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('files a dirless rule at the top level', () => {
-    const ruleA = rule('7', 5);
+    const ruleA = rule('7');
     const items = buildNodeTreeItems([{node: 5}], 'node', false, () => ruleA);
     expect(project(items)).toEqual([
       {dir: [], leaf: '/7', count: 1, node: '7'},
@@ -71,7 +71,7 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('merges rows resolving to the same node into one entry when merge is on', () => {
-    const depA = dep('x.ml', 9);
+    const depA = dep('x.ml');
     const rows: Row[] = [{node: 9}, {node: 9}, {node: 9}];
     const resolve = () => depA;
 
@@ -81,7 +81,7 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('keeps one entry per row when merge is off', () => {
-    const depA = dep('x.ml', 9);
+    const depA = dep('x.ml');
     const rows: Row[] = [{node: 9}, {node: 9}];
     const resolve = () => depA;
 
@@ -100,7 +100,7 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('skips rows with a null or missing cell in the group column', () => {
-    const depA = dep('x.ml', 9);
+    const depA = dep('x.ml');
     const rows: Row[] = [{node: 9}, {node: null}, {other: 1}];
     const items = buildNodeTreeItems(rows, 'node', true, () => depA);
     expect(project(items)).toEqual([
@@ -109,7 +109,7 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('does not merge a dangling value with a resolved node sharing its string form', () => {
-    const depA = dep('9', 9);
+    const depA = dep('9');
     const rows: Row[] = [{node: 9}, {node: 9}];
     // First row resolves, second doesn't - shouldn't be treated as the same
     // entry just because String(value) collides with the resolved node's id.

@@ -13,14 +13,20 @@
 // limitations under the License.
 
 import type {BuildGraph, DepNode, GraphNode, RuleNode} from './graph';
-import {descendants, forcers, inducedEdges, ruleTargetIds} from './graph';
+import {
+  descendants,
+  edges,
+  forcers,
+  inducedEdges,
+  ruleTargetIds,
+} from './graph';
 
 function dep(id: string, opts: Partial<DepNode> = {}): DepNode {
-  return {kind: 'dep', id, sliceId: 0, ...opts};
+  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false, ...opts};
 }
 
 function rule(id: string, opts: Partial<RuleNode> = {}): RuleNode {
-  return {kind: 'rule', id, sliceId: 0, ...opts};
+  return {kind: 'rule', id, outcome: 'executed', ...opts};
 }
 
 function graphOf(nodes: readonly GraphNode[]): BuildGraph {
@@ -268,5 +274,35 @@ describe('ruleTargetIds', () => {
     const r = rule('r1', {dir: 'src/foo'});
 
     expect(ruleTargetIds(r)).toEqual([]);
+  });
+});
+
+describe('edges', () => {
+  it('tags every edge with its edgeKind, and a dynamic edge with its stage', () => {
+    const a = dep('a', {resolvedRuleId: 'r1'});
+    const r1 = rule('r1', {
+      staticDepIds: ['b'],
+      dynamicDepIds: [['c'], ['d']],
+    });
+    const b = dep('b');
+    const c = dep('c');
+    const d = dep('d', {expandedDepIds: ['e']});
+    const e = dep('e');
+    const graph = graphOf([a, r1, b, c, d, e]);
+
+    const byPair = new Map(
+      [...edges(graph)].map((edge) => [`${edge.source.id}->${edge.dest.id}`, edge]),
+    );
+    expect(byPair.get('a->r1')).toMatchObject({edgeKind: 'resolved'});
+    expect(byPair.get('r1->b')).toMatchObject({edgeKind: 'static'});
+    expect(byPair.get('r1->c')).toMatchObject({
+      edgeKind: 'dynamic',
+      dynDepsStage: 0,
+    });
+    expect(byPair.get('r1->d')).toMatchObject({
+      edgeKind: 'dynamic',
+      dynDepsStage: 1,
+    });
+    expect(byPair.get('d->e')).toMatchObject({edgeKind: 'expanded'});
   });
 });

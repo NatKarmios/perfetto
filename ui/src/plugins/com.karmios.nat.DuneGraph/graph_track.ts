@@ -14,7 +14,7 @@
 
 import {HSLColor} from '../../base/color';
 import type {ColorScheme} from '../../base/color_scheme';
-import {getColorForSlice, makeColorScheme} from '../../components/colorizer';
+import {makeColorScheme} from '../../components/colorizer';
 import {SliceTrack} from '../../components/tracks/slice_track';
 import type {TrackRenderer} from '../../public/track';
 import type {Trace} from '../../public/trace';
@@ -22,9 +22,9 @@ import {SourceDataset} from '../../trace_processor/dataset';
 import {LONG, NUM, STR} from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
 import type {DuneGraphController} from './controller';
+import type {GraphNode} from './graph';
 import {nodeLabel} from './graph';
 import {decorateDepPath} from './node_display';
-import {DEP_SLICE, RULE_SLICE} from './slice_args_graph_source';
 
 // URI/name of the single derived track projecting the graph pane's visible
 // nodes onto the timeline (see controller.ts's installTimeline()).
@@ -36,10 +36,11 @@ export const GRAPH_TRACK_NAME = 'Dune graph';
 // can't read CSS vars, so the values are duplicated here - keep in sync.
 // --pf-color-warning differs slightly between themes; this uses the light
 // theme's value since the colour is baked into the track's cached data frame
-// and can't react to a theme switch.
-const SLICE_COLORS = new Map<string, ColorScheme>([
-  [DEP_SLICE, makeColorScheme(new HSLColor('#2667e7'))],
-  [RULE_SLICE, makeColorScheme(new HSLColor('#e89e00'))],
+// and can't react to a theme switch. Keyed by `kind` (not slice name, which is
+// now the node's own label, not a fixed track name like "exec-rule").
+const KIND_COLORS = new Map<GraphNode['kind'], ColorScheme>([
+  ['dep', makeColorScheme(new HSLColor('#2667e7'))],
+  ['rule', makeColorScheme(new HSLColor('#e89e00'))],
 ]);
 
 interface Row {
@@ -47,14 +48,22 @@ interface Row {
   readonly ts: bigint;
   readonly dur: bigint;
   readonly name: string;
+  readonly kind: string;
 }
 
-const SCHEMA = {id: NUM, ts: LONG, dur: LONG, name: STR};
+const SCHEMA = {id: NUM, ts: LONG, dur: LONG, name: STR, kind: STR};
 
 /**
  * Builds the renderer for the "Dune graph" track: a slice track whose content
  * is exactly `controller.visibleNodes` (selection minus hidden-rules, see
  * graph_panel.ts), re-querying whenever that set changes.
+ *
+ * Reads the SQL mirror (`dune_node`, see sql_graph.ts) rather than `slice`
+ * directly - graph spans are zero-width instants on their real tracks, so the
+ * projection materializes real intervals from `dur_ns` instead. Row ids are
+ * therefore `node_id`s, not slice ids - see controller.ts's `nodeForNodeId`/
+ * `goToNode`, which key the derived track differently from a node's real
+ * originating track for exactly this reason.
  *
  * The dataset is a closure memoized on `controller.graphVersion` - the version
  * is bumped by every mutation that can change the visible set (see
@@ -71,15 +80,23 @@ export function createGraphTrackRenderer(
   const dataset = (): SourceDataset<typeof SCHEMA> => {
     if (controller.graphVersion !== cachedVersion) {
       cachedVersion = controller.graphVersion;
-      const sliceIds = controller.visibleNodes.map((n) => n.sliceId);
-      // SourceDataset's `filter: {col, in: []}` would emit `id IN ()`, which is
-      // invalid SQLite - fall back to an always-false predicate instead.
+      const nodeIds = controller.visibleNodes
+        .map((n) => controller.nodeIdOf(n))
+        .filter((id): id is number => id !== undefined);
+      // SourceDataset's `filter: {col, in: []}` would emit `node_id IN ()`,
+      // which is invalid SQLite - fall back to an always-false predicate
+      // instead. `ts is not null` excludes a node whose timing never resolved
+      // to a lifecycle instant (see sql_graph.ts's LEFT JOIN) - it has nothing
+      // to project onto the timeline. `ifnull(dur_ns, -1)` is Perfetto's
+      // "runs to end of trace" convention, exactly right for an unfinished
+      // span (a `dur_ns`-less finish - see graph.ts's `SpanTiming`).
       const where =
-        sliceIds.length === 0
+        nodeIds.length === 0
           ? '0'
-          : `id IN (${sqlValueToSqliteString(sliceIds)})`;
+          : `ts is not null and node_id in (${sqlValueToSqliteString(nodeIds)})`;
       cachedDataset = new SourceDataset({
-        src: `select id, ts, dur, name from slice where ${where}`,
+        src: `select node_id as id, ts, ifnull(dur_ns, -1) as dur, label as name, kind
+              from dune_node where ${where}`,
         schema: SCHEMA,
       });
     }
@@ -94,13 +111,14 @@ export function createGraphTrackRenderer(
     // this track for plain "slice" ids, racing with the node's original track
     // (see controller.ts's goToNode()).
     sliceName: (row: Row) => {
-      const node = controller.nodeForSliceId(row.id);
+      const node = controller.nodeForNodeId(row.id);
       if (node === undefined) return row.name;
       return node.kind === 'dep'
         ? decorateDepPath(node.id).text
         : `rule ${nodeLabel(node)}`;
     },
     colorizer: (row: Row) =>
-      SLICE_COLORS.get(row.name) ?? getColorForSlice(row.name),
+      KIND_COLORS.get(row.kind as GraphNode['kind']) ??
+      KIND_COLORS.get('dep')!,
   });
 }

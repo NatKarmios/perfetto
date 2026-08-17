@@ -13,10 +13,11 @@
 // limitations under the License.
 
 import m from 'mithril';
+import {Duration} from '../../base/time';
 import {Icon} from '../../widgets/icon';
 import type {PathSeg} from './path_tree';
 import {splitEntry, splitPath} from './path_tree';
-import type {GraphNode} from './graph';
+import type {DepResolutionKind, GraphNode, RuleOutcome} from './graph';
 
 // Matches a leading `_build/<dir>` prefix, capturing `_build/<dir>` so it can be
 // folded away into the icon tooltip. The trailing `/` is optional: a path can
@@ -94,6 +95,45 @@ export function forcedByText(
     default:
       return undefined;
   }
+}
+
+// Human-readable label for a rule's outcome (see `RuleOutcome` in graph.ts),
+// shared by the current-selection panel's header chip and the query tab's
+// `dune_rule.outcome` column formatting.
+export function outcomeLabel(outcome: RuleOutcome): string {
+  switch (outcome) {
+    case 'executed':
+      return 'executed';
+    case 'local-cache-hit':
+      return 'local cache hit';
+    case 'shared-cache-hit':
+      return 'shared cache hit';
+    case 'unfinished':
+      return 'unfinished';
+  }
+}
+
+// A dep's resolution label, as stored in `dune_dep.resolution` (see
+// `depResolutionKind` in graph.ts) - `rule` / `source` / `expanded` /
+// `unfinished` - rendered for a human. Used by the current-selection panel's
+// header chip for a dep node.
+export function depResolutionLabel(resolution: DepResolutionKind): string {
+  switch (resolution) {
+    case 'rule':
+      return 'built';
+    case 'source':
+      return 'source';
+    case 'expanded':
+      return 'expanded';
+    case 'unfinished':
+      return 'unfinished';
+  }
+}
+
+// A `dur_ns` value (nanoseconds, as stored throughout the SQL mirror and the
+// node model's `SpanTiming`) as a human-readable duration, e.g. "88ms".
+export function formatDurNs(durNs: number): string {
+  return Duration.humanise(BigInt(Math.round(durNs)));
 }
 
 /**
