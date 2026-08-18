@@ -398,10 +398,12 @@ function codeCase(col: string, values: readonly string[], base = 0): string {
  * slice, `inner` drops it. Both cases existed before this and are preserved.
  *
  * This is the plugin's hottest join - the relation functions pay it twice per
- * projected row - which is why the timing table has the shape it does rather
- * than being a `PERFETTO TABLE` like everything else the pipeline builds (see
- * `TIMING_SCHEMA` in lifecycle_sql.ts). The `kind` side of the key is written
- * here as the integer code that table stores, not as the name the views expose.
+ * projected row, and against a `PERFETTO TABLE` each probe is a scan of the
+ * whole table, so a full `dune_node` projection on a monorepo-scale trace is
+ * ~80 s. That is a known, measured cost with a known two-line fix that is *not*
+ * currently affordable; see the comment on `TIMING_TABLE` in lifecycle_sql.ts
+ * before touching either side of it. The `kind` side of the key is written here
+ * as the integer code that table stores, not as the name the views expose.
  */
 function timingJoin(
   node: string,

@@ -86,42 +86,42 @@ export function timingKindCode(kind: TimingKind): number {
 export const TIMING_TABLE = '_dune_timing';
 
 /**
- * {@link TIMING_TABLE}'s schema, and the reason it is the one table here that is
- * a plain SQLite table rather than a `PERFETTO TABLE`.
+ * Why this is a `PERFETTO TABLE` and not a plain, indexed SQLite table, even
+ * though a plain one answers the mirror's hottest join ~1,000× faster.
  *
  * Every read of this table is an equality lookup on (kind, key), and the node
  * mirror's views join it that way for every row they project - twice per row for
- * the relation functions, which need the timing of both endpoints. As a
- * `PERFETTO TABLE` that probe cost **94 µs** natively (~205 µs in wasm) *even
- * with a `PERFETTO INDEX` on (kind, key)*, which a join probe plainly does not
- * use: it is a scan of the whole table per row. That one join was the single
- * biggest thing left in the plugin's performance profile - on the monorepo
- * trace's 818k nodes and 1.2M timing rows it was 78 s to project `dune_node`
- * once, and 31 s for `dune_children` on a 156k-child rule whose walk itself
- * takes under 0.1 s.
+ * the relation functions, which need the timing of both endpoints. A
+ * `PERFETTO TABLE` serves that probe by *scanning the whole table per driving
+ * row*, at 94 µs a probe natively (~205 µs in wasm); a `PERFETTO INDEX` on
+ * (kind, key) does not change that, and neither does making `kind` an integer.
+ * On the monorepo trace's 818k nodes that is 78 s to project `dune_node` once
+ * and 31 s for `dune_children` on a 156k-child rule whose walk itself takes
+ * under 0.1 s.
  *
- * A `WITHOUT ROWID` table keyed on (kind, key) makes the probe a single b-tree
- * descent - the key *is* the b-tree, so there is no rowid indirection and no
- * separate index to maintain - and needs both halves of the key to be integers,
- * which is what {@link KIND_CODES} is for. Measured over the same 818k nodes on
- * the same trace, same rows out: 818k bare probes go from 77 s to **0.08 s**,
- * `dune_node` from 78 s to **1.0 s**, that `dune_children` from 31 s to
- * **0.53 s**, for no measurable increase in peak RSS and no increase in the time
- * to build the table (the `PERFETTO INDEX` it replaces wasn't free either). A
- * plain rowid table with a plain `CREATE INDEX ... (kind, key)` also fixes the
- * asymptotics (1.3 µs a probe) but is ~4× the lookup cost and an extra index
- * object, so this shape wins on both counts.
+ * Moving the table to `CREATE TABLE ... WITHOUT ROWID` with
+ * `PRIMARY KEY (kind, key)` fixes exactly that: measured on the same trace, same
+ * rows out, 818k probes drop from 77 s to 0.08 s, `dune_node` to 1.0 s and that
+ * `dune_children` to 0.53 s. It was landed and then **reverted**, because it
+ * costs the edge tier more than it is worth:
  *
- * Note the `PRIMARY KEY` of a `WITHOUT ROWID` table is implicitly `NOT NULL` and
- * unique, so the INSERT below would fail rather than silently store a row
- * nothing can join. The pipeline already guarantees both: `key IS NOT NULL` is
- * filtered on, `kind` can only be one of the three tracks selected for, and
- * `rn = 1` keeps exactly one row per (kind, key).
+ * - The plain table is only 33.7 MB of SQLite pages (8,240 pages, ~28 B/row for
+ *   1.2M rows) and adds **nothing** to the wasm heap when it is built - it lands
+ *   inside the arena freed after the trace parse, exactly like the node tier.
+ * - But it takes 33.7 MB *of that arena*, and on the monorepo trace the edge
+ *   tier has no margin left: with the plain table, `CREATE INDEX _dune_edge_dst`
+ *   over 28.7M rows fails with `database or disk is full` at a 4,125 MB heap,
+ *   where the `PERFETTO TABLE` version finishes at 3,110 MB.
+ * - It is not this table's shape that does it. Keeping the `PERFETTO TABLE` and
+ *   adding a *dummy* rowid table holding the same 1.2M rows fails the same
+ *   statement, at 3,110 MB. **Any** ~34 MB of extra SQLite pages present before
+ *   the edge index is built is enough. The monorepo edge tier is at zero margin
+ *   today, and that is the thing to fix before this table can be made fast.
+ *
+ * So the fast shape is a two-line change away and is known to work - see the
+ * plan's write-up - but it needs headroom in the edge tier first. Do not re-land
+ * it without re-running the wasm harness end to end on the monorepo trace.
  */
-const TIMING_SCHEMA = `kind INTEGER, key INTEGER, start_slice_id INTEGER,
-    finish_slice_id INTEGER, dur_ns INTEGER, occurrence_count INTEGER,
-    PRIMARY KEY (kind, key)`;
-
 // Intermediates, dropped as soon as the table above is built - `_dune_instant`
 // and `_dune_seq` are one row per instant, which is the biggest thing this
 // module ever holds.
@@ -250,15 +250,9 @@ export async function buildLifecycleTiming(
       `);
 
       // The node's canonical timing is its earliest occurrence, with the total
-      // occurrence count alongside (the `×N` hint in the UI). Written into a
-      // plain `WITHOUT ROWID` table rather than a `PERFETTO TABLE` because this
-      // is the one table here that gets *probed*, per projected row - see
-      // {@link TIMING_SCHEMA} for the ~1,000× that is worth.
-      await engine.query(
-        `CREATE TABLE ${TIMING_TABLE}(${TIMING_SCHEMA}) WITHOUT ROWID`,
-      );
+      // occurrence count alongside (the `×N` hint in the UI).
       await engine.query(`
-        INSERT INTO ${TIMING_TABLE}
+        CREATE PERFETTO TABLE ${TIMING_TABLE} AS
         SELECT kind, key, start_slice_id, finish_slice_id, dur_ns,
           occurrence_count
         FROM (
@@ -270,6 +264,14 @@ export async function buildLifecycleTiming(
         )
         WHERE rn = 1
       `);
+
+      // Every read of this table is an equality lookup on (kind, key). This
+      // index does *not* make a join probe against it cheap - see the comment on
+      // the table above - but it does serve the single-key `timings()` lookup.
+      await engine.query(
+        `CREATE PERFETTO INDEX ${TIMING_TABLE}_key ` +
+          `ON ${TIMING_TABLE}(kind, key)`,
+      );
     } finally {
       // Free the per-instant intermediates whether or not the build finished.
       await dropIntermediates();
