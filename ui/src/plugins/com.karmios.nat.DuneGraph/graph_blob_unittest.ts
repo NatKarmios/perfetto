@@ -12,10 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {BlobChunk} from './graph_blob';
+import type {
+  BlobChunk,
+  DepRecord,
+  GraphBlobSink,
+  RuleRecord,
+  SectionChunks,
+  StringTable,
+} from './graph_blob';
 import {
   DEPS_SECTION,
   DICT_SECTION,
+  EMPTY_STRING_TABLE,
   GRAPH_BLOB_VERSION,
   RULES_SECTION,
   joinChunks,
@@ -30,6 +38,47 @@ function chunk(
   version = GRAPH_BLOB_VERSION,
 ): BlobChunk {
   return {name, version, seq, total, data};
+}
+
+// The parser streams into a sink rather than returning the records (see
+// graph_blob.ts), so these tests collect them - which is also what a sink is
+// allowed to do, since a record isn't reused after the call.
+class Collected implements GraphBlobSink {
+  dict: StringTable = EMPTY_STRING_TABLE;
+  readonly rules: RuleRecord[] = [];
+  readonly deps: DepRecord[] = [];
+
+  strings(table: StringTable): void {
+    this.dict = table;
+  }
+
+  rule(record: RuleRecord): void {
+    this.rules.push(record);
+  }
+
+  dep(record: DepRecord): void {
+    this.deps.push(record);
+  }
+}
+
+// Most tests pass one chunk per section; passing an array splits the payload at
+// a chosen point, which is how the chunk-boundary behaviour is exercised.
+async function parse(
+  sections: Record<string, string | readonly string[]>,
+): Promise<Collected> {
+  const map = new Map<string, SectionChunks>();
+  for (const [name, payload] of Object.entries(sections)) {
+    const parts = typeof payload === 'string' ? [payload] : payload;
+    map.set(
+      name,
+      (async function* () {
+        for (const part of parts) yield part;
+      })(),
+    );
+  }
+  const collected = new Collected();
+  await parseGraphBlob(map, collected);
+  return collected;
 }
 
 describe('joinChunks', () => {
@@ -55,13 +104,18 @@ describe('joinChunks', () => {
     // Two chunks (matching `total`), but seq 3 stands in for seq 1 - a
     // distinct failure from a plain dropped chunk (which the chunk-count
     // check above already catches).
-    const chunks = [chunk('graph-dict', 0, 2, 'a'), chunk('graph-dict', 3, 2, 'b')];
+    const chunks = [
+      chunk('graph-dict', 0, 2, 'a'),
+      chunk('graph-dict', 3, 2, 'b'),
+    ];
     expect(() => joinChunks('graph-dict', chunks)).toThrow(/missing/i);
   });
 
   it('throws on a dropped chunk (wrong count)', () => {
     const chunks = [chunk('graph-dict', 0, 2, 'a')];
-    expect(() => joinChunks('graph-dict', chunks)).toThrow(/expected 2 chunks/i);
+    expect(() => joinChunks('graph-dict', chunks)).toThrow(
+      /expected 2 chunks/i,
+    );
   });
 
   it('throws on a duplicate seq', () => {
@@ -73,24 +127,28 @@ describe('joinChunks', () => {
   });
 
   it('throws on an inconsistent total across chunks', () => {
-    const chunks = [chunk('graph-dict', 0, 1, 'a'), chunk('graph-dict', 1, 2, 'b')];
+    const chunks = [
+      chunk('graph-dict', 0, 1, 'a'),
+      chunk('graph-dict', 1, 2, 'b'),
+    ];
     expect(() => joinChunks('graph-dict', chunks)).toThrow(/total/i);
   });
 });
 
 describe('parseGraphBlob - graph-dict', () => {
-  it('round-trips escaped values (\\\\, \\t, \\n)', () => {
-    const blob = parseGraphBlob(
-      new Map([[DICT_SECTION, '0\tplain/path\n1\twith\\ttab\n2\twith\\nnewline\n3\tliteral\\\\backslash\n']]),
-    );
+  it('round-trips escaped values (\\\\, \\t, \\n)', async () => {
+    const blob = await parse({
+      [DICT_SECTION]:
+        '0\tplain/path\n1\twith\\ttab\n2\twith\\nnewline\n3\tliteral\\\\backslash\n',
+    });
     expect(blob.dict.get(0)).toEqual('plain/path');
     expect(blob.dict.get(1)).toEqual('with\ttab');
     expect(blob.dict.get(2)).toEqual('with\nnewline');
     expect(blob.dict.get(3)).toEqual('literal\\backslash');
   });
 
-  it('splits only on the first tab, so an escaped-tab value is not mis-split', () => {
-    const blob = parseGraphBlob(new Map([[DICT_SECTION, '0\ta\\tb\tc\n']]));
+  it('splits only on the first tab, so an escaped-tab value is not mis-split', async () => {
+    const blob = await parse({[DICT_SECTION]: '0\ta\\tb\tc\n'});
     // The line's only *unescaped* tab is the id/value separator; everything
     // after it - including the literal `\t` that decodes to a tab, and the
     // bare `\t` that separates "b" from "c" in the raw csexp string - is the
@@ -98,21 +156,44 @@ describe('parseGraphBlob - graph-dict', () => {
     expect(blob.dict.get(0)).toEqual('a\tb\tc');
   });
 
-  it('skips a line with no tab', () => {
-    const blob = parseGraphBlob(new Map([[DICT_SECTION, 'garbage\n0\tok\n']]));
+  it('skips a line with no tab', async () => {
+    const blob = await parse({[DICT_SECTION]: 'garbage\n0\tok\n'});
     expect(blob.dict.size).toEqual(1);
     expect(blob.dict.get(0)).toEqual('ok');
+  });
+
+  it('returns undefined for an id the table does not hold', async () => {
+    const blob = await parse({[DICT_SECTION]: '0\ta\n2\tc\n'});
+    expect(blob.dict.get(1)).toBeUndefined();
+    expect(blob.dict.get(3)).toBeUndefined();
+    expect(blob.dict.get(-1)).toBeUndefined();
+    expect(blob.dict.size).toEqual(2);
+  });
+
+  it('indexes a sparse id space (the non-array fallback path)', async () => {
+    const blob = await parse({[DICT_SECTION]: `0\ta\n${1e6}\tfar\n`});
+    expect(blob.dict.get(0)).toEqual('a');
+    expect(blob.dict.get(1e6)).toEqual('far');
+    expect(blob.dict.size).toEqual(2);
+  });
+
+  it('reassembles a value split across a chunk boundary', async () => {
+    const blob = await parse({
+      [DICT_SECTION]: ['0\tsome/pa', 'th/here\n1\tb\n'],
+    });
+    expect(blob.dict.get(0)).toEqual('some/path/here');
+    expect(blob.dict.get(1)).toEqual('b');
   });
 });
 
 describe('parseGraphBlob - graph-rules', () => {
-  it('parses a complete executed-rule line', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '412\t6\t7,8\t9\tX\td5\t1,2\t3,4|5\n']]),
-    );
+  it('parses a complete executed-rule line', async () => {
+    const blob = await parse({
+      [RULES_SECTION]: '412\t6\t7,8\t9\tX\td5\t1,2\t3,4|5\n',
+    });
     expect(blob.rules).toEqual([
       {
-        ruleId: '412',
+        ruleId: 412,
         dirId: 6,
         targetFileIds: [7, 8],
         targetDirIds: [9],
@@ -129,19 +210,15 @@ describe('parseGraphBlob - graph-rules', () => {
     ['L', 'local-cache-hit'],
     ['S', 'shared-cache-hit'],
     ['?', 'unfinished'],
-  ] as const)('maps outcome %s to %s', (code, expected) => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, `0\t\t\t\t${code}\t\t\t\n`]]),
-    );
+  ] as const)('maps outcome %s to %s', async (code, expected) => {
+    const blob = await parse({[RULES_SECTION]: `0\t\t\t\t${code}\t\t\t\n`});
     expect(blob.rules[0].outcome).toEqual(expected);
   });
 
-  it('parses an unfinished rule line (crash/interrupt flush)', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '281\t6\t7\t\t?\td5\t\t\n']]),
-    );
+  it('parses an unfinished rule line (crash/interrupt flush)', async () => {
+    const blob = await parse({[RULES_SECTION]: '281\t6\t7\t\t?\td5\t\t\n'});
     expect(blob.rules[0]).toEqual({
-      ruleId: '281',
+      ruleId: 281,
       dirId: 6,
       targetFileIds: [7],
       targetDirIds: [],
@@ -152,77 +229,91 @@ describe('parseGraphBlob - graph-rules', () => {
     });
   });
 
-  it('parses an empty dyn_dep_stages field as no stages', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '0\t1\t2\t\tX\t\t\t\n']]),
-    );
+  it('parses an empty dyn_dep_stages field as no stages', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t1\t2\t\tX\t\t\t\n'});
     expect(blob.rules[0].dynDepStages).toEqual([]);
   });
 
-  it('leaves dirId undefined when the field is empty', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '0\t\t\t\tX\t\t\t\n']]),
-    );
+  it('leaves dirId undefined when the field is empty', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t\n'});
     expect(blob.rules[0].dirId).toBeUndefined();
   });
 
   it.each([
-    ['r99', {kind: 'RULE', ruleId: '99'}],
+    ['r99', {kind: 'RULE', ruleId: 99}],
     ['d7', {kind: 'DEP', depId: 7}],
     ['i3', {kind: 'DYNAMIC_INCLUDES', pathId: 3}],
     ['g4', {kind: 'GEN_RULES', pathId: 4}],
     ['p5', {kind: 'PFORM', pathId: 5}],
     ['c', {kind: 'CONFIGURATOR'}],
     ['q', {kind: 'REQUEST'}],
-  ] as const)('parses forced_by tag %s', (tag, expected) => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, `0\t\t\t\tX\t${tag}\t\t\n`]]),
-    );
+  ] as const)('parses forced_by tag %s', async (tag, expected) => {
+    const blob = await parse({[RULES_SECTION]: `0\t\t\t\tX\t${tag}\t\t\n`});
     expect(blob.rules[0].forcedBy).toEqual(expected);
   });
 
-  it('degrades an unrecognised forced_by tag to UNKNOWN rather than throwing', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '0\t\t\t\tX\tz123\t\t\n']]),
-    );
+  it('degrades an unrecognised forced_by tag to UNKNOWN rather than throwing', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\tz123\t\t\n'});
     expect(blob.rules[0].forcedBy).toEqual({kind: 'UNKNOWN'});
   });
 
-  it('leaves forced_by undefined when the field is empty', () => {
-    const blob = parseGraphBlob(
-      new Map([[RULES_SECTION, '0\t\t\t\tX\t\t\t\n']]),
-    );
+  it('leaves forced_by undefined when the field is empty', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t\n'});
     expect(blob.rules[0].forcedBy).toBeUndefined();
+  });
+
+  it('parses a record split across a chunk boundary', async () => {
+    // Two rule lines, cut mid-way through the first one's dep list.
+    const payload = '412\t6\t7,8\t9\tX\td5\t1,2\t3,4|5\n7\t\t\t\tL\t\t9\t\n';
+    const cut = payload.indexOf('1,2') + 1;
+    const blob = await parse({
+      [RULES_SECTION]: [payload.slice(0, cut), payload.slice(cut)],
+    });
+    expect(blob.rules.map((r) => r.ruleId)).toEqual([412, 7]);
+    expect(blob.rules[0].depIds).toEqual([1, 2]);
+    expect(blob.rules[1].depIds).toEqual([9]);
+  });
+
+  it('parses a final record with no trailing newline', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t'});
+    expect(blob.rules.map((r) => r.ruleId)).toEqual([0]);
   });
 });
 
 describe('parseGraphBlob - graph-deps', () => {
-  it('parses a source dep forced by a rule', () => {
-    const blob = parseGraphBlob(new Map([[DEPS_SECTION, '9\ts\tr281\n']]));
+  it('parses a source dep forced by a rule', async () => {
+    const blob = await parse({[DEPS_SECTION]: '9\ts\tr281\n'});
     expect(blob.deps).toEqual([
-      {depId: 9, resolution: {kind: 'source'}, forcedBy: {kind: 'RULE', ruleId: '281'}},
+      {
+        depId: 9,
+        resolution: {kind: 'source'},
+        forcedBy: {kind: 'RULE', ruleId: 281},
+      },
     ]);
   });
 
-  it('parses a dep resolved to a rule', () => {
-    const blob = parseGraphBlob(new Map([[DEPS_SECTION, '11\tr314\tr281\n']]));
-    expect(blob.deps[0].resolution).toEqual({kind: 'rule', ruleId: '314'});
+  it('parses a dep resolved to a rule', async () => {
+    const blob = await parse({[DEPS_SECTION]: '11\tr314\tr281\n'});
+    expect(blob.deps[0].resolution).toEqual({kind: 'rule', ruleId: 314});
   });
 
-  it('parses a dep resolved to an expansion list', () => {
-    const blob = parseGraphBlob(new Map([[DEPS_SECTION, '3\tx1,2,3\tc\n']]));
-    expect(blob.deps[0].resolution).toEqual({kind: 'expanded', depIds: [1, 2, 3]});
+  it('parses a dep resolved to an expansion list', async () => {
+    const blob = await parse({[DEPS_SECTION]: '3\tx1,2,3\tc\n'});
+    expect(blob.deps[0].resolution).toEqual({
+      kind: 'expanded',
+      depIds: [1, 2, 3],
+    });
   });
 
-  it('parses an unfinished dep line', () => {
-    const blob = parseGraphBlob(new Map([[DEPS_SECTION, '5\t?\td2\n']]));
+  it('parses an unfinished dep line', async () => {
+    const blob = await parse({[DEPS_SECTION]: '5\t?\td2\n'});
     expect(blob.deps[0].resolution).toEqual({kind: 'unfinished'});
   });
 });
 
 describe('parseGraphBlob - missing sections', () => {
-  it('treats an absent section as empty rather than throwing', () => {
-    const blob = parseGraphBlob(new Map([[DICT_SECTION, '0\ta\n']]));
+  it('treats an absent section as empty rather than throwing', async () => {
+    const blob = await parse({[DICT_SECTION]: '0\ta\n'});
     expect(blob.rules).toEqual([]);
     expect(blob.deps).toEqual([]);
   });

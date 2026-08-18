@@ -22,17 +22,17 @@ import {EmptyState} from '../../widgets/empty_state';
 import {MenuItem, PopupMenu} from '../../widgets/menu';
 import {Accordion, AccordionSection} from '../../widgets/accordion';
 import type {DuneGraphController} from './controller';
-import type {ForcedBy, GraphNode} from './graph';
-import {
-  depResolutionKind,
-  forcedByTarget,
-  isForcedEdge,
-  nodeKey,
-  nodeLabel,
-  ruleTargetIds,
+import type {
+  ForcedBy,
+  GraphNode,
+  NodeId,
+  NodeKind,
+  NodeTiming,
+  OutRef,
 } from './graph';
 import {
   decorateDepPath,
+  decorateNode,
   depResolutionLabel,
   forcedByText,
   formatDurNs,
@@ -52,14 +52,18 @@ interface SelectionInfoPanelAttrs {
   readonly controller: DuneGraphController;
 }
 
-// One entry in the dependencies / dependants lists: a referenced node (or a
-// dangling id), the kind it stands for (so the kind chip renders even when the
-// node is dangling), its display label, an optional chip marking a special edge
-// kind (dynamic dep, expanded dep, rule target), and whether the edge is forced.
+// One entry in the dependencies / dependants lists: a referenced node (absent
+// for a reference the blob never recorded a node for), the kind it stands for (so
+// the kind chip renders even then), its display label, the directory it files
+// under in the path tree (a rule's `dir`; a dep's label is itself a path), an
+// optional chip marking a special edge kind (dynamic dep), and whether the edge
+// is forced. `OutRef` (see graph.ts) is this shape plus the edge kind it was
+// derived from.
 interface Ref {
-  readonly kind: GraphNode['kind'];
+  readonly kind: NodeKind;
   readonly label: string;
-  readonly node?: GraphNode;
+  readonly dir?: string;
+  readonly node?: NodeId;
   readonly chip?: string;
   readonly forced: boolean;
 }
@@ -82,11 +86,17 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // live in the constructor).
   private collapsed = new Set<string>();
   private selectionKey?: string;
+  // The selected node's timing, which lives in SQL rather than on the node
+  // (see lifecycle_sql.ts) and so has to be fetched. Keyed by the node *and*
+  // whether the mirror that answers the query exists yet, so a selection made
+  // mid-load picks its timing up as soon as the mirror lands.
+  private timingKey?: string;
+  private timing?: NodeTiming;
 
   view({attrs}: m.CVnode<SelectionInfoPanelAttrs>): m.Children {
     const {controller} = attrs;
-    const node = controller.nodeForSelection();
-    if (node === undefined) {
+    const selected = controller.nodeForSelection();
+    if (selected === undefined) {
       this.collapsed.clear();
       this.selectionKey = undefined;
       return m(EmptyState, {
@@ -94,12 +104,17 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         title: 'Select a build-dep or exec-rule slice',
       });
     }
-    const selectionKey = nodeKey(node.kind, node.id);
+    const selectionKey = String(selected);
     if (selectionKey !== this.selectionKey) {
       this.collapsed.clear();
       this.selectionKey = selectionKey;
     }
-    const dependants = this.dependants(controller, node);
+    this.fetchTiming(controller, selected, selectionKey);
+    // The one place a node view is materialised: the header and its muted
+    // lines below want every scalar the node has, and there is exactly one of
+    // them on screen (see graph.ts's GraphNode).
+    const node = controller.graph.node(selected);
+    const dependants = this.dependants(controller, selected);
     return m(
       '.pf-dune-graph__info',
       this.renderHeader(controller, node),
@@ -113,24 +128,43 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         this.renderRefs(
           controller,
           'Dependencies',
-          this.dependencies(controller, node),
+          this.dependencies(controller, selected),
         ),
       ),
     );
+  }
+
+  // Starts a timing fetch when the panel is showing a node whose timing it
+  // hasn't got, and asks for a redraw once it lands. Called from `view`, so it
+  // must be a no-op for a node already fetched.
+  private fetchTiming(
+    controller: DuneGraphController,
+    node: NodeId,
+    selectionKey: string,
+  ): void {
+    const key = `${selectionKey}|${controller.nodeMirrorReady}`;
+    if (this.timingKey === key) return;
+    this.timingKey = key;
+    this.timing = undefined;
+    void controller.timingFor(node).then((timing) => {
+      if (this.timingKey !== key) return; // selection moved on meanwhile
+      this.timing = timing;
+      controller.requestRedraw();
+    });
   }
 
   private renderHeader(
     controller: DuneGraphController,
     node: GraphNode,
   ): m.Children {
-    const nodeId = controller.nodeIdOf(node);
+    // The node id is always known, but it's only useful as a cross-reference
+    // once the tables the `dune_*` functions read exist.
+    const nodeId = controller.nodeMirrorReady ? node.nodeId : undefined;
     // A dep's path gets the leading build/code icon (its `_build/<dir>/` prefix
     // folded into the icon tooltip); a rule shows its bare id. The full,
-    // undecorated id stays available on the title's hover tooltip.
-    const {icon, text} =
-      node.kind === 'dep'
-        ? decorateDepPath(node.id)
-        : {icon: undefined, text: nodeLabel(node)};
+    // undecorated label stays available on the title's hover tooltip.
+    const label = node.label;
+    const {icon, text} = decorateNode(controller.graph, node.nodeId);
     return m(
       '.pf-dune-graph__info-header',
       m(
@@ -148,7 +182,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         icon,
         m(
           'span.pf-dune-graph__info-title',
-          {title: node.id},
+          {title: label},
           m(
             'span.pf-dune-graph__info-title-text',
             m('span.pf-dune-graph__info-title-bidi', text),
@@ -171,7 +205,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
             },
             `#${nodeId}`,
           ),
-        this.renderAddMenu(controller, node),
+        this.renderAddMenu(controller, node.nodeId),
       ),
     );
   }
@@ -185,7 +219,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // already visible.
   private renderAddMenu(
     controller: DuneGraphController,
-    node: GraphNode,
+    node: NodeId,
   ): m.Children {
     return m(
       PopupMenu,
@@ -228,10 +262,10 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // of a hot node) can be expensive to walk.
   private addMenuItem(
     controller: DuneGraphController,
-    node: GraphNode,
+    node: NodeId,
     label: string,
     icon: string,
-    related: () => readonly GraphNode[],
+    related: () => readonly NodeId[],
   ): m.Children {
     return m(MenuItem, {
       label,
@@ -243,11 +277,13 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // A rule's context directory (`dune.dir`), as a muted line under the header.
   // Absent for deps and for rules that didn't record one.
   private renderDir(node: GraphNode): m.Children {
-    if (node.kind !== 'rule' || node.dir === undefined) return undefined;
-    const {icon, text} = decorateDepPath(node.dir);
+    if (node.kind !== 'rule') return undefined;
+    const dir = node.dir;
+    if (dir === undefined) return undefined;
+    const {icon, text} = decorateDepPath(dir);
     return m(
       '.pf-dune-graph__dir',
-      {title: node.dir},
+      {title: dir},
       m('span.pf-dune-graph__dir-label', 'dir'),
       icon,
       text,
@@ -257,15 +293,16 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // The header's status chip: how the node resolved (a rule's outcome, or a
   // dep's resolution) plus its span duration, and a `×N` hint when the span
   // was seen more than once (watch mode, or a dep built more than once - see
-  // `SpanTiming.occurrenceCount`). Absent entirely for a node whose timing
-  // never resolved to a lifecycle instant.
+  // `SpanTiming.occurrenceCount`). The duration/`×N` half appears once the
+  // timing query lands (and not at all for a node no lifecycle instant
+  // resolved to); the resolution half comes off the node and is always there.
   private renderStatus(node: GraphNode): m.Children {
     const label =
       node.kind === 'rule'
         ? outcomeLabel(node.outcome)
-        : depResolutionLabel(depResolutionKind(node));
-    const durNs = node.timing?.durNs;
-    const occurrences = node.timing?.occurrenceCount;
+        : depResolutionLabel(node.resolution);
+    const durNs = this.timing?.timing?.durNs;
+    const occurrences = this.timing?.timing?.occurrenceCount;
     return m(
       'span.pf-dune-graph__status',
       m('span.pf-dune-graph__status-label', label),
@@ -275,7 +312,9 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
         occurrences > 1 &&
         m(
           'span.pf-dune-graph__status-occ',
-          {title: `Seen ${occurrences} times, e.g. across watch-mode iterations`},
+          {
+            title: `Seen ${occurrences} times, e.g. across watch-mode iterations`,
+          },
           `×${occurrences}`,
         ),
     );
@@ -288,7 +327,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // resolved a duration.
   private renderAction(node: GraphNode): m.Children {
     if (node.kind !== 'rule') return undefined;
-    const durNs = node.actionTiming?.durNs;
+    const durNs = this.timing?.actionTiming?.durNs;
     if (durNs === undefined) return undefined;
     return m(
       '.pf-dune-graph__action',
@@ -309,7 +348,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // A RULE/DEP forcer is itself a dependant (the forced edge points from it into
   // this node), so it already appears - marked as forced - in the Dependants
   // list; we only surface this explicit line when the forcer isn't in that list
-  // (a non-node kind, or an edge that didn't resolve).
+  // (a non-node kind, or a reference the blob never recorded a node for).
   private renderForcedBy(
     controller: DuneGraphController,
     node: GraphNode,
@@ -331,15 +370,8 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     controller: DuneGraphController,
     fb: ForcedBy,
   ): m.Children {
-    const target = forcedByTarget(fb) ?? undefined;
-    const text = forcedByText(fb.kind, target) ?? 'an unknown source';
-    if (fb.kind === 'RULE') {
-      return nodeLink(controller, controller.graph.rules.get(fb.rule), text);
-    }
-    if (fb.kind === 'DEP') {
-      return nodeLink(controller, controller.graph.deps.get(fb.dep), text);
-    }
-    return text;
+    const text = forcedByText(fb.kind, fb.target) ?? 'an unknown source';
+    return nodeLink(controller, fb.node, text);
   }
 
   // Groups `refs` into a path tree (deps by their id, rules by their `dir`)
@@ -413,87 +445,61 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   }
 
   // Nodes this one depends on (its outgoing edges): a rule's static + dynamic
-  // deps, a dep's resolved rule + expanded deps. All derive from the node's own
-  // args; unresolved ids show as dangling (non-linked) entries.
-  private dependencies(
-    controller: DuneGraphController,
-    node: GraphNode,
-  ): Ref[] {
-    const {deps, rules} = controller.graph;
-    const refs: Ref[] = [];
-    if (node.kind === 'rule') {
-      for (const id of node.staticDepIds ?? []) {
-        refs.push(depRef(node, id, deps.get(id)));
-      }
-      for (const group of node.dynamicDepIds ?? []) {
-        for (const id of group) {
-          refs.push(depRef(node, id, deps.get(id), 'DYN'));
-        }
-      }
-    } else {
-      if (node.resolvedRuleId !== undefined) {
-        const rule = rules.get(node.resolvedRuleId);
-        refs.push({
-          kind: 'rule',
-          label: node.resolvedRuleId,
-          node: rule,
-          forced: rule !== undefined && isForcedEdge(node, rule),
-        });
-      }
-      for (const id of node.expandedDepIds ?? []) {
-        refs.push(depRef(node, id, deps.get(id)));
-      }
-    }
-    return refs;
+  // deps, a dep's resolved rule + expanded deps. All of them are the node's own
+  // out-edges, dynamic ones chipped `DYN`; a reference the blob never recorded a
+  // node for shows as a plain unlinked entry.
+  private dependencies(controller: DuneGraphController, node: NodeId): Ref[] {
+    return [...controller.graph.outRefs(node)].map(refOf);
   }
 
   // Nodes that depend on this one (its incoming edges): the graph's reverse
   // edges, unioned with a rule's declared targets (which depend on the rule to
-  // be produced). A target with no reverse edge yet is still listed (dangling if
+  // be produced). A target with no reverse edge yet is still listed (unlinked if
   // it isn't a known node).
-  private dependants(controller: DuneGraphController, node: GraphNode): Ref[] {
+  private dependants(controller: DuneGraphController, node: NodeId): Ref[] {
+    const graph = controller.graph;
     const refs: Ref[] = [];
-    const seen = new Set<string>();
     for (const parent of controller.parentsOf(node)) {
-      seen.add(nodeKey(parent.kind, parent.id));
       refs.push({
-        kind: parent.kind,
-        label: nodeLabel(parent),
+        kind: graph.kindOf(parent),
+        label: graph.labelOf(parent),
+        dir: graph.dirOf(parent),
         node: parent,
-        forced: isForcedEdge(parent, node),
+        forced: graph.forcerOf(node) === parent,
       });
     }
-    if (node.kind === 'rule') {
-      for (const id of ruleTargetIds(node)) {
-        if (seen.has(nodeKey('dep', id))) continue;
-        seen.add(nodeKey('dep', id));
-        const dep = controller.graph.deps.get(id);
-        refs.push({
-          kind: 'dep',
-          label: id,
-          node: dep,
-          forced: dep !== undefined && isForcedEdge(dep, node),
-        });
+    if (graph.isRule(node)) {
+      // A rule's declared targets depend on it to be produced, so they belong
+      // in this list - but a target is a *path* (its `dir` joined onto a
+      // relative name), not a dict id, so it can't be resolved back to a dep
+      // node by id. Dedup against the dep dependants' paths and list what's
+      // left as a plain unlinked row. In practice a target that is a known dep
+      // node is already a dependant: that dep resolves to this rule, which is
+      // exactly a reverse edge into it.
+      const paths = new Set(
+        refs.filter((r) => r.kind === 'dep').map((r) => r.label),
+      );
+      for (const {path} of graph.ruleTargets(node)) {
+        if (paths.has(path)) continue;
+        paths.add(path);
+        refs.push({kind: 'dep', label: path, forced: false});
       }
     }
     return refs;
   }
 }
 
-// A dependency ref for a dep id referenced by `source`, resolving `dep` and
-// computing whether the `source -> dep` edge is forced.
-function depRef(
-  source: GraphNode,
-  id: string,
-  dep: GraphNode | undefined,
-  chip?: string,
-): Ref {
+// A dependency row for one of a node's out-edges: the same fields, plus the
+// `DYN` chip a dynamic dep gets (an expanded dep gets none - the parent dep's
+// own status chip already says it expanded).
+function refOf(ref: OutRef): Ref {
   return {
-    kind: 'dep',
-    label: id,
-    node: dep,
-    chip,
-    forced: dep !== undefined && isForcedEdge(source, dep),
+    kind: ref.kind,
+    label: ref.label,
+    dir: ref.dir,
+    node: ref.node,
+    chip: ref.edgeKind === 'dynamic' ? 'DYN' : undefined,
+    forced: ref.forced,
   };
 }
 
@@ -502,29 +508,19 @@ function chipTitle(chip: string): string {
   return chip === 'DYN' ? 'Dynamic dependency' : chip;
 }
 
-// Whether a RULE/DEP forcer is already represented as a node in the dependants
-// list. Non-node forcer kinds (paths / REQUEST / CONFIGURATOR / UNKNOWN) never
-// are.
+// Whether a forcer is already represented as a node in the dependants list.
+// Only the RULE/DEP kinds name a node at all, and only when the blob recorded
+// one, so anything else is never in the list.
 function forcerInList(fb: ForcedBy, dependants: readonly Ref[]): boolean {
-  if (fb.kind === 'RULE') {
-    return dependants.some(
-      (r) => r.node?.kind === 'rule' && r.node.id === fb.rule,
-    );
-  }
-  if (fb.kind === 'DEP') {
-    return dependants.some(
-      (r) => r.node?.kind === 'dep' && r.node.id === fb.dep,
-    );
-  }
-  return false;
+  return fb.node !== undefined && dependants.some((r) => r.node === fb.node);
 }
 
 // Render `label` as a link that navigates to `node`'s slice, or as plain text
-// when `node` is undefined (the referenced id isn't a known graph node, i.e. a
-// dangling reference).
+// when `node` is undefined (the referenced id isn't a known graph node - see
+// `dangling` in graph.ts).
 function nodeLink(
   controller: DuneGraphController,
-  node: GraphNode | undefined,
+  node: NodeId | undefined,
   label: string,
 ): m.Children {
   if (node === undefined) return label;
@@ -532,10 +528,9 @@ function nodeLink(
 }
 
 // Where a ref files into the path tree: a dep ref's label is itself a path; a
-// rule ref files under its node's `dir` field (top-level when dangling or
+// rule ref files under its node's `dir` field (top-level when unrecorded or
 // unset). See `nodePathParts`.
 function refPathItem(ref: Ref): PathTreeItem<Ref> {
-  const dir = ref.node?.kind === 'rule' ? ref.node.dir : undefined;
-  const {dir: dirSegs, leaf} = nodePathParts(ref.kind, ref.label, dir);
+  const {dir: dirSegs, leaf} = nodePathParts(ref.kind, ref.label, ref.dir);
   return {dir: dirSegs, leaf, item: ref};
 }

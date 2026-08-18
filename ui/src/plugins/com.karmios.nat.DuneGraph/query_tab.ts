@@ -38,10 +38,9 @@ import {EmptyState} from '../../widgets/empty_state';
 import {Spinner} from '../../widgets/spinner';
 import {StackAuto} from '../../widgets/stack';
 import type {DuneGraphController} from './controller';
-import type {GraphNode} from './graph';
-import {nodeKey, nodeLabel} from './graph';
+import type {BuildGraph, NodeId} from './graph';
 import {
-  decorateDepPath,
+  decorateNode,
   forcedByText,
   formatDurNs,
   nodePathParts,
@@ -124,7 +123,7 @@ type ExtrasMode = (typeof EXTRAS_OPTIONS)[number]['key'];
 // `merge` in `buildNodeTreeItems`).
 export interface TreeLeafEntry {
   readonly value: SqlValue;
-  readonly node?: GraphNode;
+  readonly node?: NodeId;
   readonly row: Row;
   readonly count: number;
 }
@@ -140,10 +139,11 @@ export interface TreeLeafEntry {
  * `count`, keeping the first-seen row as the representative.
  */
 export function buildNodeTreeItems(
+  graph: BuildGraph,
   rows: readonly Row[],
   col: string,
   merge: boolean,
-  resolve: (value: SqlValue) => GraphNode | undefined,
+  resolve: (value: SqlValue) => NodeId | undefined,
 ): PathTreeItem<TreeLeafEntry>[] {
   const items: PathTreeItem<TreeLeafEntry>[] = [];
   const indexByKey = merge ? new Map<string, number>() : undefined;
@@ -151,10 +151,7 @@ export function buildNodeTreeItems(
     const value = row[col];
     if (value === null || value === undefined) continue;
     const node = resolve(value);
-    const key =
-      node !== undefined
-        ? `n:${nodeKey(node.kind, node.id)}`
-        : `r:${String(value)}`;
+    const key = node !== undefined ? `n:${node}` : `r:${String(value)}`;
     if (indexByKey !== undefined) {
       const existing = indexByKey.get(key);
       if (existing !== undefined) {
@@ -170,9 +167,9 @@ export function buildNodeTreeItems(
     const {dir, leaf} =
       node !== undefined
         ? nodePathParts(
-            node.kind,
-            node.id,
-            node.kind === 'rule' ? node.dir : undefined,
+            graph.kindOf(node),
+            graph.labelOf(node),
+            graph.dirOf(node),
           )
         : {dir: [], leaf: {sep: '', name: String(value)}};
     items.push({dir, leaf, item: {value, node, row, count: 1}});
@@ -255,8 +252,13 @@ export class DuneQueryTab implements Tab {
   private dataSource?: InMemoryDataSource;
   // Whether the result carries `src_slice_id`/`dst_slice_id` (relation shape).
   private isRelation = false;
+  // The result's node-bearing cells resolved to graph nodes, computed once per
+  // query. Mapping a lifecycle slice id to its node is a query now, not a JS
+  // map lookup (see controller.ts), and every renderer below is synchronous -
+  // so the whole result is resolved up front, in one batch.
+  private nodesBySliceId = new Map<number, NodeId>();
   // Result rows that resolve to a known graph node, computed once per query.
-  private mappable: GraphNode[] = [];
+  private mappable: NodeId[] = [];
   // Bumped per query so the DataGrid remounts, dropping column/sort state tied
   // to the previous result's shape and re-applying `initialColumns`.
   private queryId = 0;
@@ -295,8 +297,20 @@ export class DuneQueryTab implements Tab {
     this.dataSource = undefined;
     this.mappable = [];
     this.isRelation = false;
+    this.nodesBySliceId = new Map();
     this.collapsed.clear();
     m.redraw();
+
+    // The `dune_*` tables don't exist until the graph has been loaded and
+    // mirrored (it no longer loads with the trace - see controller.ts). Say so
+    // rather than letting the query come back with a bare "no such table".
+    const missing = this.missingTables();
+    if (missing !== undefined) {
+      this.loading = false;
+      this.error = missing;
+      m.redraw();
+      return;
+    }
 
     const response = await runQueryForQueryTable(query, this.trace.engine);
     this.loading = false;
@@ -315,11 +329,30 @@ export class DuneQueryTab implements Tab {
           row[DST_COL] = row[DST_SLICE_COL];
         }
       }
+      // Resolve every node-bearing cell to its node before rendering, so the
+      // cell renderers (and the CSV formatters, and the bulk actions) can stay
+      // synchronous.
+      this.nodesBySliceId = await this.controller.nodesForSliceIds(
+        sliceIdsIn(response, this.nodeBearingCols(response)),
+      );
       this.dataSource = new InMemoryDataSource(response.rows);
       this.mappable = this.mappableNodes(response);
     }
     this.queryId++;
     m.redraw();
+  }
+
+  // Why the graph tables aren't queryable right now, or undefined when they
+  // are. The node tier alone is enough to run something useful (`dune_node`
+  // and the per-kind detail tables), so a missing edge tier isn't a refusal -
+  // a query that needs `dune_edge` gets trace processor's own error.
+  private missingTables(): string | undefined {
+    if (this.controller.nodeMirrorReady) return undefined;
+    return this.controller.graphStep.error !== undefined
+      ? `The Dune graph failed to load: ${this.controller.graphStep.error}`
+      : 'The Dune graph is not loaded yet, so there are no dune_* tables to ' +
+          'query. Load it from the Dune side panel (or the “Dune: load build ' +
+          'graph” command) and run this again.';
   }
 
   render(): m.Children {
@@ -336,7 +369,8 @@ export class DuneQueryTab implements Tab {
         {icon: 'table_view', title: 'Run a SQL query to add graph nodes'},
         "Use the '&' omnibox mode or the “Dune: query graph” command. " +
           'Query dune_node / dune_edge, per-kind detail via dune_rule / ' +
-          'dune_dep / dune_rule_target (joined on node_id), or a relation ' +
+          'dune_dep / dune_rule_target (joined on node_id), every path the ' +
+          'build mentions via dune_string, or a relation ' +
           'function - bounded dune_descendants/dune_ancestors(node_id, ' +
           'max_steps, step_kind), unbounded ' +
           'dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +
@@ -423,8 +457,12 @@ export class DuneQueryTab implements Tab {
     col: string,
   ): PathTreeRow<TreeLeafEntry>[] {
     return buildPathTree(
-      buildNodeTreeItems(response.rows, col, this.mergeDuplicates, (v) =>
-        this.nodeForSliceValue(v),
+      buildNodeTreeItems(
+        this.controller.graph,
+        response.rows,
+        col,
+        this.mergeDuplicates,
+        (v) => this.nodeForSliceValue(v),
       ),
     );
   }
@@ -449,17 +487,7 @@ export class DuneQueryTab implements Tab {
     const {node, value} = entry;
     return m(
       '.pf-dune-query__tree-row',
-      node !== undefined &&
-        m(
-          'span',
-          {
-            class: classNames(
-              'pf-dune-graph__chip',
-              `pf-dune-graph__chip--${node.kind}`,
-            ),
-          },
-          node.kind,
-        ),
+      node !== undefined && this.renderKindChip(node),
       m(
         'span.pf-dune-graph__ref-label',
         prefix !== '' && m('span.pf-dune-graph__ref-prefix', prefix),
@@ -513,7 +541,9 @@ export class DuneQueryTab implements Tab {
   // `value` (a `dur_ns`-shaped column) as a human duration, or undefined if
   // it isn't a number/bigint (e.g. NULL).
   private durationText(value: SqlValue): string | undefined {
-    if (typeof value !== 'number' && typeof value !== 'bigint') return undefined;
+    if (typeof value !== 'number' && typeof value !== 'bigint') {
+      return undefined;
+    }
     return formatDurNs(Number(value));
   }
 
@@ -694,7 +724,7 @@ export class DuneQueryTab implements Tab {
 
   private addRemoveItems(
     which: 'src' | 'dst' | undefined,
-    nodes: readonly GraphNode[],
+    nodes: readonly NodeId[],
   ): m.Children[] {
     const suffix = which === undefined ? '' : ` ${which}`;
     return [
@@ -819,29 +849,32 @@ export class DuneQueryTab implements Tab {
   private renderNodeChip(value: SqlValue): m.Children {
     const node = this.nodeForSliceValue(value);
     if (node === undefined) return value === null ? '' : String(value);
-    const {icon, text} =
-      node.kind === 'dep'
-        ? decorateDepPath(node.id)
-        : {icon: undefined, text: nodeLabel(node)};
+    const {icon, text} = decorateNode(this.controller.graph, node);
     return m(
       'span.pf-dune-query__node',
-      m(
-        'span',
-        {
-          // Reuses the graph panel's chip styling (a global class).
-          class: classNames(
-            'pf-dune-graph__chip',
-            `pf-dune-graph__chip--${node.kind}`,
-          ),
-        },
-        node.kind,
-      ),
+      this.renderKindChip(node),
       icon,
       this.nodeAnchor(node, text),
     );
   }
 
-  private nodeAnchor(node: GraphNode, label: string): m.Children {
+  // The node's kind as a coloured chip, reusing the graph panel's styling (a
+  // global class).
+  private renderKindChip(node: NodeId): m.Children {
+    const kind = this.controller.graph.kindOf(node);
+    return m(
+      'span',
+      {
+        class: classNames(
+          'pf-dune-graph__chip',
+          `pf-dune-graph__chip--${kind}`,
+        ),
+      },
+      kind,
+    );
+  }
+
+  private nodeAnchor(node: NodeId, label: string): m.Children {
     return m(
       Anchor,
       {
@@ -863,26 +896,21 @@ export class DuneQueryTab implements Tab {
 
   // Every distinct graph node reachable from the result's node-bearing columns
   // (deduped across node/src/dst/slice_id), for the "Add all" bulk action.
-  private mappableNodes(response: QueryResponse): GraphNode[] {
+  private mappableNodes(response: QueryResponse): NodeId[] {
     return this.columnNodes(response, ...this.nodeBearingCols(response));
   }
 
   // Distinct graph nodes drawn from the given (slice-id-valued) columns, deduped
   // by node key. Used for both the whole-result and per-src/dst bulk actions.
-  private columnNodes(response: QueryResponse, ...cols: string[]): GraphNode[] {
-    const seen = new Set<string>();
-    const nodes: GraphNode[] = [];
+  private columnNodes(response: QueryResponse, ...cols: string[]): NodeId[] {
+    const seen = new Set<NodeId>();
     for (const row of response.rows) {
       for (const col of cols) {
         const node = this.nodeForSliceValue(row[col]);
-        if (node === undefined) continue;
-        const key = nodeKey(node.kind, node.id);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        nodes.push(node);
+        if (node !== undefined) seen.add(node);
       }
     }
-    return nodes;
+    return [...seen];
   }
 
   // Chip columns present in this result: the dune_node view's `node`, the
@@ -908,13 +936,31 @@ export class DuneQueryTab implements Tab {
 
   private nodeLabelFor(value: SqlValue): string | undefined {
     const node = this.nodeForSliceValue(value);
-    return node === undefined ? undefined : nodeLabel(node);
+    return node === undefined ? undefined : this.controller.graph.labelOf(node);
   }
 
-  private nodeForSliceValue(value: SqlValue): GraphNode | undefined {
+  private nodeForSliceValue(value: SqlValue): NodeId | undefined {
     if (typeof value !== 'number' && typeof value !== 'bigint') {
       return undefined;
     }
-    return this.controller.nodeForSliceId(Number(value));
+    return this.nodesBySliceId.get(Number(value));
   }
+}
+
+// Every distinct slice id in `cols` of the result - the batch handed to the
+// controller to resolve into nodes once per query.
+function sliceIdsIn(
+  response: QueryResponse,
+  cols: readonly string[],
+): number[] {
+  const ids = new Set<number>();
+  for (const row of response.rows) {
+    for (const col of cols) {
+      const value = row[col];
+      if (typeof value === 'number' || typeof value === 'bigint') {
+        ids.add(Number(value));
+      }
+    }
+  }
+  return [...ids];
 }

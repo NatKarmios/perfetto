@@ -18,9 +18,9 @@ import {SimpleResizeObserver} from '../../base/resize_observer';
 import {Button} from '../../widgets/button';
 import {EmptyState} from '../../widgets/empty_state';
 import type {DuneGraphController} from './controller';
-import type {GraphNode} from './graph';
-import {inducedEdges, nodeKey, nodeLabel, plural} from './graph';
-import {decorateDepPath} from './node_display';
+import type {NodeId} from './graph';
+import {inducedEdges, plural} from './graph';
+import {decorateNode} from './node_display';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
 
@@ -86,7 +86,7 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 
   // Hover overlay: the node under the cursor, plus the live <svg> element used
   // to place the label in screen space.
-  private hoveredKey?: string;
+  private hovered?: NodeId;
   private svgEl?: SVGSVGElement;
 
   onremove(): void {
@@ -123,7 +123,7 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
               icon: 'visibility_off',
               title: 'All nodes hidden',
             })
-          : [this.renderSvg(controller), this.renderHoverLabel()],
+          : [this.renderSvg(controller), this.renderHoverLabel(controller)],
       ),
     );
   }
@@ -162,13 +162,14 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 
   private renderSvg(controller: DuneGraphController): m.Children {
-    const selectedKey = keyOfSelection(controller);
+    const selected = controller.nodeForSelection();
     // The viewBox is derived from the pane's live pixel size every render, so
     // it always has exactly the element's aspect ratio - `meet` then degenerates
     // to a plain 1/zoom scale with no letterboxing, and node spacing stays a
     // constant number of pixels regardless of how the pane is sized.
     const rect = this.svgEl?.getBoundingClientRect();
-    const w = (rect === undefined || rect.width === 0 ? 1 : rect.width) * this.zoom;
+    const w =
+      (rect === undefined || rect.width === 0 ? 1 : rect.width) * this.zoom;
     const h =
       (rect === undefined || rect.height === 0 ? 1 : rect.height) * this.zoom;
     const x = this.center.x - w / 2;
@@ -196,11 +197,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       arrowMarker(),
       m(
         'g.pf-dune-graph__edges',
-        this.layout.edges.map((e) => edgeLine(e, this.hoveredKey)),
+        this.layout.edges.map((e) => edgeLine(e, this.hovered)),
       ),
       m(
         'g.pf-dune-graph__nodes',
-        this.layout.nodes.map((n) => this.nodeDot(controller, n, selectedKey)),
+        this.layout.nodes.map((n) => this.nodeDot(controller, n, selected)),
       ),
     );
   }
@@ -208,29 +209,28 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   private nodeDot(
     controller: DuneGraphController,
     ln: LayoutNode,
-    selectedKey: string | undefined,
+    selected: NodeId | undefined,
   ): m.Children {
     const {node} = ln;
-    const key = nodeKey(node.kind, node.id);
     return m('circle', {
-      key,
+      key: node,
       cx: ln.x + ln.width / 2,
       cy: ln.y + ln.height / 2,
       r: DOT_RADIUS,
       class: classNames(
         'pf-dune-graph__dot',
-        `pf-dune-graph__dot--${node.kind}`,
-        key === selectedKey && 'pf-dune-graph__dot--selected',
+        `pf-dune-graph__dot--${controller.graph.kindOf(node)}`,
+        node === selected && 'pf-dune-graph__dot--selected',
       ),
       onclick: () => this.onNodeClick(controller, node),
-      onmouseenter: () => (this.hoveredKey = key),
+      onmouseenter: () => (this.hovered = node),
       onmouseleave: () => {
-        if (this.hoveredKey === key) this.hoveredKey = undefined;
+        if (this.hovered === node) this.hovered = undefined;
       },
     });
   }
 
-  private onNodeClick(controller: DuneGraphController, node: GraphNode): void {
+  private onNodeClick(controller: DuneGraphController, node: NodeId): void {
     if (this.suppressClick) {
       this.suppressClick = false;
       return;
@@ -244,15 +244,15 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   // than re-joining the node set every render.
   private ensureLayout(
     controller: DuneGraphController,
-    nodes: readonly GraphNode[],
-    visible: readonly GraphNode[],
+    nodes: readonly NodeId[],
+    visible: readonly NodeId[],
   ): void {
     if (controller.graphVersion === this.sig) return;
     this.sig = controller.graphVersion;
     // inducedEdges walks the full selection so it can traverse through hidden
     // rules; layoutGraph only ever sees the visible nodes.
     const isHiddenRule = controller.hideRules
-      ? (n: GraphNode) => n.kind === 'rule'
+      ? (n: NodeId) => controller.graph.isRule(n)
       : undefined;
     this.layout = layoutGraph(
       visible,
@@ -345,21 +345,15 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 
   // Floating label for the hovered dot, positioned over the canvas. Hidden
   // during a drag so it doesn't chase the cursor while panning.
-  private renderHoverLabel(): m.Children {
-    if (this.hoveredKey === undefined || this.pointerDown) return undefined;
-    const ln = this.layout.nodes.find(
-      (n) => nodeKey(n.node.kind, n.node.id) === this.hoveredKey,
-    );
+  private renderHoverLabel(controller: DuneGraphController): m.Children {
+    if (this.hovered === undefined || this.pointerDown) return undefined;
+    const ln = this.layout.nodes.find((n) => n.node === this.hovered);
     if (ln === undefined) return undefined;
     const pos = this.dotScreenPos(ln);
     if (pos === undefined) return undefined;
-    const {node} = ln;
     // A dep's path gets the leading build/code icon (prefix folded into its
     // tooltip); a rule shows its bare id.
-    const {icon, text} =
-      node.kind === 'dep'
-        ? decorateDepPath(node.id)
-        : {icon: undefined, text: nodeLabel(node)};
+    const {icon, text} = decorateNode(controller.graph, ln.node);
     return m(
       '.pf-dune-graph__hover-label',
       {style: `left: ${pos.x}px; top: ${pos.y}px`},
@@ -385,17 +379,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 }
 
-// The graph node behind the current timeline selection, as a node key.
-function keyOfSelection(controller: DuneGraphController): string | undefined {
-  const node = controller.nodeForSelection();
-  return node === undefined ? undefined : nodeKey(node.kind, node.id);
-}
-
 // A straight line between two node dots (source depends on dest), trimmed to the
 // dot boundaries so it starts/ends at the circles' edges with an arrowhead.
 // Forced edges are drawn red (line + arrowhead via a separate marker). Edges
 // recede to half-opacity until one of their endpoints is the hovered node.
-function edgeLine(e: LayoutEdge, hoveredKey: string | undefined): m.Children {
+function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
   const sx = e.source.x + e.source.width / 2;
   const sy = e.source.y + e.source.height / 2;
   const dx = e.dest.x + e.dest.width / 2;
@@ -404,9 +392,8 @@ function edgeLine(e: LayoutEdge, hoveredKey: string | undefined): m.Children {
   const ux = (dx - sx) / len;
   const uy = (dy - sy) / len;
   const active =
-    hoveredKey !== undefined &&
-    (nodeKey(e.source.node.kind, e.source.node.id) === hoveredKey ||
-      nodeKey(e.dest.node.kind, e.dest.node.id) === hoveredKey);
+    hovered !== undefined &&
+    (e.source.node === hovered || e.dest.node === hovered);
   return m('line', {
     'class': classNames(
       'pf-dune-graph__edge',

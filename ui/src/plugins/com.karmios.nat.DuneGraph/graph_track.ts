@@ -22,9 +22,8 @@ import {SourceDataset} from '../../trace_processor/dataset';
 import {LONG, NUM, STR} from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
 import type {DuneGraphController} from './controller';
-import type {GraphNode} from './graph';
-import {nodeLabel} from './graph';
-import {decorateDepPath} from './node_display';
+import type {NodeKind} from './graph';
+import {decorateNode} from './node_display';
 
 // URI/name of the single derived track projecting the graph pane's visible
 // nodes onto the timeline (see controller.ts's installTimeline()).
@@ -38,7 +37,7 @@ export const GRAPH_TRACK_NAME = 'Dune graph';
 // theme's value since the colour is baked into the track's cached data frame
 // and can't react to a theme switch. Keyed by `kind` (not slice name, which is
 // now the node's own label, not a fixed track name like "exec-rule").
-const KIND_COLORS = new Map<GraphNode['kind'], ColorScheme>([
+const KIND_COLORS = new Map<NodeKind, ColorScheme>([
   ['dep', makeColorScheme(new HSLColor('#2667e7'))],
   ['rule', makeColorScheme(new HSLColor('#e89e00'))],
 ]);
@@ -52,6 +51,12 @@ interface Row {
 }
 
 const SCHEMA = {id: NUM, ts: LONG, dur: LONG, name: STR, kind: STR};
+
+// A row-shaped but rowless source, used while the SQL mirror the track reads
+// doesn't exist yet. `where 0` rather than a query against `dune_node`, which
+// isn't a table at that point.
+const EMPTY_SRC =
+  "select 0 as id, 0 as ts, 0 as dur, '' as name, '' as kind where 0";
 
 /**
  * Builds the renderer for the "Dune graph" track: a slice track whose content
@@ -80,9 +85,16 @@ export function createGraphTrackRenderer(
   const dataset = (): SourceDataset<typeof SCHEMA> => {
     if (controller.graphVersion !== cachedVersion) {
       cachedVersion = controller.graphVersion;
-      const nodeIds = controller.visibleNodes
-        .map((n) => controller.nodeIdOf(n))
-        .filter((id): id is number => id !== undefined);
+      // `dune_node` doesn't exist until the node mirror is built (the graph
+      // no longer loads with the trace - see controller.ts), and querying a
+      // missing table is an error, not an empty result. Project nothing at
+      // all until it's there; the mirror bumps `graphVersion` when it lands,
+      // which brings us straight back here.
+      if (!controller.nodeMirrorReady) {
+        cachedDataset = new SourceDataset({src: EMPTY_SRC, schema: SCHEMA});
+        return cachedDataset;
+      }
+      const nodeIds = controller.visibleNodes;
       // SourceDataset's `filter: {col, in: []}` would emit `node_id IN ()`,
       // which is invalid SQLite - fall back to an always-false predicate
       // instead. `ts is not null` excludes a node whose timing never resolved
@@ -113,12 +125,12 @@ export function createGraphTrackRenderer(
     sliceName: (row: Row) => {
       const node = controller.nodeForNodeId(row.id);
       if (node === undefined) return row.name;
-      return node.kind === 'dep'
-        ? decorateDepPath(node.id).text
-        : `rule ${nodeLabel(node)}`;
+      // Same text as everywhere else, minus the icon a canvas can't draw - and
+      // with the kind spelled out for a rule, since there's no chip here.
+      const {text} = decorateNode(controller.graph, node);
+      return controller.graph.isRule(node) ? `rule ${text}` : text;
     },
     colorizer: (row: Row) =>
-      KIND_COLORS.get(row.kind as GraphNode['kind']) ??
-      KIND_COLORS.get('dep')!,
+      KIND_COLORS.get(row.kind as NodeKind) ?? KIND_COLORS.get('dep')!,
   });
 }

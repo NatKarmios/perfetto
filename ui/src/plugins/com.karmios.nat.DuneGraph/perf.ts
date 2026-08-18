@@ -15,8 +15,8 @@
 /**
  * Load-time instrumentation for the Dune graph plugin.
  *
- * Everything expensive the plugin does happens inside one `controller.reload()`,
- * and on a large trace that reload is minutes long. This module is the
+ * Everything expensive the plugin does happens inside one of the controller's
+ * load steps, and on a large trace those are minutes long. This module is the
  * measurement harness for that: a {@link PerfRun} accumulates a flat list of
  * named phases (`{ms, rows, bytes, heap delta}`) and dumps them as a console
  * table when the run finishes, so a before/after number for any optimisation is

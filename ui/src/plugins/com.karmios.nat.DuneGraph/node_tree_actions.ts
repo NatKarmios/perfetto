@@ -15,8 +15,7 @@
 import m from 'mithril';
 import {Button} from '../../widgets/button';
 import type {DuneGraphController} from './controller';
-import type {GraphNode} from './graph';
-import {nodeKey} from './graph';
+import type {NodeId} from './graph';
 import type {PathTreeGroup, PathTreeRow} from './path_tree';
 
 /**
@@ -33,7 +32,7 @@ import type {PathTreeGroup, PathTreeRow} from './path_tree';
 // graph membership.
 export function nodeToggleButton(
   controller: DuneGraphController,
-  node: GraphNode,
+  node: NodeId,
 ): m.Children {
   const inGraph = controller.isInGraph(node);
   return m(Button, {
@@ -47,29 +46,24 @@ export function nodeToggleButton(
   });
 }
 
-// Every distinct node nested under a tree group (deduped by node key),
-// generic over any leaf payload shaped like `Ref` (selection panel) or
-// `TreeLeafEntry` (query tab) - both carry an optional `node` field of the
-// same shape, so no per-caller extractor is needed.
-export function nodesInGroup<T extends {readonly node?: GraphNode}>(
+// Every distinct node nested under a tree group, generic over any leaf payload
+// shaped like `Ref` (selection panel) or `TreeLeafEntry` (query tab) - both
+// carry an optional `node` field of the same shape, so no per-caller extractor
+// is needed.
+export function nodesInGroup<T extends {readonly node?: NodeId}>(
   row: PathTreeGroup<T>,
-): GraphNode[] {
-  const seen = new Set<string>();
-  const nodes: GraphNode[] = [];
+): NodeId[] {
+  const seen = new Set<NodeId>();
   const walk = (r: PathTreeRow<T>) => {
     if (r.kind === 'leaf') {
       const {node} = r.item;
-      if (node === undefined) return;
-      const key = nodeKey(node.kind, node.id);
-      if (seen.has(key)) return;
-      seen.add(key);
-      nodes.push(node);
+      if (node !== undefined) seen.add(node);
     } else {
       r.rows.forEach(walk);
     }
   };
   row.rows.forEach(walk);
-  return nodes;
+  return [...seen];
 }
 
 // A directory group's bulk actions: add every node under it to the graph, or
@@ -79,7 +73,7 @@ export function nodesInGroup<T extends {readonly node?: GraphNode}>(
 // either). Absent when the group has no nodes to act on.
 export function groupBulkActions(
   controller: DuneGraphController,
-  nodes: readonly GraphNode[],
+  nodes: readonly NodeId[],
 ): m.Children {
   if (nodes.length === 0) return undefined;
   return [

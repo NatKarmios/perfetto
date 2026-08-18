@@ -33,6 +33,22 @@
  *
  * An unfinished span (crash/interrupt) is flushed at EOF as a line with `?` in
  * place of `<outcome>`/`<resolution>` and empty `<dep_ids>`/`<dyn_dep_stages>`.
+ *
+ * **Sections are parsed as a stream, one chunk at a time** ({@link
+ * parseGraphBlob} takes an async iterable of chunk payloads per section, not a
+ * reassembled string). On a monorepo-scale trace `graph-rules` alone is ~190 MB
+ * of text, and concatenating it before parsing meant holding a second full copy
+ * of it - so instead each chunk is parsed as it arrives, with a partial line
+ * carried across the boundary (see `LineReader`), and the caller is free to drop
+ * each chunk as soon as it has been consumed. The chunk-set validation
+ * `joinChunks` used to do up front is unchanged, just factored out into
+ * {@link orderedChunks}.
+ *
+ * **Records are handed to a {@link GraphBlobSink} as they are parsed** rather
+ * than collected into arrays. A `graph-rules` record holds the rule's whole dep
+ * list, so an array of them *is* the 28M-reference edge set (plus 386k JS arrays
+ * to hold it); the sink lets `graph_build.ts` copy each record into its columnar
+ * store and drop it. Nothing here keeps a record alive past the call.
  */
 
 import type {PerfRun} from './perf';
@@ -47,24 +63,22 @@ export const RULES_SECTION = 'graph-rules';
 export const DEPS_SECTION = 'graph-deps';
 
 export type RuleOutcome =
-  | 'executed'
-  | 'local-cache-hit'
-  | 'shared-cache-hit'
-  | 'unfinished';
+  'executed' | 'local-cache-hit' | 'shared-cache-hit' | 'unfinished';
 
 export type DepResolution =
-  | {readonly kind: 'rule'; readonly ruleId: string}
+  | {readonly kind: 'rule'; readonly ruleId: number}
   | {readonly kind: 'source'}
   | {readonly kind: 'expanded'; readonly depIds: readonly number[]}
   | {readonly kind: 'unfinished'};
 
-// A `forced_by` tag as it appears in the blob: ids are still intern ids (not
-// yet resolved through the dict) and a rule forcer's id is the bare rule id
-// string (rule ids aren't interned). An unrecognised tag letter degrades to
-// `UNKNOWN` instead of throwing, so a future dune-side addition doesn't break
-// parsing of everything else in the blob.
+/**
+ * A `forced_by` tag as it appears in the blob: every id is still a trace-side id
+ * (a dict id, or a `rule_id`), not yet resolved to a node or a string. An
+ * unrecognised tag letter degrades to `UNKNOWN` instead of throwing, so a future
+ * dune-side addition doesn't break parsing of everything else in the blob.
+ */
 export type ForcedByTag =
-  | {readonly kind: 'RULE'; readonly ruleId: string}
+  | {readonly kind: 'RULE'; readonly ruleId: number}
   | {readonly kind: 'DEP'; readonly depId: number}
   | {
       readonly kind: 'DYNAMIC_INCLUDES' | 'GEN_RULES' | 'PFORM';
@@ -74,8 +88,15 @@ export type ForcedByTag =
   | {readonly kind: 'REQUEST'}
   | {readonly kind: 'UNKNOWN'};
 
+/**
+ * One `graph-rules` line. Ids are the blob's own: `ruleId` is the rule's
+ * `rule_id` (a per-process integer, printed as decimal in the blob and carried
+ * as an INTEGER arg on the lifecycle instants), everything else is a dict id.
+ * An id the blob wrote unparseably arrives as `NaN` and is dropped by the
+ * consumer (see graph_build.ts) rather than being silently read as 0.
+ */
 export interface RuleRecord {
-  readonly ruleId: string;
+  readonly ruleId: number;
   readonly dirId?: number;
   readonly targetFileIds: readonly number[];
   readonly targetDirIds: readonly number[];
@@ -85,37 +106,96 @@ export interface RuleRecord {
   readonly dynDepStages: readonly (readonly number[])[];
 }
 
+// One `graph-deps` line; `depId` is the dep's dict id, which is also its join
+// key against a `build-dep` instant's `dep_id` arg.
 export interface DepRecord {
   readonly depId: number;
   readonly resolution: DepResolution;
   readonly forcedBy?: ForcedByTag;
 }
 
-export interface GraphBlob {
-  readonly dict: ReadonlyMap<number, string>;
-  readonly rules: readonly RuleRecord[];
-  readonly deps: readonly DepRecord[];
+/**
+ * Where {@link parseGraphBlob} puts what it parses. `strings` is called once,
+ * before any record; `rule` and `dep` once per record of their section, in blob
+ * order.
+ *
+ * Records are handed over as they are parsed and are not retained by the parser,
+ * so a sink that wants to keep one must copy it - see the file header for why
+ * the parser doesn't hand back arrays.
+ */
+export interface GraphBlobSink {
+  strings(table: StringTable): void;
+  rule(record: RuleRecord): void;
+  dep(record: DepRecord): void;
 }
 
-// One `dune-graph` instant's args, as read off the trace (see
-// `trace_graph_source.ts`'s blob query). `name` is one of `DICT_SECTION` /
-// `RULES_SECTION` / `DEPS_SECTION`.
-export interface BlobChunk {
+/**
+ * The blob's intern table: dict id -> string. Deliberately *not* a
+ * `Map<number, string>`: on a monorepo-scale trace the table has ~660k entries
+ * and 57 MB of text, and a live map of decoded strings costs roughly twice its
+ * payload in map slots and per-string headers. See {@link buildStringTable} for
+ * the implementation, which keeps the raw payload plus an offset index and
+ * slices on demand.
+ *
+ * `get`/`size` keep the shape a `ReadonlyMap` had, so call sites (and tests)
+ * read the same either way.
+ */
+export interface StringTable {
+  // The string interned under `id`, or undefined if the table has no such id.
+  get(id: number): string | undefined;
+
+  // How many strings the table holds.
+  readonly size: number;
+
+  /**
+   * Every interned pair, in ascending id order. Only the SQL mirror walks the
+   * whole table - it copies it into `dune_string` so the mirror can store a
+   * dict id wherever it used to repeat a path (see sql_graph.ts) - so this is
+   * deliberately a one-shot iteration rather than a materialized list.
+   *
+   * @yields each `[id, string]` pair.
+   */
+  entries(): Iterable<readonly [number, string]>;
+}
+
+export const EMPTY_STRING_TABLE: StringTable = {
+  get: () => undefined,
+  size: 0,
+  entries: () => [],
+};
+
+// One `dune-graph` instant's chunk *without* its payload: what the blob query's
+// cheap metadata pass reads (see `trace_graph_source.ts`), and everything
+// {@link orderedChunks} needs to validate the set. `name` is one of
+// `DICT_SECTION` / `RULES_SECTION` / `DEPS_SECTION`.
+export interface BlobChunkMeta {
   readonly name: string;
   readonly version: number;
   readonly seq: number;
   readonly total: number;
+}
+
+// A chunk with its payload, as `joinChunks` and the unit tests use it.
+export interface BlobChunk extends BlobChunkMeta {
   readonly data: string;
 }
 
-// Reassembles one section's chunks into its full payload string, in `seq`
-// order regardless of the order `chunks` arrives in. Throws (rather than
-// silently truncating) on a version mismatch, a missing/duplicate `seq`, or a
-// chunk count that doesn't match the section's own `total` - a corrupt or
-// partially-written blob should fail loudly, not produce a plausible-looking
-// partial graph.
-export function joinChunks(name: string, chunks: readonly BlobChunk[]): string {
-  if (chunks.length === 0) return '';
+/**
+ * Validates one section's chunk set and returns it in `seq` order, regardless
+ * of the order it arrived in. Throws (rather than silently truncating) on a
+ * version mismatch, a missing/duplicate `seq`, or a chunk count that doesn't
+ * match the section's own `total` - a corrupt or partially-written blob should
+ * fail loudly, not produce a plausible-looking partial graph.
+ *
+ * Generic over the chunk type so it can validate payload-less metadata (which
+ * is how the streaming read uses it - the payloads are fetched one at a time,
+ * afterwards) as well as whole chunks.
+ */
+export function orderedChunks<T extends BlobChunkMeta>(
+  name: string,
+  chunks: readonly T[],
+): readonly T[] {
+  if (chunks.length === 0) return [];
   const total = chunks[0].total;
   for (const c of chunks) {
     if (c.version !== GRAPH_BLOB_VERSION) {
@@ -131,32 +211,71 @@ export function joinChunks(name: string, chunks: readonly BlobChunk[]): string {
     }
   }
   if (chunks.length !== total) {
-    throw new Error(
-      `${name}: expected ${total} chunks, got ${chunks.length}`,
-    );
+    throw new Error(`${name}: expected ${total} chunks, got ${chunks.length}`);
   }
-  const bySeq = new Map<number, string>();
+  const bySeq = new Map<number, T>();
   for (const c of chunks) {
     if (bySeq.has(c.seq)) {
       throw new Error(`${name}: duplicate chunk seq ${c.seq}`);
     }
-    bySeq.set(c.seq, c.data);
+    bySeq.set(c.seq, c);
   }
-  const parts: string[] = [];
+  const ordered: T[] = [];
   for (let i = 0; i < total; i++) {
-    const part = bySeq.get(i);
-    if (part === undefined) {
+    const chunk = bySeq.get(i);
+    if (chunk === undefined) {
       throw new Error(`${name}: missing chunk seq ${i} of ${total}`);
     }
-    parts.push(part);
+    ordered.push(chunk);
   }
-  return parts.join('');
+  return ordered;
 }
 
-// Splits a payload into non-empty lines (a trailing newline shouldn't produce
-// a spurious empty final record).
-function lines(payload: string): string[] {
-  return payload.split('\n').filter((l) => l.length > 0);
+// Reassembles one section's chunks into its full payload string. Only used
+// where the whole payload genuinely has to exist at once (the intern table,
+// which {@link StringTable} slices on demand) - the record sections are parsed
+// a chunk at a time instead, see {@link parseGraphBlob}.
+export function joinChunks(name: string, chunks: readonly BlobChunk[]): string {
+  return orderedChunks(name, chunks)
+    .map((c) => c.data)
+    .join('');
+}
+
+/**
+ * Splits a stream of chunk payloads into lines, carrying a partial line across
+ * the chunk boundary - a chunk boundary falls wherever the exporter's buffer
+ * filled up, so it lands mid-record about as often as not.
+ *
+ * Empty lines are skipped, so a trailing newline doesn't produce a spurious
+ * final record (the same rule the whole-payload split enforced).
+ */
+class LineReader {
+  private partial = '';
+
+  constructor(private readonly onLine: (line: string) => void) {}
+
+  push(text: string): void {
+    let start = 0;
+    for (;;) {
+      const nl = text.indexOf('\n', start);
+      if (nl < 0) break;
+      const line =
+        this.partial.length === 0
+          ? text.slice(start, nl)
+          : this.partial + text.slice(start, nl);
+      this.partial = '';
+      if (line.length > 0) this.onLine(line);
+      start = nl + 1;
+    }
+    if (start < text.length) this.partial += text.slice(start);
+  }
+
+  // Flushes a final line with no trailing newline. Idempotent.
+  end(): void {
+    const last = this.partial;
+    this.partial = '';
+    if (last.length > 0) this.onLine(last);
+  }
 }
 
 // Unescapes `\\`, `\t`, `\n` - the only field in the whole blob that carries
@@ -186,24 +305,146 @@ function unescape(s: string): string {
   return out;
 }
 
-function parseDict(payload: string): Map<number, string> {
-  const dict = new Map<number, string>();
-  for (const line of lines(payload)) {
+// An id whose offset index would be this much bigger than the number of entries
+// is treated as sparse and sent down the plain-`Map` path instead: dict ids are
+// intern-table indices, so they are dense `[0, N)` in every blob the exporter
+// produces, but a hostile or future blob shouldn't be able to make us allocate
+// an arbitrarily large array.
+const MAX_INDEX_SLACK = 8;
+
+/**
+ * Indexes the `graph-dict` payload (its chunks, joined here - see
+ * {@link StringTable} for why this section keeps its text) as `id -> string`.
+ *
+ * `chunks` is consumed: it's emptied as the payload is joined, so the caller's
+ * per-chunk strings become collectable as soon as this returns.
+ *
+ * The index is two `Int32Array`s of payload offsets, keyed by id, so a lookup is
+ * an array read plus a `slice` and the decoded strings are never all live at
+ * once. Values are unescaped on read (only this section escapes anything, and
+ * only a small minority of entries actually contain an escape).
+ */
+export function buildStringTable(chunks: string[]): StringTable {
+  const payload = chunks.join('');
+  chunks.length = 0;
+  // Scanned without materialising a string per line: only the (short) id text
+  // is sliced, and each value stays as a pair of offsets.
+  const ids: number[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let maxId = -1;
+  let pos = 0;
+  while (pos < payload.length) {
+    let nl = payload.indexOf('\n', pos);
+    if (nl < 0) nl = payload.length;
     // Split on the *first* tab only - the value's own tabs arrive escaped, so
     // an unescaped tab can only be the id/value separator.
-    const tab = line.indexOf('\t');
-    if (tab < 0) continue;
-    const id = Number(line.slice(0, tab));
-    if (!Number.isFinite(id)) continue;
-    dict.set(id, unescape(line.slice(tab + 1)));
+    const tab = payload.indexOf('\t', pos);
+    if (tab >= pos && tab < nl) {
+      const id = Number(payload.slice(pos, tab));
+      if (Number.isSafeInteger(id) && id >= 0) {
+        ids.push(id);
+        starts.push(tab + 1);
+        ends.push(nl);
+        if (id > maxId) maxId = id;
+      }
+    }
+    pos = nl + 1;
   }
-  return dict;
+
+  // Only this section's values carry escapes, and only a small minority of them
+  // do, so the scan for a backslash is worth it to skip the decode entirely.
+  const value = (start: number, end: number) => {
+    const raw = payload.slice(start, end);
+    return raw.includes('\\') ? unescape(raw) : raw;
+  };
+
+  if (maxId >= 0 && maxId + 1 <= MAX_INDEX_SLACK * ids.length + 1024) {
+    const startAt = new Int32Array(maxId + 1).fill(-1);
+    const endAt = new Int32Array(maxId + 1);
+    for (let i = 0; i < ids.length; i++) {
+      startAt[ids[i]] = starts[i];
+      endAt[ids[i]] = ends[i];
+    }
+    return {
+      size: ids.length,
+      get(id: number): string | undefined {
+        if (!Number.isInteger(id) || id < 0 || id >= startAt.length) {
+          return undefined;
+        }
+        const start = startAt[id];
+        return start < 0 ? undefined : value(start, endAt[id]);
+      },
+      *entries(): Iterable<readonly [number, string]> {
+        for (let id = 0; id < startAt.length; id++) {
+          const start = startAt[id];
+          if (start >= 0) yield [id, value(start, endAt[id])];
+        }
+      },
+    };
+  }
+
+  // Sparse (or empty) ids: fall back to a plain decoded map. Never taken by a
+  // real blob - see MAX_INDEX_SLACK.
+  const map = new Map<number, string>();
+  for (let i = 0; i < ids.length; i++) {
+    map.set(ids[i], value(starts[i], ends[i]));
+  }
+  return {
+    size: map.size,
+    get: (id: number) => map.get(id),
+    entries: () => [...map.entries()].sort((a, b) => a[0] - b[0]),
+  };
 }
 
-// A `,`-separated int list; empty input yields an empty list (not `[NaN]`).
-function idList(field: string): readonly number[] {
-  if (field === '') return [];
-  return field.split(',').map(Number);
+const CH_ZERO = 0x30;
+const CH_NINE = 0x39;
+const CH_COMMA = 0x2c;
+
+/**
+ * A `,`-separated list of decimal ids; empty input yields an empty list (not
+ * `[NaN]`).
+ *
+ * Scans digits straight out of the field rather than `split(',').map(Number)`:
+ * the `<dep_ids>` field alone holds ~28M ids on a monorepo-scale trace, and
+ * splitting allocates a string per id - by far the largest allocation the parse
+ * used to make. An entry that isn't a plain run of digits yields `NaN`, matching
+ * what `Number()` did for it, and the graph builder drops those.
+ */
+function idList(field: string): number[] {
+  const ids: number[] = [];
+  if (field === '') return ids;
+  let value = 0;
+  let digits = 0;
+  let malformed = false;
+  for (let i = 0; i < field.length; i++) {
+    const c = field.charCodeAt(i);
+    if (c === CH_COMMA) {
+      ids.push(digits > 0 && !malformed ? value : NaN);
+      value = 0;
+      digits = 0;
+      malformed = false;
+    } else if (c >= CH_ZERO && c <= CH_NINE) {
+      value = value * 10 + (c - CH_ZERO);
+      digits++;
+    } else {
+      malformed = true;
+    }
+  }
+  ids.push(digits > 0 && !malformed ? value : NaN);
+  return ids;
+}
+
+// A single decimal id field: the same digits-only rule as {@link idList}, so an
+// empty or malformed field is `NaN` rather than 0.
+function id(field: string): number {
+  let value = 0;
+  for (let i = 0; i < field.length; i++) {
+    const c = field.charCodeAt(i);
+    if (c < CH_ZERO || c > CH_NINE) return NaN;
+    value = value * 10 + (c - CH_ZERO);
+  }
+  return field.length === 0 ? NaN : value;
 }
 
 // `dyn_dep_stages`: `|`-separated stages, each a `,`-separated id list; empty
@@ -220,15 +461,15 @@ function parseForcedByTag(field: string): ForcedByTag | undefined {
   const rest = field.slice(1);
   switch (tag) {
     case 'r':
-      return {kind: 'RULE', ruleId: rest};
+      return {kind: 'RULE', ruleId: id(rest)};
     case 'd':
-      return {kind: 'DEP', depId: Number(rest)};
+      return {kind: 'DEP', depId: id(rest)};
     case 'i':
-      return {kind: 'DYNAMIC_INCLUDES', pathId: Number(rest)};
+      return {kind: 'DYNAMIC_INCLUDES', pathId: id(rest)};
     case 'g':
-      return {kind: 'GEN_RULES', pathId: Number(rest)};
+      return {kind: 'GEN_RULES', pathId: id(rest)};
     case 'p':
-      return {kind: 'PFORM', pathId: Number(rest)};
+      return {kind: 'PFORM', pathId: id(rest)};
     case 'c':
       return {kind: 'CONFIGURATOR'};
     case 'q':
@@ -256,16 +497,19 @@ function parseResolution(field: string): DepResolution {
   if (field === '?' || field === '') return {kind: 'unfinished'};
   const tag = field[0];
   const rest = field.slice(1);
-  if (tag === 'r') return {kind: 'rule', ruleId: rest};
+  if (tag === 'r') return {kind: 'rule', ruleId: id(rest)};
   if (tag === 'x') return {kind: 'expanded', depIds: idList(rest)};
   return {kind: 'unfinished'};
 }
 
+// A rule line, or undefined for a line that isn't one: too few fields, or a
+// `rule_id` that isn't an integer (the same rule `parseDepLine` applies to
+// `dep_id` - a record with no usable identity can't become a node).
 function parseRuleLine(line: string): RuleRecord | undefined {
   const f = line.split('\t');
   if (f.length < 8) return undefined;
   const [
-    ruleId,
+    ruleIdStr,
     dirIdStr,
     targetFileIds,
     targetDirIds,
@@ -274,10 +518,12 @@ function parseRuleLine(line: string): RuleRecord | undefined {
     depIds,
     stages,
   ] = f;
-  const dirId = dirIdStr === '' ? undefined : Number(dirIdStr);
+  const ruleId = id(ruleIdStr);
+  if (Number.isNaN(ruleId)) return undefined;
+  const dirId = id(dirIdStr);
   return {
     ruleId,
-    dirId,
+    dirId: Number.isNaN(dirId) ? undefined : dirId,
     targetFileIds: idList(targetFileIds),
     targetDirIds: idList(targetDirIds),
     outcome: parseOutcome(outcome),
@@ -291,8 +537,8 @@ function parseDepLine(line: string): DepRecord | undefined {
   const f = line.split('\t');
   if (f.length < 3) return undefined;
   const [depIdStr, resolution, forcedBy] = f;
-  const depId = Number(depIdStr);
-  if (!Number.isFinite(depId)) return undefined;
+  const depId = id(depIdStr);
+  if (Number.isNaN(depId)) return undefined;
   return {
     depId,
     resolution: parseResolution(resolution),
@@ -300,44 +546,108 @@ function parseDepLine(line: string): DepRecord | undefined {
   };
 }
 
-// Parses the three reassembled section payloads into a {@link GraphBlob}.
-// `sections` maps section name to its already-joined payload (see
-// {@link joinChunks}); a missing section is treated as empty rather than an
-// error, so a trace with e.g. no build-dep spans at all still parses.
-// `perf`, when given, records one phase per section (see perf.ts); the parser
-// itself stays pure either way.
-export function parseGraphBlob(
-  sections: ReadonlyMap<string, string>,
+/**
+ * One section's payload as a stream of chunks, in `seq` order - what
+ * {@link parseGraphBlob} consumes. The source fetches each chunk as the parser
+ * asks for it (see `trace_graph_source.ts`), so only one chunk of a section's
+ * text is live at a time.
+ */
+export type SectionChunks = AsyncIterable<string>;
+
+/**
+ * Parses the three sections into `sink`, streaming each one chunk by chunk. A
+ * missing section is treated as empty rather than an error, so a trace with e.g.
+ * no build-dep spans at all still parses.
+ *
+ * The dict is handed over first, then the rules, then the deps - a sink can rely
+ * on that order (`graph_build.ts` does, to size its id index).
+ *
+ * `perf`, when given, records one phase per section (see perf.ts) - measuring
+ * only the synchronous parse of each chunk, so it never overlaps (and so never
+ * double-counts) whatever phase the caller's iterable uses for the fetch. Note
+ * the sink's own work is inside those phases, since it runs per record. The
+ * parser itself stays pure either way: it never touches the engine.
+ */
+export async function parseGraphBlob(
+  sections: ReadonlyMap<string, SectionChunks>,
+  sink: GraphBlobSink,
   perf?: PerfRun,
-): GraphBlob {
-  const dictPayload = sections.get(DICT_SECTION) ?? '';
-  const dict = measureSync(perf, `blob: parse ${DICT_SECTION}`, (p) => {
-    const parsed = parseDict(dictPayload);
-    p.rows(parsed.size);
-    p.bytes(dictPayload.length);
-    return parsed;
+): Promise<void> {
+  // The intern table is the one section whose text is kept (see
+  // {@link StringTable}), so its chunks are accumulated rather than discarded.
+  const dictChunks: string[] = [];
+  await eachChunk(sections.get(DICT_SECTION), (text) =>
+    measureSync(perf, `blob: parse ${DICT_SECTION}`, (p) => {
+      dictChunks.push(text);
+      p.bytes(text.length);
+    }),
+  );
+  measureSync(perf, `blob: index ${DICT_SECTION}`, (p) => {
+    const table = buildStringTable(dictChunks);
+    p.rows(table.size);
+    sink.strings(table);
   });
-  const rulesPayload = sections.get(RULES_SECTION) ?? '';
-  const rules = measureSync(perf, `blob: parse ${RULES_SECTION}`, (p) => {
-    const parsed: RuleRecord[] = [];
-    for (const line of lines(rulesPayload)) {
-      const r = parseRuleLine(line);
-      if (r !== undefined) parsed.push(r);
-    }
-    p.rows(parsed.length);
-    p.bytes(rulesPayload.length);
-    return parsed;
+
+  let rules = 0;
+  await parseLines(
+    sections.get(RULES_SECTION),
+    RULES_SECTION,
+    perf,
+    (line) => {
+      const record = parseRuleLine(line);
+      if (record === undefined) return;
+      rules++;
+      sink.rule(record);
+    },
+    () => rules,
+  );
+
+  let deps = 0;
+  await parseLines(
+    sections.get(DEPS_SECTION),
+    DEPS_SECTION,
+    perf,
+    (line) => {
+      const record = parseDepLine(line);
+      if (record === undefined) return;
+      deps++;
+      sink.dep(record);
+    },
+    () => deps,
+  );
+}
+
+// Feeds each of a section's chunks to `onChunk`, tolerating an absent section.
+async function eachChunk(
+  chunks: SectionChunks | undefined,
+  onChunk: (text: string) => void,
+): Promise<void> {
+  if (chunks === undefined) return;
+  for await (const text of chunks) onChunk(text);
+}
+
+// Streams one record section through `onLine`, one chunk at a time, and
+// accounts the parse under a single per-section phase. The chunk count lands in
+// the phase's note, since the phase's own `n` also covers the flush below.
+async function parseLines(
+  chunks: SectionChunks | undefined,
+  name: string,
+  perf: PerfRun | undefined,
+  onLine: (line: string) => void,
+  count: () => number,
+): Promise<void> {
+  const reader = new LineReader(onLine);
+  let read = 0;
+  await eachChunk(chunks, (text) =>
+    measureSync(perf, `blob: parse ${name}`, (p) => {
+      reader.push(text);
+      read++;
+      p.bytes(text.length);
+    }),
+  );
+  measureSync(perf, `blob: parse ${name}`, (p) => {
+    reader.end();
+    p.rows(count());
+    p.note(`${read} chunks`);
   });
-  const depsPayload = sections.get(DEPS_SECTION) ?? '';
-  const deps = measureSync(perf, `blob: parse ${DEPS_SECTION}`, (p) => {
-    const parsed: DepRecord[] = [];
-    for (const line of lines(depsPayload)) {
-      const d = parseDepLine(line);
-      if (d !== undefined) parsed.push(d);
-    }
-    p.rows(parsed.length);
-    p.bytes(depsPayload.length);
-    return parsed;
-  });
-  return {dict, rules, deps};
 }

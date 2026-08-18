@@ -13,27 +13,31 @@
 // limitations under the License.
 
 import type {Engine} from '../../trace_processor/engine';
-import {LONG, LONG_NULL, NUM, STR} from '../../trace_processor/query_result';
+import {
+  LONG,
+  LONG_NULL,
+  NUM,
+  STR,
+  STR_NULL,
+} from '../../trace_processor/query_result';
 import type {
   BuildGraph,
-  DepNode,
-  ForcedBy,
-  GraphNode,
+  GraphSectionStats,
   GraphSource,
-  RuleNode,
-  SpanTiming,
+  GraphStats,
 } from './graph';
-import type {BlobChunk, ForcedByTag} from './graph_blob';
+import {GraphBuilder} from './graph_build';
+import type {BlobChunkMeta, SectionChunks} from './graph_blob';
 import {
   BLOB_TRACK,
   DEPS_SECTION,
   DICT_SECTION,
   RULES_SECTION,
-  joinChunks,
+  orderedChunks,
   parseGraphBlob,
 } from './graph_blob';
 import type {PerfRun} from './perf';
-import {measure, measureSync} from './perf';
+import {measure} from './perf';
 
 // Slice tracks carrying lifecycle instants that resolve to graph nodes. Each
 // carries `<track>-start` / `<track>-finish` / `<track>-resolved` instants -
@@ -45,6 +49,24 @@ const RULE_TRACK = 'exec-rule';
 const DEP_TRACK = 'build-dep';
 const ACTION_TRACK = 'exec-rule-action';
 const LIFECYCLE_TRACKS = [RULE_TRACK, DEP_TRACK, ACTION_TRACK];
+
+// Average bytes per dep id in the `graph-rules` payload, used to turn that
+// section's byte size into an edge-count estimate without parsing it (see
+// `stats()`). The section is overwhelmingly comma-separated decimal dep ids -
+// on the monorepo trace of the perf plan's baseline, 262 MB of blob against
+// 28.0M real edges, this is within a few percent.
+const BYTES_PER_DEP_ID = 7;
+
+// What the panel shows - and what `load()` throws - when the trace carries no
+// graph at all. Shared so the cheap `stats()` probe fails exactly the way a
+// real load would.
+function noBlobTrackError(): Error {
+  return new Error(
+    `No '${BLOB_TRACK}' track found in this trace. Either it predates ` +
+      'the v1 Dune graph schema, or it was recorded without ' +
+      "DUNE_TRACE=+graph (or the equivalent 'graph' category).",
+  );
+}
 
 /**
  * A {@link GraphSource} that reads the v1 graph-blob schema: structure comes
@@ -59,374 +81,154 @@ export class TraceGraphSource implements GraphSource {
     return `graph blob • ${BLOB_TRACK}`;
   }
 
-  async load(perf?: PerfRun): Promise<BuildGraph> {
-    const blob = await this.loadBlob(perf);
-    const lifecycle = await this.loadLifecycle(perf);
+  /**
+   * The cheap probe behind the side panel's pre-load summary: how big the blob
+   * is and how many lifecycle instants back it, as three SQL aggregates. The
+   * payload strings are measured (`length()`) inside trace processor and never
+   * cross into JS - the transfer is most of what makes `load()` expensive - so
+   * this stays affordable on a trace whose blob is hundreds of megabytes.
+   */
+  async stats(): Promise<GraphStats> {
+    const blob = await this.engine.query(`
+      select s.name as section, count(*) as chunks,
+        sum(length(extract_arg(s.arg_set_id, 'debug.dune.data'))) as bytes
+      from slice s join track t on s.track_id = t.id
+      where t.name = '${BLOB_TRACK}'
+      group by s.name
+      order by s.name
+    `);
+    const sections: GraphSectionStats[] = [];
+    let bytes = 0;
+    let rulesBytes = 0;
+    const it = blob.iter({section: STR, chunks: NUM, bytes: LONG_NULL});
+    for (; it.valid(); it.next()) {
+      const sectionBytes = it.bytes === null ? 0 : Number(it.bytes);
+      sections.push({name: it.section, chunks: it.chunks, bytes: sectionBytes});
+      bytes += sectionBytes;
+      if (it.section === RULES_SECTION) rulesBytes = sectionBytes;
+    }
+    if (sections.length === 0) throw noBlobTrackError();
 
-    const deps = new Map<string, DepNode>();
-    const rules = new Map<string, RuleNode>();
-    const bySliceId = new Map<number, GraphNode>();
-
-    measureSync(perf, 'nodes: build rules', (p) => {
-      for (const rec of blob.rules) {
-        if (rules.has(rec.ruleId)) continue; // first occurrence wins.
-        const dir =
-          rec.dirId === undefined ? undefined : blob.dict.get(rec.dirId);
-        rules.set(rec.ruleId, {
-          kind: 'rule',
-          id: rec.ruleId,
-          staticDepIds: resolveIds(blob.dict, rec.depIds),
-          dynamicDepIds: rec.dynDepStages.map((stage) =>
-            resolveIds(blob.dict, stage),
-          ),
-          dir,
-          targetFiles: resolveIds(blob.dict, rec.targetFileIds),
-          targetDirs: resolveIds(blob.dict, rec.targetDirIds),
-          forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
-          outcome: rec.outcome,
-        });
-      }
-      p.rows(rules.size);
-    });
-
-    measureSync(perf, 'nodes: build deps', (p) => {
-      for (const rec of blob.deps) {
-        const id = blob.dict.get(rec.depId);
-        if (id === undefined || deps.has(id)) continue; // first occurrence wins.
-        deps.set(id, {
-          kind: 'dep',
-          id,
-          depId: rec.depId,
-          resolvedRuleId:
-            rec.resolution.kind === 'rule' ? rec.resolution.ruleId : undefined,
-          expandedDepIds:
-            rec.resolution.kind === 'expanded'
-              ? resolveIds(blob.dict, rec.resolution.depIds)
-              : undefined,
-          isSource: rec.resolution.kind === 'source',
-          unfinished: rec.resolution.kind === 'unfinished',
-          forcedBy: resolveForcedBy(rec.forcedBy, blob.dict),
-        });
-      }
-      p.rows(deps.size);
-    });
-
-    // Attach timing, and index every lifecycle instant (every occurrence, not
-    // just the canonical one) back to its owning node so a click on any of
-    // them - including a later watch-mode occurrence - resolves.
-    measureSync(perf, 'nodes: attach timing', (p) => {
-      for (const rule of rules.values()) {
-        const occ = lifecycle.byRuleId.get(rule.id) ?? [];
-        const action = lifecycle.actionByRuleId.get(rule.id) ?? [];
-        const withTiming: RuleNode = {
-          ...rule,
-          timing: timingOf(occ),
-          actionTiming: timingOf(action),
-        };
-        rules.set(rule.id, withTiming);
-        for (const o of [...occ, ...action]) {
-          indexOccurrence(bySliceId, o, withTiming);
-        }
-      }
-      for (const dep of deps.values()) {
-        const occ = lifecycle.byDepId.get(dep.depId) ?? [];
-        const withTiming: DepNode = {...dep, timing: timingOf(occ)};
-        deps.set(dep.id, withTiming);
-        for (const o of occ) indexOccurrence(bySliceId, o, withTiming);
-      }
-      p.rows(bySliceId.size);
-      p.note(`${bySliceId.size} slice ids indexed`);
-    });
-
-    return {deps, rules, bySliceId};
+    const tracks = LIFECYCLE_TRACKS.map((t) => `'${t}'`).join(', ');
+    const lifecycle = await this.engine.query(`
+      select count(*) as instants
+      from slice s join track t on s.track_id = t.id
+      where t.name in (${tracks})
+    `);
+    return {
+      sections,
+      bytes,
+      lifecycleInstants: lifecycle.firstRow({instants: NUM}).instants,
+      estimatedEdges: Math.round(rulesBytes / BYTES_PER_DEP_ID),
+    };
   }
 
-  // Reassembles and parses the structural graph. Throws (surfaced by
-  // `controller.reload()` as the panel's error state) rather than returning an
-  // empty graph when the `dune-graph` track is absent - a trace that predates
-  // the v1 schema, or one recorded without `DUNE_TRACE=+graph`, should fail
-  // loudly rather than silently show nothing.
-  private async loadBlob(perf?: PerfRun) {
-    const result = await measure(perf, 'blob: query', () =>
+  /**
+   * The structural graph, straight off the blob. Nothing timing-shaped is read
+   * here: since the perf plan's stage 2 the lifecycle instants are paired in
+   * SQL (see `lifecycle_sql.ts`) and a node's timing is looked up when it's
+   * shown, so a load no longer transfers 2.4M instants into JS to build a
+   * `SpanTiming` per node and a slice-id index over all of them.
+   *
+   * The blob's records are streamed straight into the columnar store
+   * (`graph_build.ts`) and never collected: since the perf plan's stage 3 there
+   * is no intermediate array of records, no node object and no per-rule dep
+   * array - a rule's deps are edges in one shared CSR, and its `dir` / target
+   * ids stay dict ids, resolved through the intern table only where they're
+   * displayed. On the monorepo trace those references number 28M against 660k
+   * distinct strings.
+   *
+   * Throws (surfaced by the controller as the panel's error state) rather than
+   * returning an empty graph when the `dune-graph` track is absent - a trace
+   * that predates the v1 schema, or one recorded without `DUNE_TRACE=+graph`,
+   * should fail loudly rather than silently show nothing.
+   *
+   * The blob itself is read in two passes: a cheap metadata query that validates
+   * each section's chunk set without reading a byte of payload, then one query
+   * per chunk, each fed straight into the streaming parser. Deliberately *not*
+   * one query for everything: a query result decodes and holds every string
+   * column it returned for as long as it's alive, so a single blob query would
+   * keep all 262 MB of a monorepo trace's payload live for the whole parse - on
+   * top of everything the parse itself builds. Per-chunk, only the chunk
+   * currently being parsed is live.
+   */
+  async load(perf?: PerfRun): Promise<BuildGraph> {
+    const index = await this.readChunkIndex(perf);
+    if (index.size === 0) throw noBlobTrackError();
+    const sections = new Map<string, SectionChunks>();
+    for (const name of [DICT_SECTION, RULES_SECTION, DEPS_SECTION]) {
+      sections.set(name, this.sectionChunks(name, index.get(name) ?? [], perf));
+    }
+    const builder = new GraphBuilder();
+    await parseGraphBlob(sections, builder, perf);
+    return builder.finish(perf);
+  }
+
+  // Every blob chunk's metadata (and the slice it lives on), grouped by
+  // section. No payloads: `extract_arg(... 'data')` is the expensive column and
+  // is left for `sectionChunks` to fetch one chunk at a time.
+  private async readChunkIndex(
+    perf?: PerfRun,
+  ): Promise<Map<string, ChunkRef[]>> {
+    const result = await measure(perf, 'blob: chunk index', () =>
       this.engine.query(`
-        select s.name as section,
+        select s.id as sliceId, s.name as section,
           extract_arg(s.arg_set_id, 'debug.dune.version') as version,
           extract_arg(s.arg_set_id, 'debug.dune.seq') as seq,
-          extract_arg(s.arg_set_id, 'debug.dune.total') as total,
-          extract_arg(s.arg_set_id, 'debug.dune.data') as data
+          extract_arg(s.arg_set_id, 'debug.dune.total') as total
         from slice s join track t on s.track_id = t.id
         where t.name = '${BLOB_TRACK}'
         order by s.name, seq
       `),
     );
-    const chunksBySection = measureSync(perf, 'blob: read chunks', (p) => {
-      const it = result.iter({
-        section: STR,
-        version: LONG,
-        seq: LONG,
-        total: LONG,
-        data: STR,
+    const bySection = new Map<string, ChunkRef[]>();
+    const it = result.iter({
+      sliceId: NUM,
+      section: STR,
+      version: LONG,
+      seq: LONG,
+      total: LONG,
+    });
+    for (; it.valid(); it.next()) {
+      const list = bySection.get(it.section) ?? [];
+      list.push({
+        sliceId: it.sliceId,
+        name: it.section,
+        version: Number(it.version),
+        seq: Number(it.seq),
+        total: Number(it.total),
       });
-      const bySection = new Map<string, BlobChunk[]>();
-      for (; it.valid(); it.next()) {
-        const list = bySection.get(it.section) ?? [];
-        list.push({
-          name: it.section,
-          version: Number(it.version),
-          seq: Number(it.seq),
-          total: Number(it.total),
-          data: it.data,
-        });
+      bySection.set(it.section, list);
+    }
+    return bySection;
+  }
+
+  // One section's payloads, in `seq` order, fetched lazily as the parser pulls
+  // them. `orderedChunks` validates the set (version / seq / total) before the
+  // first fetch, so a corrupt section still fails loudly rather than parsing
+  // half a graph.
+  private async *sectionChunks(
+    name: string,
+    chunks: readonly ChunkRef[],
+    perf?: PerfRun,
+  ): SectionChunks {
+    for (const chunk of orderedChunks(name, chunks)) {
+      yield await measure(perf, 'blob: fetch chunks', async (p) => {
+        const result = await this.engine.query(`
+          select extract_arg(arg_set_id, 'debug.dune.data') as data
+          from slice where id = ${chunk.sliceId}
+        `);
+        const data = result.firstRow({data: STR_NULL}).data ?? '';
         p.rows(1);
-        p.bytes(it.data.length);
-        bySection.set(it.section, list);
-      }
-      return bySection;
-    });
-    if (chunksBySection.size === 0) {
-      throw new Error(
-        `No '${BLOB_TRACK}' track found in this trace. Either it predates ` +
-          "the v1 Dune graph schema, or it was recorded without " +
-          "DUNE_TRACE=+graph (or the equivalent 'graph' category).",
-      );
+        p.bytes(data.length);
+        return data;
+      });
     }
-    const sections = new Map<string, string>();
-    for (const name of [DICT_SECTION, RULES_SECTION, DEPS_SECTION]) {
-      const chunks = chunksBySection.get(name) ?? [];
-      sections.set(
-        name,
-        measureSync(perf, `blob: join ${name}`, (p) => {
-          const payload = joinChunks(name, chunks);
-          p.rows(chunks.length);
-          p.bytes(payload.length);
-          return payload;
-        }),
-      );
-    }
-    return parseGraphBlob(sections, perf);
-  }
-
-  // Reads every lifecycle instant off the tracks in {@link LIFECYCLE_TRACKS}
-  // and pairs them per (track, key) into {@link Occurrence}s.
-  private async loadLifecycle(perf?: PerfRun): Promise<{
-    byRuleId: Map<string, Occurrence[]>;
-    byDepId: Map<number, Occurrence[]>;
-    actionByRuleId: Map<string, Occurrence[]>;
-  }> {
-    const tracks = LIFECYCLE_TRACKS.map((t) => `'${t}'`).join(', ');
-    const result = await measure(perf, 'lifecycle: query', () =>
-      this.engine.query(`
-        select s.id as sliceId, s.ts as ts, s.name as name, t.name as track,
-          extract_arg(s.arg_set_id, 'debug.dune.rule_id') as ruleId,
-          extract_arg(s.arg_set_id, 'debug.dune.dep_id') as depId,
-          extract_arg(s.arg_set_id, 'debug.dune.dur_ns') as durNs
-        from slice s join track t on s.track_id = t.id
-        where t.name in (${tracks})
-        order by s.ts
-      `),
-    );
-    const {ruleRows, depRows, actionRows} = measureSync(
-      perf,
-      'lifecycle: read instants',
-      (p) => {
-        const it = result.iter({
-          sliceId: NUM,
-          ts: LONG,
-          name: STR,
-          track: STR,
-          ruleId: LONG_NULL,
-          depId: LONG_NULL,
-          durNs: LONG_NULL,
-        });
-        const rule: LifecycleRow[] = [];
-        const dep: LifecycleRow[] = [];
-        const action: LifecycleRow[] = [];
-        for (; it.valid(); it.next()) {
-          const row: LifecycleRow = {
-            sliceId: it.sliceId,
-            ts: it.ts,
-            name: it.name,
-            ruleId: it.ruleId === null ? undefined : it.ruleId.toString(),
-            depId: it.depId === null ? undefined : Number(it.depId),
-            durNs: it.durNs === null ? undefined : Number(it.durNs),
-          };
-          if (it.track === RULE_TRACK) rule.push(row);
-          else if (it.track === DEP_TRACK) dep.push(row);
-          else if (it.track === ACTION_TRACK) action.push(row);
-        }
-        p.rows(rule.length + dep.length + action.length);
-        p.note(
-          `${RULE_TRACK} ${rule.length}, ${DEP_TRACK} ${dep.length}, ` +
-            `${ACTION_TRACK} ${action.length}`,
-        );
-        return {ruleRows: rule, depRows: dep, actionRows: action};
-      },
-    );
-    return measureSync(perf, 'lifecycle: pair occurrences', (p) => {
-      const byRuleId = occurrencesByKey(ruleRows, (r) => r.ruleId);
-      const byDepId = occurrencesByKey(depRows, (r) => r.depId);
-      const actionByRuleId = occurrencesByKey(actionRows, (r) => r.ruleId);
-      p.rows(byRuleId.size + byDepId.size + actionByRuleId.size);
-      return {byRuleId, byDepId, actionByRuleId};
-    });
   }
 }
 
-// One lifecycle instant as read off the trace, with its (already-typed) join
-// key columns - only one of `ruleId`/`depId` is meaningful per track.
-interface LifecycleRow {
+// A blob chunk's metadata plus the slice it lives on, so its payload can be
+// fetched on its own later (see `sectionChunks`).
+interface ChunkRef extends BlobChunkMeta {
   readonly sliceId: number;
-  readonly ts: bigint;
-  readonly name: string;
-  readonly ruleId?: string;
-  readonly depId?: number;
-  readonly durNs?: number;
-}
-
-// A single resolved span occurrence: a `-start`/`-finish` pair (or a solo
-// `-resolved` instant, where start and finish coincide). `durNs`/`finishSliceId`
-// are absent for a span that never got a finish (flushed at EOF).
-interface Occurrence {
-  readonly ts: bigint;
-  readonly startSliceId?: number;
-  readonly finishSliceId?: number;
-  readonly durNs?: number;
-}
-
-// Groups `rows` by `keyOf` and pairs each group's `-start`/`-finish`/
-// `-resolved` instants into {@link Occurrence}s, sorted by begin timestamp.
-// `-start` and `-finish` are paired in arrival order (both arrive already
-// ts-ordered, per the query) - a heuristic, since instants carry no
-// occurrence index to pair by (see the plugin's reported schema gaps). A
-// `-start` with no matching `-finish` yields an occurrence with no `durNs`
-// (an unfinished span, or one whose finish hasn't landed yet).
-function occurrencesByKey<K extends string | number>(
-  rows: readonly LifecycleRow[],
-  keyOf: (row: LifecycleRow) => K | undefined,
-): Map<K, Occurrence[]> {
-  const starts = new Map<K, LifecycleRow[]>();
-  const finishes = new Map<K, LifecycleRow[]>();
-  const resolved = new Map<K, LifecycleRow[]>();
-  for (const row of rows) {
-    const key = keyOf(row);
-    if (key === undefined) continue;
-    if (row.name.endsWith('-start')) pushTo(starts, key, row);
-    else if (row.name.endsWith('-finish')) pushTo(finishes, key, row);
-    else if (row.name.endsWith('-resolved')) pushTo(resolved, key, row);
-  }
-  const keys = new Set([...starts.keys(), ...finishes.keys(), ...resolved.keys()]);
-  const result = new Map<K, Occurrence[]>();
-  for (const key of keys) {
-    const occ: Occurrence[] = [];
-    const opens = starts.get(key) ?? [];
-    const fin = finishes.get(key) ?? [];
-    for (let i = 0; i < opens.length; i++) {
-      const start = opens[i];
-      const finish = fin[i];
-      occ.push({
-        ts: start.ts,
-        startSliceId: start.sliceId,
-        finishSliceId: finish?.sliceId,
-        durNs: finish?.durNs,
-      });
-    }
-    for (const r of resolved.get(key) ?? []) {
-      occ.push({
-        ts: r.ts,
-        startSliceId: r.sliceId,
-        finishSliceId: r.sliceId,
-        durNs: r.durNs,
-      });
-    }
-    occ.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-    result.set(key, occ);
-  }
-  return result;
-}
-
-function pushTo<K>(map: Map<K, LifecycleRow[]>, key: K, row: LifecycleRow): void {
-  const list = map.get(key);
-  if (list === undefined) map.set(key, [row]);
-  else list.push(row);
-}
-
-// The node's canonical timing: the earliest occurrence, with `occurrenceCount`
-// carrying how many were seen in total (watch mode, or a dep built more than
-// once).
-function timingOf(occurrences: readonly Occurrence[]): SpanTiming | undefined {
-  if (occurrences.length === 0) return undefined;
-  const first = occurrences[0];
-  return {
-    startSliceId: first.startSliceId,
-    finishSliceId: first.finishSliceId,
-    durNs: first.durNs,
-    occurrenceCount: occurrences.length,
-  };
-}
-
-// Maps every slice id in `occ` back to `node` - not just the canonical
-// (first) occurrence's - so clicking any instant, including a later
-// occurrence, resolves to the node.
-function indexOccurrence(
-  bySliceId: Map<number, GraphNode>,
-  occ: Occurrence,
-  node: GraphNode,
-): void {
-  if (occ.startSliceId !== undefined) bySliceId.set(occ.startSliceId, node);
-  if (occ.finishSliceId !== undefined) bySliceId.set(occ.finishSliceId, node);
-}
-
-function resolveIds(
-  dict: ReadonlyMap<number, string>,
-  ids: readonly number[],
-): readonly string[] {
-  const out: string[] = [];
-  for (const id of ids) {
-    const s = dict.get(id);
-    if (s !== undefined) out.push(s);
-  }
-  return out;
-}
-
-// Resolves a blob {@link ForcedByTag} (ids still un-resolved) into the node-
-// facing {@link ForcedBy} union (paths/rule-id resolved). A path id that
-// isn't in the dict degrades to `UNKNOWN` rather than a dangling reference -
-// consistent with `parseForcedByTag`'s own "unrecognised -> UNKNOWN" fallback.
-function resolveForcedBy(
-  tag: ForcedByTag | undefined,
-  dict: ReadonlyMap<number, string>,
-): ForcedBy | undefined {
-  if (tag === undefined) return undefined;
-  switch (tag.kind) {
-    case 'RULE':
-      return {kind: 'RULE', rule: tag.ruleId};
-    case 'DEP': {
-      const dep = dict.get(tag.depId);
-      return dep === undefined ? {kind: 'UNKNOWN'} : {kind: 'DEP', dep};
-    }
-    case 'DYNAMIC_INCLUDES': {
-      const path = dict.get(tag.pathId);
-      return path === undefined
-        ? {kind: 'UNKNOWN'}
-        : {kind: 'DYNAMIC_INCLUDES', dynamicIncludes: path};
-    }
-    case 'GEN_RULES': {
-      const path = dict.get(tag.pathId);
-      return path === undefined
-        ? {kind: 'UNKNOWN'}
-        : {kind: 'GEN_RULES', genRules: path};
-    }
-    case 'PFORM': {
-      const path = dict.get(tag.pathId);
-      return path === undefined
-        ? {kind: 'UNKNOWN'}
-        : {kind: 'PFORM', pform: path};
-    }
-    case 'CONFIGURATOR':
-      return {kind: 'CONFIGURATOR'};
-    case 'REQUEST':
-      return {kind: 'REQUEST'};
-    case 'UNKNOWN':
-      return {kind: 'UNKNOWN'};
-  }
 }

@@ -12,24 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {DepNode, GraphEdge, GraphNode, RuleNode} from './graph';
+import type {GraphEdge, NodeId} from './graph';
 import {layoutGraph, NODE_WIDTH} from './graph_layout';
 
-function dep(id: string): DepNode {
-  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false};
-}
+// The layout works on bare node ids (it never needs the graph), so the fixtures
+// here are just numbers.
+const [a, b, c, d, outside] = [1, 2, 3, 4, 5];
 
-function rule(id: string): RuleNode {
-  return {kind: 'rule', id, outcome: 'executed'};
-}
-
-function edge(source: GraphNode, dest: GraphNode): GraphEdge {
+function edge(source: NodeId, dest: NodeId): GraphEdge {
   return {source, dest, forced: false};
 }
 
-function yById(layout: ReturnType<typeof layoutGraph>, id: string): number {
-  const ln = layout.nodes.find((n) => n.node.id === id);
-  if (ln === undefined) throw new Error(`no layout node for ${id}`);
+// The laid-out row of a node.
+function yOf(layout: ReturnType<typeof layoutGraph>, node: NodeId): number {
+  const ln = layout.nodes.find((n) => n.node === node);
+  if (ln === undefined) throw new Error(`no layout node for ${node}`);
   return ln.y;
 }
 
@@ -48,7 +45,6 @@ describe('layoutGraph', () => {
   });
 
   it('places a single node at the origin row', () => {
-    const a = dep('a');
     const layout = layoutGraph([a], []);
     expect(layout.nodes).toHaveLength(1);
     expect(layout.nodes[0].x).toBe(0);
@@ -58,13 +54,10 @@ describe('layoutGraph', () => {
 
   it('ranks a dependency chain top to bottom', () => {
     // a depends on b depends on c -> c is deepest.
-    const a = dep('a');
-    const b = rule('b');
-    const c = dep('c');
     const layout = layoutGraph([a, b, c], [edge(a, b), edge(b, c)]);
 
-    expect(yById(layout, 'a')).toBeLessThan(yById(layout, 'b'));
-    expect(yById(layout, 'b')).toBeLessThan(yById(layout, 'c'));
+    expect(yOf(layout, a)).toBeLessThan(yOf(layout, b));
+    expect(yOf(layout, b)).toBeLessThan(yOf(layout, c));
     expect(rowYs(layout)).toHaveLength(3);
     expect(layout.edges).toHaveLength(2);
     // Single node per row -> every row is centred on the same x.
@@ -73,39 +66,29 @@ describe('layoutGraph', () => {
 
   it('puts a shared dependency below both its dependers (diamond)', () => {
     // a -> b, a -> c, b -> d, c -> d.
-    const a = dep('a');
-    const b = dep('b');
-    const c = dep('c');
-    const d = rule('d');
     const layout = layoutGraph(
       [a, b, c, d],
       [edge(a, b), edge(a, c), edge(b, d), edge(c, d)],
     );
 
-    expect(yById(layout, 'a')).toBeLessThan(yById(layout, 'b'));
-    expect(yById(layout, 'b')).toBe(yById(layout, 'c'));
-    expect(yById(layout, 'c')).toBeLessThan(yById(layout, 'd'));
+    expect(yOf(layout, a)).toBeLessThan(yOf(layout, b));
+    expect(yOf(layout, b)).toBe(yOf(layout, c));
+    expect(yOf(layout, c)).toBeLessThan(yOf(layout, d));
     expect(rowYs(layout)).toHaveLength(3);
   });
 
   it('uses the longest path for ranking', () => {
     // a -> b -> d and a -> d: d must sit two rows below a, not one.
-    const a = dep('a');
-    const b = dep('b');
-    const d = dep('d');
     const layout = layoutGraph([a, b, d], [edge(a, b), edge(b, d), edge(a, d)]);
 
     const ys = rowYs(layout);
     expect(ys).toHaveLength(3);
-    expect(yById(layout, 'a')).toBe(ys[0]);
-    expect(yById(layout, 'b')).toBe(ys[1]);
-    expect(yById(layout, 'd')).toBe(ys[2]);
+    expect(yOf(layout, a)).toBe(ys[0]);
+    expect(yOf(layout, b)).toBe(ys[1]);
+    expect(yOf(layout, d)).toBe(ys[2]);
   });
 
   it('ignores edges to nodes outside the set', () => {
-    const a = dep('a');
-    const b = dep('b');
-    const outside = dep('outside');
     // Only `a` and `b` are in the set; the edge to `outside` is dropped.
     const layout = layoutGraph([a, b], [edge(a, b), edge(a, outside)]);
 

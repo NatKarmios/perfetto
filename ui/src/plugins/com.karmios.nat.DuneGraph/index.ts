@@ -54,9 +54,24 @@ export default class implements PerfettoPlugin {
     });
 
     trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#Load`,
+      name: 'Dune: load build graph',
+      callback: () => controller.load(),
+    });
+
+    trace.commands.registerCommand({
       id: `${PLUGIN_ID}#Reload`,
       name: 'Dune: reload build graph',
       callback: () => controller.reload(),
+    });
+
+    // The edge tier is one SQL row per dependency edge - tens of millions on a
+    // monorepo-scale trace - so a plain load leaves it out above a few million
+    // and it has to be asked for. See controller.ts and PERF_PLAN.LOCAL.md.
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#MaterialiseEdges`,
+      name: 'Dune: materialise edge table',
+      callback: () => controller.buildEdgeMirror(),
     });
 
     // Re-prints the per-phase timing/heap breakdown of the last few loads to
@@ -80,7 +95,7 @@ export default class implements PerfettoPlugin {
       hint: `'${QUERY_TRIGGER}' for Dune graph SQL`,
       placeholder:
         'SQL over dune_node / dune_edge / dune_rule / dune_dep / ' +
-        'dune_descendants / dune_ancestors / … — add nodes via ' +
+        'dune_string / dune_descendants / dune_ancestors / … — add nodes via ' +
         'node / src / dst / slice_id columns',
       className: 'pf-omnibox--query-mode pf-dune-query-mode',
       onSubmit: (query: string) => {
@@ -95,8 +110,14 @@ export default class implements PerfettoPlugin {
       callback: () => trace.omnibox.activateRegisteredMode(QUERY_TRIGGER),
     });
 
-    // Load the graph before onTraceLoad resolves so the sidebar has data by the
-    // time the trace is ready.
-    await controller.reload();
+    // Deliberately NOT awaited, and deliberately not a load: onTraceLoad is on
+    // the critical path of opening the trace, and on a large trace the graph
+    // load is minutes of work that would hold up the whole UI (and exhaust the
+    // trace processor heap under every other plugin). init() only reads the
+    // cheap headline counts, and starts a load by itself only when the trace is
+    // small enough to be worth loading unprompted - otherwise the side panel
+    // offers it as an explicit action. See controller.ts and
+    // PERF_PLAN.LOCAL.md.
+    void controller.init();
   }
 }

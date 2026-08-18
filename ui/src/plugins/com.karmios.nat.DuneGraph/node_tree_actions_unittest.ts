@@ -12,24 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {DepNode, GraphNode} from './graph';
+import type {NodeId} from './graph';
 import {nodesInGroup} from './node_tree_actions';
 import type {PathTreeGroup, PathTreeLeaf, PathTreeRow} from './path_tree';
 
 // A minimal leaf payload shape - deliberately distinct from both `Ref`
 // (selection panel) and `TreeLeafEntry` (query tab) - to prove `nodesInGroup`
-// only relies on the structural `node?: GraphNode` field, not either caller's
+// only relies on the structural `node?: NodeId` field, not either caller's
 // concrete type.
 interface Entry {
-  readonly node?: GraphNode;
+  readonly node?: NodeId;
   readonly label: string;
 }
 
-function dep(id: string): DepNode {
-  return {kind: 'dep', id, depId: 0, isSource: false, unfinished: false};
-}
-
-function leaf(label: string, node?: GraphNode): PathTreeLeaf<Entry> {
+function leaf(label: string, node?: NodeId): PathTreeLeaf<Entry> {
   return {kind: 'leaf', prefix: '', label, item: {node, label}};
 }
 
@@ -42,9 +38,8 @@ function group(
 }
 
 describe('nodesInGroup', () => {
-  it('collects distinct nodes across nested groups, deduped by node key', () => {
-    const a = dep('a');
-    const b = dep('b');
+  it('collects distinct nodes across nested groups, deduped by node id', () => {
+    const [a, b] = [1, 2];
     const tree = group('root', 'root', [
       leaf('a', a),
       group('nested', 'root/nested', [leaf('b', b), leaf('a-again', a)]),
@@ -53,7 +48,7 @@ describe('nodesInGroup', () => {
   });
 
   it('skips leaves with no node (dangling entries)', () => {
-    const a = dep('a');
+    const a = 1;
     const tree = group('root', 'root', [leaf('a', a), leaf('dangling')]);
     expect(nodesInGroup(tree)).toEqual([a]);
   });

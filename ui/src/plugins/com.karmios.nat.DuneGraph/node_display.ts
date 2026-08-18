@@ -17,7 +17,13 @@ import {Duration} from '../../base/time';
 import {Icon} from '../../widgets/icon';
 import type {PathSeg} from './path_tree';
 import {splitEntry, splitPath} from './path_tree';
-import type {DepResolutionKind, GraphNode, RuleOutcome} from './graph';
+import type {
+  BuildGraph,
+  DepResolutionKind,
+  NodeId,
+  NodeKind,
+  RuleOutcome,
+} from './graph';
 
 // Matches a leading `_build/<dir>` prefix, capturing `_build/<dir>` so it can be
 // folded away into the icon tooltip. The trailing `/` is optional: a path can
@@ -38,7 +44,7 @@ const BUILD_PREFIX = /^(_build\/[^/@]+)\/?/;
  * rather than being folded into a leading icon.
  */
 export function nodePathParts(
-  kind: GraphNode['kind'],
+  kind: NodeKind,
   id: string,
   dir?: string,
 ): {dir: PathSeg[]; leaf: PathSeg} {
@@ -134,6 +140,26 @@ export function depResolutionLabel(resolution: DepResolutionKind): string {
 // node model's `SpanTiming`) as a human-readable duration, e.g. "88ms".
 export function formatDurNs(durNs: number): string {
   return Duration.humanise(BigInt(Math.round(durNs)));
+}
+
+/**
+ * How a node is shown wherever it appears as a labelled row or chip: a dep's
+ * interned path with its leading build/code icon (see {@link decorateDepPath}),
+ * a rule's bare id with no icon (its kind is conveyed by a chip alongside).
+ *
+ * The one place that kind branch lives - the selection panel, the query tab, the
+ * graph pane and the derived timeline track all render a node identically, and
+ * all of them have only its node id, so all of them need the graph to resolve
+ * its label.
+ */
+export function decorateNode(
+  graph: BuildGraph,
+  node: NodeId,
+): {icon: m.Children; text: string} {
+  const label = graph.labelOf(node);
+  return graph.isRule(node)
+    ? {icon: undefined, text: label}
+    : decorateDepPath(label);
 }
 
 /**

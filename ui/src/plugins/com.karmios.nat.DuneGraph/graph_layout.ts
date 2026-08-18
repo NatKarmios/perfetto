@@ -19,12 +19,13 @@
  * rows are centred horizontally. No crossing-minimisation yet - rows keep input
  * order - which is fine at this scale; that's the natural next improvement.
  *
- * Pure geometry, no rendering: takes nodes + edges, returns positioned boxes in
- * an abstract coordinate space that the SVG view maps through a viewBox.
+ * Pure geometry, no rendering: takes node ids + edges, returns positioned boxes
+ * in an abstract coordinate space that the SVG view maps through a viewBox. It
+ * never needs the graph itself - a node is just its id here, and the pane
+ * resolves labels for the one node it's showing a tooltip for.
  */
 
-import type {GraphEdge, GraphNode} from './graph';
-import {nodeKey} from './graph';
+import type {GraphEdge, NodeId} from './graph';
 
 // Each node renders as a small dot; these are the cell it occupies and the gap
 // between cells (equal on both axes, so node-to-node distance reads the same
@@ -34,7 +35,7 @@ export const NODE_HEIGHT = 16;
 const GAP = 20;
 
 export interface LayoutNode {
-  readonly node: GraphNode;
+  readonly node: NodeId;
   // Top-left corner in layout coordinates.
   readonly x: number;
   readonly y: number;
@@ -61,35 +62,32 @@ export interface GraphLayout {
 const EMPTY_LAYOUT: GraphLayout = {nodes: [], edges: [], width: 0, height: 0};
 
 export function layoutGraph(
-  nodes: readonly GraphNode[],
+  nodes: readonly NodeId[],
   edges: readonly GraphEdge[],
 ): GraphLayout {
   if (nodes.length === 0) return EMPTY_LAYOUT;
 
-  const keyOf = (n: GraphNode) => nodeKey(n.kind, n.id);
-  const present = new Set(nodes.map(keyOf));
+  const present = new Set(nodes);
 
   // Adjacency + in-degree over just this node set.
-  const out = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
+  const out = new Map<NodeId, NodeId[]>();
+  const inDegree = new Map<NodeId, number>();
   for (const n of nodes) {
-    out.set(keyOf(n), []);
-    inDegree.set(keyOf(n), 0);
+    out.set(n, []);
+    inDegree.set(n, 0);
   }
   for (const {source, dest} of edges) {
-    const s = keyOf(source);
-    const d = keyOf(dest);
-    if (!present.has(s) || !present.has(d) || s === d) continue;
-    out.get(s)?.push(d);
-    inDegree.set(d, (inDegree.get(d) ?? 0) + 1);
+    if (!present.has(source) || !present.has(dest) || source === dest) continue;
+    out.get(source)?.push(dest);
+    inDegree.set(dest, (inDegree.get(dest) ?? 0) + 1);
   }
 
-  const rank = assignRanks(nodes, keyOf, out, inDegree);
+  const rank = assignRanks(nodes, out, inDegree);
 
   // Bucket nodes into rows by rank, preserving input order within a row.
-  const rows: GraphNode[][] = [];
+  const rows: NodeId[][] = [];
   for (const n of nodes) {
-    const r = rank.get(keyOf(n)) ?? 0;
+    const r = rank.get(n) ?? 0;
     (rows[r] ??= []).push(n);
   }
 
@@ -98,7 +96,7 @@ export function layoutGraph(
     count * NODE_WIDTH + Math.max(0, count - 1) * GAP;
   const totalWidth = Math.max(...rows.map((row) => rowWidth(row.length)));
 
-  const layoutByKey = new Map<string, LayoutNode>();
+  const layoutById = new Map<NodeId, LayoutNode>();
   const layoutNodes: LayoutNode[] = [];
   rows.forEach((row, r) => {
     const xStart = (totalWidth - rowWidth(row.length)) / 2;
@@ -112,14 +110,14 @@ export function layoutGraph(
         height: NODE_HEIGHT,
       };
       layoutNodes.push(ln);
-      layoutByKey.set(keyOf(node), ln);
+      layoutById.set(node, ln);
     });
   });
 
   const layoutEdges: LayoutEdge[] = [];
   for (const {source, dest, forced} of edges) {
-    const s = layoutByKey.get(keyOf(source));
-    const d = layoutByKey.get(keyOf(dest));
+    const s = layoutById.get(source);
+    const d = layoutById.get(dest);
     if (s !== undefined && d !== undefined && s !== d) {
       layoutEdges.push({source: s, dest: d, forced});
     }
@@ -133,18 +131,16 @@ export function layoutGraph(
 // every other node sits one below its deepest predecessor. Nodes left unranked
 // by a cycle keep rank 0 - defensive only, the build graph is a DAG.
 function assignRanks(
-  nodes: readonly GraphNode[],
-  keyOf: (n: GraphNode) => string,
-  out: ReadonlyMap<string, readonly string[]>,
-  inDegree: ReadonlyMap<string, number>,
-): ReadonlyMap<string, number> {
-  const rank = new Map<string, number>();
+  nodes: readonly NodeId[],
+  out: ReadonlyMap<NodeId, readonly NodeId[]>,
+  inDegree: ReadonlyMap<NodeId, number>,
+): ReadonlyMap<NodeId, number> {
+  const rank = new Map<NodeId, number>();
   const remaining = new Map(inDegree);
-  const queue: string[] = [];
+  const queue: NodeId[] = [];
   for (const n of nodes) {
-    const k = keyOf(n);
-    rank.set(k, 0);
-    if ((remaining.get(k) ?? 0) === 0) queue.push(k);
+    rank.set(n, 0);
+    if ((remaining.get(n) ?? 0) === 0) queue.push(n);
   }
   for (let i = 0; i < queue.length; i++) {
     const u = queue[i];
