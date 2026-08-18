@@ -144,7 +144,11 @@ import type {
   NodeTiming,
 } from './graph';
 import {DEP_RESOLUTIONS, FORCED_BY_KINDS, RULE_OUTCOMES, edges} from './graph';
-import {TIMING_TABLE, buildLifecycleTiming} from './lifecycle_sql';
+import {
+  TIMING_TABLE,
+  buildLifecycleTiming,
+  timingKindCode,
+} from './lifecycle_sql';
 import type {PerfRun} from './perf';
 import {measure, measureSync} from './perf';
 
@@ -176,11 +180,15 @@ const STRING_TABLE = 'dune_string';
  * This used to be 500, on the theory that a multi-row VALUES is a compound
  * SELECT and so bounded by SQLite's 500-term compound-SELECT limit. It isn't in
  * the SQLite trace processor ships: 100,000 rows in one statement inserts 100,000
- * rows. And the difference is not marginal, because the *per statement* cost
- * grows with the size of the table being appended to - 8M edge rows on the
- * monorepo trace take 112 s at 500 rows a statement, 17 s at 5,000 and 10 s at
- * 20,000. 5,000 keeps a statement to roughly 110 KB of SQL text (the thing that
- * has to cross into wasm) while taking nearly all of that win.
+ * rows.
+ *
+ * 5,000 is the measured optimum, though by a much smaller margin than the
+ * numbers this comment used to quote (112 s / 17 s / 10 s for 8M rows at 500 /
+ * 5,000 / 20,000): those came from `trace_processor -q`, whose own per-statement
+ * cost dominated them. Over the RPC path the plugin actually uses, 2M rows take
+ * 4.2 / 3.8 / 6.1 s in wasm at 500 / 5,000 / 20,000 (native 3.0 / 2.3 / 2.8), so
+ * this is worth a third off the build, not 6×. It also keeps a statement to
+ * roughly 110 KB of SQL text, which is what has to cross into wasm.
  */
 const INSERT_CHUNK = 5_000;
 
@@ -194,34 +202,51 @@ const YIELD_EVERY = 10;
 /**
  * Edge counts the edge tier is built against, in rows.
  *
- * Below the soft cap the tier is built as part of a plain load; between the two
- * it has to be asked for; past the hard cap it refuses, because there the build
- * doesn't get slow, it takes the engine down with it.
+ * Below the soft cap the tier is built as part of a plain load; above it, it has
+ * to be asked for; past the hard cap it refuses, because there the build doesn't
+ * get slow, it takes the engine down with it.
  *
- * Both come from measurement, not from a budget (see PERF_PLAN.LOCAL.md): the
- * slim three-integer table costs **~90 bytes/row** in trace processor's
- * in-memory SQLite (8M rows -> 761 MB, 12M -> 1,066 MB), against a 4 GB wasm
- * heap of which a monorepo-scale trace alone takes 1.2 GB at its parse peak. So
- * the hard cap is what fits in ~900 MB. The plan's original proposal of 40M
- * would have been ~3.6 GB, i.e. a guaranteed out-of-memory - the monorepo
- * trace's own 28M edges are already past this and are refused.
+ * Both come from measurement (see PERF_PLAN.LOCAL.md), and both were revised
+ * once the build was measured *in the wasm engine* rather than extrapolated from
+ * `trace_processor -q`, which turns out to overstate the per-row cost by ~4×.
+ * The monorepo trace's own 28.7M edges - the case the old 10M hard cap refused -
+ * build in **57 s** and take the wasm heap from 1,468 MB to 3,010 MB
+ * (**~54 bytes/row** marginal), against a 4 GB ceiling on the memory32 build and
+ * 16 GB on the memory64 build every current browser loads
+ * (`gn/standalone/wasm.gni`). So the hard cap is set above that measured point
+ * with headroom: 40M rows is ~2.2 GB of edges, which fits alongside a
+ * proportionally larger trace on memory64 and is the point past which even that
+ * stops being true.
+ *
+ * The soft cap is unchanged and is about *time*, not memory: 2M rows is ~4 s, a
+ * fine thing to do inside a load, where 28.7M is a minute and a half with the
+ * reverse index and wants to be asked for.
  */
 export const EDGE_SOFT_LIMIT = 2_000_000;
-export const EDGE_HARD_LIMIT = 10_000_000;
+export const EDGE_HARD_LIMIT = 40_000_000;
 
 /**
  * Edge count above which no index on `dst` is built.
  *
  * Forward walks never need one (they read the rowid ranges in `_dune_node_out`),
- * and neither do the unbounded reverse ones (`graph_reachable_bfs!` reads the
- * edge set once however it's shaped). Only the *bounded* reverse walk -
- * `dune_ancestors` / `dune_parents` - looks an edge up by `dst`, and an index at
- * 28M rows costs ~1.1 GB, which is most of a monorepo-scale budget spent on the
- * one query shape that has an unbounded equivalent. Above this the index is
- * skipped and those two functions degrade to a scan per hop; see
- * {@link SqlEdgeMirror.reverseIndexed}, which the panel surfaces.
+ * and neither does the unbounded reverse BFS in principle
+ * (`graph_reachable_bfs!` reads the edge set once however it's shaped). Only
+ * the *bounded* reverse walk - `dune_ancestors` / `dune_parents` - has to look
+ * an edge up by `dst`.
+ *
+ * This used to be 2M, on an extrapolated ~1.1 GB for the index at 28M rows.
+ * Measured in the wasm engine on the monorepo trace's 28.7M edges it is **27.5 s
+ * and +101 MB** - 11× cheaper than the estimate - and it is what makes the
+ * reverse direction usable at all: `dune_parents` on the most-depended node goes
+ * from **39.8 s to 1.2 s**, and even `dune_all_ancestors`, which was supposed
+ * not to care, halves (43.4 s to 19.1 s). So the two thresholds collapse into
+ * one: if the edge tier is built at all, the index is built with it.
+ *
+ * The threshold and {@link SqlEdgeMirror.reverseIndexed} stay rather than being
+ * deleted, because the index is still the first thing to give up if a graph ever
+ * turns up that the edge tier itself fits but the index doesn't.
  */
-export const REVERSE_INDEX_EDGE_LIMIT = 2_000_000;
+export const REVERSE_INDEX_EDGE_LIMIT = EDGE_HARD_LIMIT;
 
 // Stored code of an edge kind: its index in this list, packed into `flags`.
 // Order is part of the encoding, so only ever append.
@@ -330,6 +355,13 @@ function isRuleExpr(nodeId: string, space: NodeSpace): string {
   return `${nodeId} < ${space.ruleCount}`;
 }
 
+// The same kind, as the integer code the timing table is keyed by rather than
+// the name the views expose (see lifecycle_sql.ts).
+function timingKindExpr(node: string, space: NodeSpace): string {
+  return `iif(${node}.node_id < ${space.ruleCount},
+      ${timingKindCode('rule')}, ${timingKindCode('dep')})`;
+}
+
 // The LEFT JOIN {@link labelExpr} needs: a dep's label is its interned path, so
 // only dep rows look anything up. `str` is the alias to bind `dune_string` to.
 function labelJoin(node: string, str: string, space: NodeSpace): string {
@@ -364,6 +396,12 @@ function codeCase(col: string, values: readonly string[], base = 0): string {
  *
  * `join` picks how a node with no timing behaves: `left` keeps it with a NULL
  * slice, `inner` drops it. Both cases existed before this and are preserved.
+ *
+ * This is the plugin's hottest join - the relation functions pay it twice per
+ * projected row - which is why the timing table has the shape it does rather
+ * than being a `PERFETTO TABLE` like everything else the pipeline builds (see
+ * `TIMING_SCHEMA` in lifecycle_sql.ts). The `kind` side of the key is written
+ * here as the integer code that table stores, not as the name the views expose.
  */
 function timingJoin(
   node: string,
@@ -374,7 +412,7 @@ function timingJoin(
 ): string {
   return `
       LEFT JOIN ${TIMING_TABLE} ${timing}
-        ON ${timing}.kind = ${kindExpr(node, space)}
+        ON ${timing}.kind = ${timingKindExpr(node, space)}
         AND ${timing}.key = ${node}.orig_id
       ${join === 'left' ? 'LEFT JOIN' : 'JOIN'} slice ${slice}
         ON ${slice}.id =
@@ -718,7 +756,8 @@ export async function buildNodeMirror(
       FROM ${RAW_RULE_TABLE} r
       JOIN ${RAW_NODE_TABLE} n ON n.node_id = r.node_id
       LEFT JOIN ${STRING_TABLE} ds ON ds.id = r.dir_str_id
-      LEFT JOIN ${TIMING_TABLE} t ON t.kind = 'action' AND t.key = n.orig_id
+      LEFT JOIN ${TIMING_TABLE} t
+        ON t.kind = ${timingKindCode('action')} AND t.key = n.orig_id
       LEFT JOIN slice s ON s.id = coalesce(t.start_slice_id, t.finish_slice_id)
     `);
     await engine.query(`

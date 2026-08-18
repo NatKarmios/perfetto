@@ -46,7 +46,7 @@ import {
   LONG,
   LONG_NULL,
   NUM,
-  STR_NULL,
+  NUM_NULL,
 } from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
 import type {SpanTiming} from './graph';
@@ -65,10 +65,62 @@ const TRACK_BY_KIND: ReadonlyMap<TimingKind, string> = new Map([
   ['action', 'exec-rule-action'],
 ]);
 
+// The integer code each kind is stored under in {@link TIMING_TABLE}: the
+// table's key is (kind, key), and both halves being integers is what makes the
+// probe a single b-tree descent. A kind's position in the map above *is* its
+// code, so a kind may be appended there but not reordered.
+const KIND_CODES: readonly TimingKind[] = [...TRACK_BY_KIND.keys()];
+
+/**
+ * The code {@link TIMING_TABLE} stores `kind` as. Exported because the node
+ * mirror's views join the table and so have to write the same code (see
+ * `timingJoin` in sql_graph.ts).
+ */
+export function timingKindCode(kind: TimingKind): number {
+  return KIND_CODES.indexOf(kind);
+}
+
 // One row per (kind, key): the canonical (earliest) occurrence's slice ids and
 // duration, plus how many occurrences were seen in total. Queried by
 // `SqlLifecycle` and joined by the node mirror's views (see sql_graph.ts).
 export const TIMING_TABLE = '_dune_timing';
+
+/**
+ * {@link TIMING_TABLE}'s schema, and the reason it is the one table here that is
+ * a plain SQLite table rather than a `PERFETTO TABLE`.
+ *
+ * Every read of this table is an equality lookup on (kind, key), and the node
+ * mirror's views join it that way for every row they project - twice per row for
+ * the relation functions, which need the timing of both endpoints. As a
+ * `PERFETTO TABLE` that probe cost **94 µs** natively (~205 µs in wasm) *even
+ * with a `PERFETTO INDEX` on (kind, key)*, which a join probe plainly does not
+ * use: it is a scan of the whole table per row. That one join was the single
+ * biggest thing left in the plugin's performance profile - on the monorepo
+ * trace's 818k nodes and 1.2M timing rows it was 78 s to project `dune_node`
+ * once, and 31 s for `dune_children` on a 156k-child rule whose walk itself
+ * takes under 0.1 s.
+ *
+ * A `WITHOUT ROWID` table keyed on (kind, key) makes the probe a single b-tree
+ * descent - the key *is* the b-tree, so there is no rowid indirection and no
+ * separate index to maintain - and needs both halves of the key to be integers,
+ * which is what {@link KIND_CODES} is for. Measured over the same 818k nodes on
+ * the same trace, same rows out: 818k bare probes go from 77 s to **0.08 s**,
+ * `dune_node` from 78 s to **1.0 s**, that `dune_children` from 31 s to
+ * **0.53 s**, for no measurable increase in peak RSS and no increase in the time
+ * to build the table (the `PERFETTO INDEX` it replaces wasn't free either). A
+ * plain rowid table with a plain `CREATE INDEX ... (kind, key)` also fixes the
+ * asymptotics (1.3 µs a probe) but is ~4× the lookup cost and an extra index
+ * object, so this shape wins on both counts.
+ *
+ * Note the `PRIMARY KEY` of a `WITHOUT ROWID` table is implicitly `NOT NULL` and
+ * unique, so the INSERT below would fail rather than silently store a row
+ * nothing can join. The pipeline already guarantees both: `key IS NOT NULL` is
+ * filtered on, `kind` can only be one of the three tracks selected for, and
+ * `rn = 1` keeps exactly one row per (kind, key).
+ */
+const TIMING_SCHEMA = `kind INTEGER, key INTEGER, start_slice_id INTEGER,
+    finish_slice_id INTEGER, dur_ns INTEGER, occurrence_count INTEGER,
+    PRIMARY KEY (kind, key)`;
 
 // Intermediates, dropped as soon as the table above is built - `_dune_instant`
 // and `_dune_seq` are one row per instant, which is the biggest thing this
@@ -103,13 +155,19 @@ export interface SqlLifecycle extends AsyncDisposable {
   ): Promise<Map<TimingKind, SpanTiming>>;
 }
 
-// The `CASE` mapping a lifecycle track name to its `TimingKind`, shared by the
-// pipeline and the reverse lookup so the two can't drift.
+// The `CASE` mapping a lifecycle track name to its kind's stored code, shared by
+// the pipeline and the reverse lookup so the two can't drift. Both sides read it
+// back through {@link KIND_CODES}, so the code never surfaces outside SQL.
 function kindExpr(trackCol: string): string {
   const arms = [...TRACK_BY_KIND].map(
-    ([kind, track]) => `WHEN '${track}' THEN '${kind}'`,
+    ([kind, track]) => `WHEN '${track}' THEN ${timingKindCode(kind)}`,
   );
   return `CASE ${trackCol} ${arms.join(' ')} END`;
+}
+
+// A kind read back off a SQL row, or undefined if the code isn't one we wrote.
+function kindOfCode(code: number | null): TimingKind | undefined {
+  return code === null ? undefined : KIND_CODES[code];
 }
 
 function trackList(): string {
@@ -192,9 +250,15 @@ export async function buildLifecycleTiming(
       `);
 
       // The node's canonical timing is its earliest occurrence, with the total
-      // occurrence count alongside (the `×N` hint in the UI).
+      // occurrence count alongside (the `×N` hint in the UI). Written into a
+      // plain `WITHOUT ROWID` table rather than a `PERFETTO TABLE` because this
+      // is the one table here that gets *probed*, per projected row - see
+      // {@link TIMING_SCHEMA} for the ~1,000× that is worth.
+      await engine.query(
+        `CREATE TABLE ${TIMING_TABLE}(${TIMING_SCHEMA}) WITHOUT ROWID`,
+      );
       await engine.query(`
-        CREATE PERFETTO TABLE ${TIMING_TABLE} AS
+        INSERT INTO ${TIMING_TABLE}
         SELECT kind, key, start_slice_id, finish_slice_id, dur_ns,
           occurrence_count
         FROM (
@@ -206,13 +270,6 @@ export async function buildLifecycleTiming(
         )
         WHERE rn = 1
       `);
-
-      // Every read of this table is an equality lookup on (kind, key), and so
-      // is the node mirror's join against it.
-      await engine.query(
-        `CREATE PERFETTO INDEX ${TIMING_TABLE}_key ` +
-          `ON ${TIMING_TABLE}(kind, key)`,
-      );
     } finally {
       // Free the per-instant intermediates whether or not the build finished.
       await dropIntermediates();
@@ -234,22 +291,23 @@ export async function buildLifecycleTiming(
     ): Promise<Map<TimingKind, SpanTiming>> {
       const result = new Map<TimingKind, SpanTiming>();
       if (kinds.length === 0 || !Number.isFinite(key)) return result;
-      const wanted = kinds.map((k) => `'${k}'`).join(', ');
+      const wanted = kinds.map((k) => timingKindCode(k)).join(', ');
       const rows = await engine.query(`
         SELECT kind, start_slice_id, finish_slice_id, dur_ns, occurrence_count
         FROM ${TIMING_TABLE}
         WHERE kind IN (${wanted}) AND key = ${Math.trunc(key)}
       `);
       const it = rows.iter({
-        kind: STR_NULL,
+        kind: NUM_NULL,
         start_slice_id: LONG_NULL,
         finish_slice_id: LONG_NULL,
         dur_ns: LONG_NULL,
         occurrence_count: LONG,
       });
       for (; it.valid(); it.next()) {
-        if (it.kind === null) continue;
-        result.set(it.kind as TimingKind, {
+        const kind = kindOfCode(it.kind);
+        if (kind === undefined) continue;
+        result.set(kind, {
           startSliceId: numberOrUndefined(it.start_slice_id),
           finishSliceId: numberOrUndefined(it.finish_slice_id),
           durNs: numberOrUndefined(it.dur_ns),
@@ -287,13 +345,11 @@ export async function lifecycleKeysForSliceIds(
     WHERE s.id IN (${sqlValueToSqliteString(sliceIds)})
       AND t.name IN (${trackList()})
   `);
-  const it = result.iter({slice_id: NUM, kind: STR_NULL, key: LONG_NULL});
+  const it = result.iter({slice_id: NUM, kind: NUM_NULL, key: LONG_NULL});
   for (; it.valid(); it.next()) {
-    if (it.kind === null || it.key === null) continue;
-    keys.set(it.slice_id, {
-      kind: it.kind as TimingKind,
-      key: Number(it.key),
-    });
+    const kind = kindOfCode(it.kind);
+    if (kind === undefined || it.key === null) continue;
+    keys.set(it.slice_id, {kind, key: Number(it.key)});
   }
   return keys;
 }

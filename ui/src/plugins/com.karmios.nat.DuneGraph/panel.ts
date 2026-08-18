@@ -236,12 +236,12 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
 
   /**
    * The edge tier, when the load deliberately left it out: it is one SQL row
-   * per dependency edge, so past a few million of them it is minutes of work
-   * and gigabytes of engine memory, and the load doesn't do it unasked (see
-   * controller.ts). Everything except `dune_edge` and the relation functions
-   * works without it, so this is an offer rather than a warning - unless the
-   * graph is past the hard limit, where the answer is no and the reason is the
-   * number.
+   * per dependency edge, so past a few million of them it is tens of seconds of
+   * work and a gigabyte or two of engine memory, and the load doesn't do it
+   * unasked (see controller.ts). Everything except `dune_edge` and the relation
+   * functions works without it, so this is an offer rather than a warning -
+   * unless the graph is past the hard limit, where the answer is no and the
+   * reason is the number.
    */
   private renderEdgeTierPrompt(controller: DuneGraphController): m.Children {
     const {edgeMirrorStep} = controller;
@@ -275,9 +275,10 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       Callout,
       {icon: 'info'},
       `Edge tables not built: ${edges} edges is enough that mirroring them ` +
-        'into SQL takes minutes and a lot of trace-processor memory, so it ' +
-        'is not part of a load. Only dune_edge and the relation functions ' +
-        'need them.',
+        'into SQL takes tens of seconds and a gigabyte or two of ' +
+        'trace-processor memory (a monorepo-scale 28M edges: ~85 s including ' +
+        'the reverse index, ~1.6 GB), so it is not part of a load. Only ' +
+        'dune_edge and the relation functions need them.',
       m(Button, {
         label: 'Build edge tables',
         icon: 'play_arrow',
