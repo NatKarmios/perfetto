@@ -20,6 +20,7 @@ import {splitEntry, splitPath} from './path_tree';
 import type {
   BuildGraph,
   DepResolutionKind,
+  DepStatus,
   NodeId,
   NodeKind,
   RuleOutcome,
@@ -78,6 +79,13 @@ export function forcedByText(
   switch (kind) {
     case 'RULE':
       return target === undefined ? 'a rule' : `rule ${target}`;
+    // Same forcer shape as RULE, but the rule had already failed and was
+    // recovering its deps - worth saying, since the work it forced is not part
+    // of the rule's normal course.
+    case 'RULE_RECOVERY':
+      return target === undefined
+        ? 'a rule recovering its deps'
+        : `rule ${target} (recovering its deps)`;
     case 'DEP':
       return target === undefined ? 'a dep' : target;
     case 'DYNAMIC_INCLUDES':
@@ -114,15 +122,21 @@ export function outcomeLabel(outcome: RuleOutcome): string {
       return 'local cache hit';
     case 'shared-cache-hit':
       return 'shared cache hit';
+    case 'failed-deps':
+      return 'failed (resolving deps)';
+    case 'failed-action':
+      return 'failed (action)';
+    case 'cancelled':
+      return 'cancelled';
     case 'unfinished':
       return 'unfinished';
   }
 }
 
 // A dep's resolution label, as stored in `dune_dep.resolution` (see
-// `depResolutionKind` in graph.ts) - `rule` / `source` / `expanded` /
-// `unfinished` - rendered for a human. Used by the current-selection panel's
-// header chip for a dep node.
+// `DepResolutionKind` in graph.ts) - `rule` / `source` / `expanded` /
+// `unknown` / `unfinished` - rendered for a human. Used by the
+// current-selection panel's header chip for a dep node.
 export function depResolutionLabel(resolution: DepResolutionKind): string {
   switch (resolution) {
     case 'rule':
@@ -131,8 +145,24 @@ export function depResolutionLabel(resolution: DepResolutionKind): string {
       return 'source';
     case 'expanded':
       return 'expanded';
+    case 'unknown':
+      return 'unknown';
     case 'unfinished':
       return 'unfinished';
+  }
+}
+
+// A dep's `status` (`dune_dep.status`) as a human-readable suffix for the
+// resolution label, or undefined for the `ok` case - which is the overwhelming
+// majority of deps and says nothing worth showing.
+export function depStatusLabel(status: DepStatus): string | undefined {
+  switch (status) {
+    case 'ok':
+      return undefined;
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
   }
 }
 

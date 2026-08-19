@@ -29,10 +29,24 @@
  *   `<rule_id>\t<dir_id>\t<target_file_ids>\t<target_dir_ids>\t<outcome>\t
  *   <forced_by>\t<dep_ids>\t<dyn_dep_stages>`.
  * - `graph-deps` - one line per build-dep span:
- *   `<dep_id>\t<resolution>\t<forced_by>`.
+ *   `<dep_id>\t<resolution>\t<forced_by>\t<status>`.
  *
  * An unfinished span (crash/interrupt) is flushed at EOF as a line with `?` in
  * place of `<outcome>`/`<resolution>` and empty `<dep_ids>`/`<dyn_dep_stages>`.
+ *
+ * **`?` and "empty" are not the same thing, and `?` is not the failure
+ * signal.** Dune reports a build that failed or was torn down through the
+ * ordinary fields - a `D`/`A`/`C` `<outcome>`, a `u` `<resolution>`, a
+ * non-empty `<status>` - and reserves `?` for a span that genuinely never
+ * ended, i.e. a truncated trace. Likewise a `?` in `<dep_ids>` means "dune
+ * could not determine this rule's deps", which is not the empty field's "this
+ * rule has none" ({@link RuleRecord.depsUnknown} keeps the two apart, since
+ * both parse to an empty id list).
+ *
+ * `<status>` is a later addition to `graph-deps` and every line the current
+ * exporter writes carries it; a three-field line (an older trace, same blob
+ * version) is read as {@link DepRecord.status} `ok`, which is what the schema
+ * meant before the field existed.
  *
  * **Sections are parsed as a stream, one chunk at a time** ({@link
  * parseGraphBlob} takes an async iterable of chunk payloads per section, not a
@@ -62,14 +76,38 @@ export const DICT_SECTION = 'graph-dict';
 export const RULES_SECTION = 'graph-rules';
 export const DEPS_SECTION = 'graph-deps';
 
+/**
+ * How building a rule ended. The three failure states are dune's own
+ * distinction, not ours: `failed-deps` failed while resolving what it needed,
+ * `failed-action` got as far as running its action and that failed, and
+ * `cancelled` was torn down with the rest of the build. `unfinished` is *not*
+ * one of them - it means the span never ended at all (see the file header).
+ */
 export type RuleOutcome =
-  'executed' | 'local-cache-hit' | 'shared-cache-hit' | 'unfinished';
+  | 'executed'
+  | 'local-cache-hit'
+  | 'shared-cache-hit'
+  | 'failed-deps'
+  | 'failed-action'
+  | 'cancelled'
+  | 'unfinished';
 
+/**
+ * What a dep resolved to. `unknown` is dune reporting that it could not tell -
+ * the dep's own build failed or was cancelled before the resolution became
+ * known - and is deliberately distinct from `unfinished`, which means the span
+ * was never closed (see the file header).
+ */
 export type DepResolution =
   | {readonly kind: 'rule'; readonly ruleId: number}
   | {readonly kind: 'source'}
   | {readonly kind: 'expanded'; readonly depIds: readonly number[]}
+  | {readonly kind: 'unknown'}
   | {readonly kind: 'unfinished'};
+
+// How building a dep itself ended, orthogonal to what it resolved *to*: an
+// empty `<status>` field means it succeeded.
+export type DepStatus = 'ok' | 'failed' | 'cancelled';
 
 /**
  * A `forced_by` tag as it appears in the blob: every id is still a trace-side id
@@ -79,6 +117,10 @@ export type DepResolution =
  */
 export type ForcedByTag =
   | {readonly kind: 'RULE'; readonly ruleId: number}
+  // Work the rule forced while *recovering* its deps, after it had already
+  // failed - a different thing from the `RULE` above, which is work the rule
+  // forced in its normal course.
+  | {readonly kind: 'RULE_RECOVERY'; readonly ruleId: number}
   | {readonly kind: 'DEP'; readonly depId: number}
   | {
       readonly kind: 'DYNAMIC_INCLUDES' | 'GEN_RULES' | 'PFORM';
@@ -103,15 +145,27 @@ export interface RuleRecord {
   readonly outcome: RuleOutcome;
   readonly forcedBy?: ForcedByTag;
   readonly depIds: readonly number[];
+  /**
+   * Whether the blob wrote `?` for `<dep_ids>`: dune could not determine this
+   * rule's deps at all (a failed rule it couldn't recover them for, or a
+   * cancelled one it was never asked to). `depIds` is empty either way, so
+   * without this flag "unknown" is indistinguishable from a rule that genuinely
+   * has no deps - which matters anywhere the plugin counts dependency edges.
+   */
+  readonly depsUnknown: boolean;
   readonly dynDepStages: readonly (readonly number[])[];
 }
 
 // One `graph-deps` line; `depId` is the dep's dict id, which is also its join
-// key against a `build-dep` instant's `dep_id` arg.
+// key against a `build-dep` instant's `dep_id` arg. `status` is how building
+// the dep itself ended, which is independent of what it resolved *to*: a failed
+// dep can still have a known resolution, and a successful one never has an
+// `unknown` resolution.
 export interface DepRecord {
   readonly depId: number;
   readonly resolution: DepResolution;
   readonly forcedBy?: ForcedByTag;
+  readonly status: DepStatus;
 }
 
 /**
@@ -462,6 +516,8 @@ function parseForcedByTag(field: string): ForcedByTag | undefined {
   switch (tag) {
     case 'r':
       return {kind: 'RULE', ruleId: id(rest)};
+    case 'v':
+      return {kind: 'RULE_RECOVERY', ruleId: id(rest)};
     case 'd':
       return {kind: 'DEP', depId: id(rest)};
     case 'i':
@@ -487,19 +543,44 @@ function parseOutcome(field: string): RuleOutcome {
       return 'local-cache-hit';
     case 'S':
       return 'shared-cache-hit';
+    case 'D':
+      return 'failed-deps';
+    case 'A':
+      return 'failed-action';
+    case 'C':
+      return 'cancelled';
     default:
       return 'unfinished'; // '?', or anything unrecognised.
   }
 }
 
+// The `<status>` field of a `graph-deps` line. Empty is the success case (and
+// also what a pre-`<status>` three-field line reads as - see the file header);
+// anything unrecognised is treated as a failure rather than quietly as success,
+// since a status dune bothered to write is never "fine".
+function parseDepStatus(field: string): DepStatus {
+  switch (field) {
+    case '':
+      return 'ok';
+    case 'c':
+      return 'cancelled';
+    default:
+      return 'failed'; // 'f', or anything unrecognised.
+  }
+}
+
 function parseResolution(field: string): DepResolution {
   if (field === 's') return {kind: 'source'};
+  if (field === 'u') return {kind: 'unknown'};
   if (field === '?' || field === '') return {kind: 'unfinished'};
   const tag = field[0];
   const rest = field.slice(1);
   if (tag === 'r') return {kind: 'rule', ruleId: id(rest)};
   if (tag === 'x') return {kind: 'expanded', depIds: idList(rest)};
-  return {kind: 'unfinished'};
+  // An unrecognised tag is a resolution we can't read rather than a span that
+  // never ended, so it reads as `unknown` - the same bucket as dune's own "I
+  // couldn't tell".
+  return {kind: 'unknown'};
 }
 
 // A rule line, or undefined for a line that isn't one: too few fields, or a
@@ -521,6 +602,10 @@ function parseRuleLine(line: string): RuleRecord | undefined {
   const ruleId = id(ruleIdStr);
   if (Number.isNaN(ruleId)) return undefined;
   const dirId = id(dirIdStr);
+  // `?` deps are *unknown*, not none - see `RuleRecord.depsUnknown`. The id
+  // list is empty either way (`idList('?')` would yield `[NaN]`, which the
+  // builder drops), so the flag is the only thing that distinguishes them.
+  const depsUnknown = depIds === '?';
   return {
     ruleId,
     dirId: Number.isNaN(dirId) ? undefined : dirId,
@@ -528,21 +613,27 @@ function parseRuleLine(line: string): RuleRecord | undefined {
     targetDirIds: idList(targetDirIds),
     outcome: parseOutcome(outcome),
     forcedBy: parseForcedByTag(forcedBy),
-    depIds: idList(depIds),
+    depIds: depsUnknown ? [] : idList(depIds),
+    depsUnknown,
     dynDepStages: dynDepStages(stages),
   };
 }
 
+// A dep line. `<status>` is read positionally when present and defaults to `ok`
+// for a three-field line, which is how the section looked before the field was
+// added (see the file header) - the guard stays at three so an older trace
+// still parses rather than losing every dep node.
 function parseDepLine(line: string): DepRecord | undefined {
   const f = line.split('\t');
   if (f.length < 3) return undefined;
-  const [depIdStr, resolution, forcedBy] = f;
+  const [depIdStr, resolution, forcedBy, status] = f;
   const depId = id(depIdStr);
   if (Number.isNaN(depId)) return undefined;
   return {
     depId,
     resolution: parseResolution(resolution),
     forcedBy: parseForcedByTag(forcedBy),
+    status: parseDepStatus(status ?? ''),
   };
 }
 

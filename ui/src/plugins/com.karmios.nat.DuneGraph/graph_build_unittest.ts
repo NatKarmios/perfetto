@@ -47,13 +47,14 @@ function ruleRecord(
     targetDirIds: [],
     outcome: 'executed',
     depIds: [],
+    depsUnknown: false,
     dynDepStages: [],
     ...opts,
   };
 }
 
 function depRecord(depId: number, opts: Partial<DepRecord> = {}): DepRecord {
-  return {depId, resolution: {kind: 'source'}, ...opts};
+  return {depId, resolution: {kind: 'source'}, status: 'ok', ...opts};
 }
 
 function build(
@@ -298,6 +299,79 @@ describe('GraphBuilder scalars', () => {
       [],
     );
     expect(graph.outcomeOf(0)).toBe('unfinished');
+  });
+
+  it('reports an unrecognised resolution as unfinished, not as the last code', () => {
+    const graph = build(
+      [],
+      [
+        depRecord(1, {
+          resolution: {kind: 'bogus'} as unknown as DepRecord['resolution'],
+        }),
+      ],
+    );
+    expect(graph.resolutionOf(0)).toBe('unfinished');
+  });
+
+  // `?` deps and no deps both come through as an empty edge run, so the flag
+  // is the only thing that distinguishes them once the record is gone.
+  it('keeps "deps unknown" apart from "no deps"', () => {
+    const graph = build(
+      [ruleRecord(10, {depsUnknown: true}), ruleRecord(11)],
+      [],
+    );
+
+    expect(graph.depsUnknownOf(0)).toBe(true);
+    expect(graph.staticDepCount(0)).toBe(0);
+    expect(graph.depsUnknownOf(1)).toBe(false);
+    expect(graph.staticDepCount(1)).toBe(0);
+  });
+
+  it('stores a dep status alongside - not instead of - its resolution', () => {
+    const graph = build(
+      [ruleRecord(10)],
+      [
+        depRecord(1, {
+          resolution: {kind: 'rule', ruleId: 10},
+          status: 'failed',
+        }),
+        depRecord(2, {resolution: {kind: 'unknown'}, status: 'cancelled'}),
+        depRecord(3),
+      ],
+    );
+
+    expect(graph.resolutionOf(1)).toBe('rule');
+    expect(graph.statusOf(1)).toBe('failed');
+    expect(graph.resolvedRuleOf(1)).toBe(0);
+    expect(graph.resolutionOf(2)).toBe('unknown');
+    expect(graph.statusOf(2)).toBe('cancelled');
+    expect(graph.statusOf(3)).toBe('ok');
+    // A rule has no status field of its own; it reports through its outcome.
+    expect(graph.statusOf(0)).toBe('ok');
+  });
+
+  it('gives an unknown-resolution dep no edges at all', () => {
+    const graph = build([], [depRecord(1, {resolution: {kind: 'unknown'}})]);
+    expect([...graph.outEdges(0)]).toEqual([]);
+  });
+
+  // A recovery forcer names a rule exactly as a plain RULE forcer does, so it
+  // resolves to the same node and marks the same edge forced.
+  it('resolves a recovery forcer to the rule it names', () => {
+    const graph = build(
+      [
+        ruleRecord(10),
+        ruleRecord(11, {forcedBy: {kind: 'RULE_RECOVERY', ruleId: 10}}),
+      ],
+      [],
+    );
+
+    expect(graph.forcedByOf(1)).toEqual({
+      kind: 'RULE_RECOVERY',
+      node: 0,
+      target: '10',
+    });
+    expect(graph.forcerOf(1)).toBe(0);
   });
 
   it('is empty - and safe - with no records at all', () => {

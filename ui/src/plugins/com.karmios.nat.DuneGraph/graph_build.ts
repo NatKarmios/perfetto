@@ -37,9 +37,13 @@ import type {GraphColumns} from './graph';
 import {
   BuildGraph,
   DEP_RESOLUTIONS,
+  DEP_STATUSES,
   FORCED_BY_KINDS,
   NO_REF,
+  OUTCOME_UNFINISHED,
+  RESOLUTION_UNFINISHED,
   RULE_OUTCOMES,
+  STATUS_OK,
   dangling,
 } from './graph';
 import type {PerfRun} from './perf';
@@ -69,6 +73,7 @@ function forcedByRawId(tag: ForcedByTag | undefined): number {
   if (tag === undefined) return NaN;
   switch (tag.kind) {
     case 'RULE':
+    case 'RULE_RECOVERY':
       return tag.ruleId;
     case 'DEP':
       return tag.depId;
@@ -109,6 +114,7 @@ export class GraphBuilder implements GraphBlobSink {
   private readonly ruleTargetStarts: number[] = [];
   private readonly ruleTargetFileCounts: number[] = [];
   private readonly ruleTargetIds: number[] = [];
+  private readonly ruleDepsUnknown: number[] = [];
   private readonly ruleDynStages = new Map<number, Int32Array>();
   private readonly ruleEdgeStarts: number[] = [];
   private readonly ruleEdges = new Int32Vector();
@@ -119,6 +125,7 @@ export class GraphBuilder implements GraphBlobSink {
   private readonly depIndex = new IntIndex();
   private readonly depDictIds: number[] = [];
   private readonly depResolutions: number[] = [];
+  private readonly depStatuses: number[] = [];
   private readonly depEdgeStarts: number[] = [];
   private readonly depEdges = new Int32Vector();
   private readonly depForcedByKinds: number[] = [];
@@ -144,7 +151,8 @@ export class GraphBuilder implements GraphBlobSink {
         : NO_REF,
     );
     const outcome = RULE_OUTCOMES.indexOf(record.outcome);
-    this.ruleOutcomes.push(outcome < 0 ? RULE_OUTCOMES.length - 1 : outcome);
+    this.ruleOutcomes.push(outcome < 0 ? OUTCOME_UNFINISHED : outcome);
+    this.ruleDepsUnknown.push(record.depsUnknown ? 1 : 0);
     this.ruleForcedByKinds.push(forcedByCode(record.forcedBy));
     this.ruleForcedByRawIds.push(forcedByRawId(record.forcedBy));
 
@@ -180,13 +188,15 @@ export class GraphBuilder implements GraphBlobSink {
     this.depDictIds.push(record.depId);
     const resolution = DEP_RESOLUTIONS.indexOf(record.resolution.kind);
     this.depResolutions.push(
-      resolution < 0 ? DEP_RESOLUTIONS.length - 1 : resolution,
+      resolution < 0 ? RESOLUTION_UNFINISHED : resolution,
     );
+    const status = DEP_STATUSES.indexOf(record.status);
+    this.depStatuses.push(status < 0 ? STATUS_OK : status);
     this.depForcedByKinds.push(forcedByCode(record.forcedBy));
     this.depForcedByRawIds.push(forcedByRawId(record.forcedBy));
 
     // A dep's resolution *is* its out-edges: the one rule it resolved to, or
-    // the deps it expanded to. `source` / `unfinished` have none.
+    // the deps it expanded to. `source` / `unknown` / `unfinished` have none.
     this.depEdgeStarts.push(this.depEdges.length);
     if (record.resolution.kind === 'rule') {
       if (isValidId(record.resolution.ruleId)) {
@@ -281,9 +291,11 @@ export class GraphBuilder implements GraphBlobSink {
         ruleTargetOffset,
         ruleTargetFiles: Int32Array.from(this.ruleTargetFileCounts),
         ruleTargetId: Int32Array.from(this.ruleTargetIds),
+        ruleDepsUnknown: Uint8Array.from(this.ruleDepsUnknown),
         ruleDynStages: this.ruleDynStages,
         depDictId: Int32Array.from(this.depDictIds),
         depResolution: Uint8Array.from(this.depResolutions),
+        depStatus: Uint8Array.from(this.depStatuses),
         forcedByKind,
         forcedByPayload: this.forcedByPayloads(forcedByKind, ruleCount),
         edgeOffset,
@@ -298,8 +310,9 @@ export class GraphBuilder implements GraphBlobSink {
   }
 
   // The `forced_by` payload column: one entry per node, in node-id order, with
-  // each RULE/DEP forcer resolved to the node it names (or to a dangling
-  // reference) and each path-bearing kind left as its dict id.
+  // each rule/dep forcer (RULE, RULE_RECOVERY, DEP) resolved to the node it
+  // names (or to a dangling reference) and each path-bearing kind left as its
+  // dict id.
   private forcedByPayloads(
     forcedByKind: Uint8Array,
     ruleCount: number,
@@ -311,7 +324,7 @@ export class GraphBuilder implements GraphBlobSink {
         i < ruleCount
           ? this.ruleForcedByRawIds[i]
           : this.depForcedByRawIds[i - ruleCount];
-      if (kind === 'RULE') {
+      if (kind === 'RULE' || kind === 'RULE_RECOVERY') {
         payloads[i] = this.ruleRef(id);
       } else if (kind === 'DEP') {
         payloads[i] = this.depRef(id, ruleCount);

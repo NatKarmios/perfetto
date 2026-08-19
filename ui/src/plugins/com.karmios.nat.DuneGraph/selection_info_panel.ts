@@ -34,6 +34,7 @@ import {
   decorateDepPath,
   decorateNode,
   depResolutionLabel,
+  depStatusLabel,
   forcedByText,
   formatDurNs,
   nodePathParts,
@@ -296,16 +297,28 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // `SpanTiming.occurrenceCount`). The duration/`×N` half appears once the
   // timing query lands (and not at all for a node no lifecycle instant
   // resolved to); the resolution half comes off the node and is always there.
+  //
+  // A dep also carries how its own build ended, which is orthogonal to what it
+  // resolved to (so "built · failed" is a real combination), and a rule whose
+  // deps dune couldn't determine says so - otherwise it reads as a rule with no
+  // deps, which is a different fact about the build.
   private renderStatus(node: GraphNode): m.Children {
     const label =
       node.kind === 'rule'
         ? outcomeLabel(node.outcome)
         : depResolutionLabel(node.resolution);
+    const note =
+      node.kind === 'rule'
+        ? node.depsUnknown
+          ? 'deps unknown'
+          : undefined
+        : depStatusLabel(node.status);
     const durNs = this.timing?.timing?.durNs;
     const occurrences = this.timing?.timing?.occurrenceCount;
     return m(
       'span.pf-dune-graph__status',
       m('span.pf-dune-graph__status-label', label),
+      note !== undefined && m('span.pf-dune-graph__status-label', note),
       durNs !== undefined &&
         m('span.pf-dune-graph__status-dur', formatDurNs(durNs)),
       occurrences !== undefined &&
@@ -341,11 +354,12 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     );
   }
 
-  // The node's `dune.forced_by`, as a muted line under the header. The RULE /
-  // DEP forcers link to that node's slice (like other referenced ids) when it's
-  // in the graph; the rest are descriptive text.
+  // The node's `dune.forced_by`, as a muted line under the header. The forcer
+  // kinds that name a node (RULE, RULE_RECOVERY, DEP) link to that node's slice
+  // (like other referenced ids) when it's in the graph; the rest are
+  // descriptive text.
   //
-  // A RULE/DEP forcer is itself a dependant (the forced edge points from it into
+  // Such a forcer is itself a dependant (the forced edge points from it into
   // this node), so it already appears - marked as forced - in the Dependants
   // list; we only surface this explicit line when the forcer isn't in that list
   // (a non-node kind, or a reference the blob never recorded a node for).
@@ -364,8 +378,10 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   }
 
   // Phrasing comes from `forcedByText` (shared with the query tab's tree
-  // extras); only RULE/DEP additionally get linked to their node here, since
-  // the query tab has no node to link to for a plain SQL column.
+  // extras); only the node-naming kinds additionally get linked to their node
+  // here, since the query tab has no node to link to for a plain SQL column.
+  // The link is keyed on `fb.node`, so a new node-naming kind needs nothing
+  // here beyond its phrasing.
   private forcedByContent(
     controller: DuneGraphController,
     fb: ForcedBy,

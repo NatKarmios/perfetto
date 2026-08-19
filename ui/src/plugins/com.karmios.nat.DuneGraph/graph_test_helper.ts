@@ -116,7 +116,11 @@ export interface DepOpts {
   // Name of the rule this dep resolves to.
   readonly resolvedRule?: string;
   readonly isSource?: boolean;
+  // Dune couldn't determine the resolution (its build failed/was cancelled).
+  readonly unknown?: boolean;
   readonly unfinished?: boolean;
+  // How building the dep itself ended; `ok` unless said otherwise.
+  readonly status?: DepRecord['status'];
   readonly forcedBy?: ForcedBySpec;
 }
 
@@ -127,6 +131,9 @@ export interface RuleOpts {
   readonly targetFiles?: readonly string[];
   readonly targetDirs?: readonly string[];
   readonly outcome?: RuleRecord['outcome'];
+  // Dune couldn't determine this rule's deps at all - distinct from having
+  // none, which is what leaving `staticDeps` unset means.
+  readonly depsUnknown?: boolean;
   readonly forcedBy?: ForcedBySpec;
 }
 
@@ -134,6 +141,8 @@ export interface RuleOpts {
 // `{path}` for the dune-file kinds, or a bare payload-less kind.
 export type ForcedBySpec =
   | {readonly rule: string}
+  // A rule that forced this node while recovering its own deps after failing.
+  | {readonly ruleRecovery: string}
   | {readonly dep: string}
   | {
       readonly kind: 'DYNAMIC_INCLUDES' | 'GEN_RULES' | 'PFORM';
@@ -147,6 +156,9 @@ function forcedByTag(
 ): ForcedByTag | undefined {
   if (spec === undefined) return undefined;
   if ('rule' in spec) return {kind: 'RULE', ruleId: names.rule(spec.rule)};
+  if ('ruleRecovery' in spec) {
+    return {kind: 'RULE_RECOVERY', ruleId: names.rule(spec.ruleRecovery)};
+  }
   if ('dep' in spec) return {kind: 'DEP', depId: names.dep(spec.dep)};
   if ('path' in spec) return {kind: spec.kind, pathId: names.dep(spec.path)};
   return {kind: spec.kind};
@@ -160,6 +172,7 @@ export function dep(name: string, opts: DepOpts = {}): NodeSpec {
       depId: names.dep(name),
       resolution: depResolution(names, opts),
       forcedBy: forcedByTag(names, opts.forcedBy),
+      status: opts.status ?? 'ok',
     }),
   };
 }
@@ -175,6 +188,7 @@ function depResolution(
     return {kind: 'expanded', depIds: opts.expanded.map((n) => names.dep(n))};
   }
   if (opts.isSource === true) return {kind: 'source'};
+  if (opts.unknown === true) return {kind: 'unknown'};
   if (opts.unfinished === true) return {kind: 'unfinished'};
   // A dep with nothing said about it: an expansion to nothing, so it has no
   // out-edges and no resolution of its own.
@@ -193,6 +207,7 @@ export function rule(name: string, opts: RuleOpts = {}): NodeSpec {
       outcome: opts.outcome ?? 'executed',
       forcedBy: forcedByTag(names, opts.forcedBy),
       depIds: (opts.staticDeps ?? []).map((n) => names.dep(n)),
+      depsUnknown: opts.depsUnknown ?? false,
       dynDepStages: (opts.dynamicDeps ?? []).map((stage) =>
         stage.map((n) => names.dep(n)),
       ),

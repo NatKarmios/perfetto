@@ -200,6 +200,7 @@ describe('parseGraphBlob - graph-rules', () => {
         outcome: 'executed',
         forcedBy: {kind: 'DEP', depId: 5},
         depIds: [1, 2],
+        depsUnknown: false,
         dynDepStages: [[3, 4], [5]],
       },
     ]);
@@ -209,6 +210,9 @@ describe('parseGraphBlob - graph-rules', () => {
     ['X', 'executed'],
     ['L', 'local-cache-hit'],
     ['S', 'shared-cache-hit'],
+    ['D', 'failed-deps'],
+    ['A', 'failed-action'],
+    ['C', 'cancelled'],
     ['?', 'unfinished'],
   ] as const)('maps outcome %s to %s', async (code, expected) => {
     const blob = await parse({[RULES_SECTION]: `0\t\t\t\t${code}\t\t\t\n`});
@@ -225,7 +229,34 @@ describe('parseGraphBlob - graph-rules', () => {
       outcome: 'unfinished',
       forcedBy: {kind: 'DEP', depId: 5},
       depIds: [],
+      depsUnknown: false,
       dynDepStages: [],
+    });
+  });
+
+  // `?` and empty both yield no dep ids, so the flag is the only thing that
+  // tells "dune couldn't determine them" apart from "there are none".
+  it('distinguishes unknown deps from no deps', async () => {
+    const blob = await parse({
+      [RULES_SECTION]: '1\t\t\t\tD\t\t?\t\n2\t\t\t\tX\t\t\t\n',
+    });
+    expect(blob.rules.map((r) => [r.depIds, r.depsUnknown])).toEqual([
+      [[], true],
+      [[], false],
+    ]);
+  });
+
+  it('parses the deps a failed rule did recover', async () => {
+    const blob = await parse({[RULES_SECTION]: '1\t\t\t\tD\t\t4,5\t\n'});
+    expect(blob.rules[0].depIds).toEqual([4, 5]);
+    expect(blob.rules[0].depsUnknown).toBe(false);
+  });
+
+  it('parses a forced-by tag naming a rule recovering its deps', async () => {
+    const blob = await parse({[RULES_SECTION]: '1\t\t\t\tX\tv77\t\t\n'});
+    expect(blob.rules[0].forcedBy).toEqual({
+      kind: 'RULE_RECOVERY',
+      ruleId: 77,
     });
   });
 
@@ -282,23 +313,24 @@ describe('parseGraphBlob - graph-rules', () => {
 
 describe('parseGraphBlob - graph-deps', () => {
   it('parses a source dep forced by a rule', async () => {
-    const blob = await parse({[DEPS_SECTION]: '9\ts\tr281\n'});
+    const blob = await parse({[DEPS_SECTION]: '9\ts\tr281\t\n'});
     expect(blob.deps).toEqual([
       {
         depId: 9,
         resolution: {kind: 'source'},
         forcedBy: {kind: 'RULE', ruleId: 281},
+        status: 'ok',
       },
     ]);
   });
 
   it('parses a dep resolved to a rule', async () => {
-    const blob = await parse({[DEPS_SECTION]: '11\tr314\tr281\n'});
+    const blob = await parse({[DEPS_SECTION]: '11\tr314\tr281\t\n'});
     expect(blob.deps[0].resolution).toEqual({kind: 'rule', ruleId: 314});
   });
 
   it('parses a dep resolved to an expansion list', async () => {
-    const blob = await parse({[DEPS_SECTION]: '3\tx1,2,3\tc\n'});
+    const blob = await parse({[DEPS_SECTION]: '3\tx1,2,3\tc\t\n'});
     expect(blob.deps[0].resolution).toEqual({
       kind: 'expanded',
       depIds: [1, 2, 3],
@@ -306,8 +338,46 @@ describe('parseGraphBlob - graph-deps', () => {
   });
 
   it('parses an unfinished dep line', async () => {
-    const blob = await parse({[DEPS_SECTION]: '5\t?\td2\n'});
+    const blob = await parse({[DEPS_SECTION]: '5\t?\td2\t\n'});
     expect(blob.deps[0].resolution).toEqual({kind: 'unfinished'});
+  });
+
+  it.each([
+    ['', 'ok'],
+    ['f', 'failed'],
+    ['c', 'cancelled'],
+  ] as const)('maps status "%s" to %s', async (code, expected) => {
+    const blob = await parse({[DEPS_SECTION]: `5\ts\t\t${code}\n`});
+    expect(blob.deps[0].status).toEqual(expected);
+  });
+
+  // `u` is dune saying it couldn't tell; `?` is the span never having ended.
+  // The two mean different things, so they must not collapse together.
+  it('distinguishes an unknown resolution from an unfinished one', async () => {
+    const blob = await parse({[DEPS_SECTION]: '5\tu\t\tf\n6\t?\t\t\n'});
+    expect(blob.deps.map((d) => [d.resolution.kind, d.status])).toEqual([
+      ['unknown', 'failed'],
+      ['unfinished', 'ok'],
+    ]);
+  });
+
+  it('parses a failed dep that still resolved to a rule', async () => {
+    const blob = await parse({[DEPS_SECTION]: '5\tr9\t\tf\n'});
+    expect(blob.deps[0].resolution).toEqual({kind: 'rule', ruleId: 9});
+    expect(blob.deps[0].status).toEqual('failed');
+  });
+
+  it('parses a forced-by tag naming a rule recovering its deps', async () => {
+    const blob = await parse({[DEPS_SECTION]: '5\ts\tv77\t\n'});
+    expect(blob.deps[0].forcedBy).toEqual({kind: 'RULE_RECOVERY', ruleId: 77});
+  });
+
+  // A trace written before `<status>` existed carries three fields at the same
+  // blob version, and its deps all succeeded as far as the schema could say.
+  it('reads a three-field line as a successful dep', async () => {
+    const blob = await parse({[DEPS_SECTION]: '9\ts\tr281\n'});
+    expect(blob.deps[0].status).toEqual('ok');
+    expect(blob.deps[0].resolution).toEqual({kind: 'source'});
   });
 });
 

@@ -45,7 +45,7 @@
  */
 
 import {IntIndex, Int32Vector} from './columns';
-import type {RuleOutcome, StringTable} from './graph_blob';
+import type {DepStatus, RuleOutcome, StringTable} from './graph_blob';
 import {EMPTY_STRING_TABLE} from './graph_blob';
 import type {PerfRun} from './perf';
 
@@ -56,16 +56,28 @@ export type NodeKind = 'dep' | 'rule';
 
 // Re-exported so callers of graph.ts don't also need to import graph_blob.ts
 // for the node-facing outcome type.
-export type {RuleOutcome, StringTable} from './graph_blob';
+export type {DepStatus, RuleOutcome, StringTable} from './graph_blob';
 
-// A dep's resolution, as a short discriminator. `unfinished` doubles as the
-// fallback for a dep with no resolution recorded - shouldn't happen given a
-// well-formed blob, but a safe default rather than an invented fifth state.
-export type DepResolutionKind = 'rule' | 'source' | 'expanded' | 'unfinished';
+/**
+ * A dep's resolution, as a short discriminator: what the dep turned out to be.
+ *
+ * `unknown` is dune saying it couldn't tell (the dep's own build failed or was
+ * cancelled first - pair it with {@link BuildGraph.statusOf} to see which);
+ * `unfinished` is the span never having ended, i.e. a truncated trace. It also
+ * doubles as the fallback for a dep with no resolution recorded at all.
+ */
+export type DepResolutionKind =
+  'rule' | 'source' | 'expanded' | 'unknown' | 'unfinished';
 
-// Why a node was built - the `forced_by` field of its blob record. See
-// {@link isForcedEdge} for how this drives forced edges, and
-// `node_display.ts:forcedByText` for the display phrasing of each kind.
+/**
+ * Why a node was built - the `forced_by` field of its blob record. See
+ * {@link isForcedEdge} for how this drives forced edges, and
+ * `node_display.ts:forcedByText` for the display phrasing of each kind.
+ *
+ * `RULE_RECOVERY` is a rule that forced this node while *recovering* its own
+ * deps after failing; it names a rule exactly as `RULE` does, and is treated
+ * identically everywhere the payload is resolved - only the phrasing differs.
+ */
 export type ForcedByKind =
   | 'RULE'
   | 'DEP'
@@ -74,23 +86,31 @@ export type ForcedByKind =
   | 'PFORM'
   | 'CONFIGURATOR'
   | 'REQUEST'
-  | 'UNKNOWN';
+  | 'UNKNOWN'
+  | 'RULE_RECOVERY';
 
-// The stored code of an outcome / resolution / forcer kind is its index in
-// these lists (`forcedByKind` is offset by one, so 0 means "not recorded").
-// Order is part of the store's encoding, so only ever append.
+// The stored code of an outcome / resolution / status / forcer kind is its
+// index in these lists (`forcedByKind` is offset by one, so 0 means "not
+// recorded"). Order is part of the store's encoding, so only ever append -
+// which is why the codes added with dune's failure states sit after the
+// fallbacks rather than beside their siblings.
 export const RULE_OUTCOMES: readonly RuleOutcome[] = [
   'executed',
   'local-cache-hit',
   'shared-cache-hit',
   'unfinished',
+  'failed-deps',
+  'failed-action',
+  'cancelled',
 ];
 export const DEP_RESOLUTIONS: readonly DepResolutionKind[] = [
   'rule',
   'source',
   'expanded',
   'unfinished',
+  'unknown',
 ];
+export const DEP_STATUSES: readonly DepStatus[] = ['ok', 'failed', 'cancelled'];
 export const FORCED_BY_KINDS: readonly ForcedByKind[] = [
   'RULE',
   'DEP',
@@ -100,7 +120,15 @@ export const FORCED_BY_KINDS: readonly ForcedByKind[] = [
   'CONFIGURATOR',
   'REQUEST',
   'UNKNOWN',
+  'RULE_RECOVERY',
 ];
+
+// The codes an unreadable/absent field falls back to. Named rather than
+// derived from the lists' ends, which stopped being the fallbacks the moment
+// dune's failure states were appended.
+export const OUTCOME_UNFINISHED = RULE_OUTCOMES.indexOf('unfinished');
+export const RESOLUTION_UNFINISHED = DEP_RESOLUTIONS.indexOf('unfinished');
+export const STATUS_OK = DEP_STATUSES.indexOf('ok');
 
 /**
  * Every column that holds a node reference (an edge target, a forcer) encodes
@@ -192,6 +220,8 @@ interface NodeViewBase {
 export interface DepNode extends NodeViewBase {
   readonly kind: 'dep';
   readonly resolution: DepResolutionKind;
+  // How building the dep itself ended, independently of what it resolved to.
+  readonly status: DepStatus;
   // The rule this dep resolved to, iff `resolution === 'rule'` and that rule is
   // itself a known node.
   readonly resolvedRule?: NodeId;
@@ -205,6 +235,9 @@ export interface RuleNode extends NodeViewBase {
   readonly nStaticDeps: number;
   readonly nDynStages: number;
   readonly nTargets: number;
+  // Whether the blob reported the rule's deps as undeterminable (see
+  // {@link BuildGraph.depsUnknownOf}); `nStaticDeps` is 0 either way.
+  readonly depsUnknown: boolean;
 }
 
 /**
@@ -292,6 +325,10 @@ export interface GraphColumns {
   readonly ruleTargetOffset: Int32Array; // ruleCount + 1, into ruleTargetId
   readonly ruleTargetFiles: Int32Array; // leading file targets of the rule's run
   readonly ruleTargetId: Int32Array; // dict ids, files then dirs per rule
+  // 1 where the blob wrote `?` for the rule's deps (unknown, as opposed to
+  // none). A byte per rule rather than a sentinel in `ruleStaticCount`, which
+  // the CSR's static/dynamic split arithmetic reads.
+  readonly ruleDepsUnknown: Uint8Array;
   // Rule node id -> the end offset of each dynamic-dep stage, relative to the
   // start of the rule's dynamic edges. A map, not a column: dynamic deps are
   // rare (the monorepo trace has none at all), so this holds an entry only for
@@ -301,6 +338,7 @@ export interface GraphColumns {
   // Deps, indexed by node id minus ruleCount.
   readonly depDictId: Int32Array;
   readonly depResolution: Uint8Array; // index into DEP_RESOLUTIONS
+  readonly depStatus: Uint8Array; // index into DEP_STATUSES
 
   // Every node, indexed by node id.
   readonly forcedByKind: Uint8Array; // 0 = not recorded, else FORCED_BY_KINDS + 1
@@ -327,9 +365,11 @@ function emptyColumns(): GraphColumns {
     ruleTargetOffset: new Int32Array(1),
     ruleTargetFiles: new Int32Array(0),
     ruleTargetId: new Int32Array(0),
+    ruleDepsUnknown: new Uint8Array(0),
     ruleDynStages: new Map(),
     depDictId: new Int32Array(0),
     depResolution: new Uint8Array(0),
+    depStatus: new Uint8Array(0),
     forcedByKind: new Uint8Array(0),
     forcedByPayload: new Int32Array(0),
     edgeOffset: new Int32Array(1),
@@ -453,12 +493,42 @@ export class BuildGraph {
     return this.cols.depResolution[id - this.ruleCount];
   }
 
+  // The stored code behind {@link statusOf}: an index into DEP_STATUSES.
+  statusCodeOf(id: NodeId): number {
+    return this.cols.depStatus[id - this.ruleCount];
+  }
+
   outcomeOf(id: NodeId): RuleOutcome {
     return RULE_OUTCOMES[this.outcomeCodeOf(id)] ?? 'unfinished';
   }
 
   resolutionOf(id: NodeId): DepResolutionKind {
     return DEP_RESOLUTIONS[this.resolutionCodeOf(id)] ?? 'unfinished';
+  }
+
+  /**
+   * How building the dep itself ended - `ok` unless dune reported a failure or
+   * a cancellation. Independent of {@link BuildGraph.resolutionOf}: a failed
+   * dep can still
+   * have resolved to a known rule, and a dep whose resolution is `unknown` is
+   * `unknown` *because* of this status.
+   *
+   * `ok` for a rule, which reports the same thing through its outcome.
+   */
+  statusOf(id: NodeId): DepStatus {
+    if (this.isRule(id)) return 'ok';
+    return DEP_STATUSES[this.statusCodeOf(id)] ?? 'ok';
+  }
+
+  /**
+   * Whether the blob reported that it could not determine this rule's deps (a
+   * `?` where the dep ids go), as opposed to the rule having none. The node has
+   * no dep edges either way, so anything that counts or joins on dependency
+   * edges has to consult this before reading "0 deps" as a fact about the
+   * build. False for a dep node, which has no such field.
+   */
+  depsUnknownOf(id: NodeId): boolean {
+    return this.isRule(id) && this.cols.ruleDepsUnknown[id] === 1;
   }
 
   // The rule a dep resolved to, if it resolved to one that is itself a node.
@@ -524,6 +594,7 @@ export class BuildGraph {
     const payload = this.cols.forcedByPayload[id];
     switch (kind) {
       case 'RULE':
+      case 'RULE_RECOVERY':
         if (payload >= 0) {
           return {kind, node: payload, target: this.labelOf(payload)};
         }
@@ -571,6 +642,7 @@ export class BuildGraph {
     const payload = this.cols.forcedByPayload[id];
     switch (FORCED_BY_KINDS[this.cols.forcedByKind[id] - 1]) {
       case 'RULE':
+      case 'RULE_RECOVERY':
       case 'DEP':
         // A recorded forcer is stored as the node it names, so its trace-side
         // id comes back off that node; one the blob never recorded kept its id
@@ -595,8 +667,14 @@ export class BuildGraph {
    */
   forcerOf(id: NodeId): NodeId {
     const code = this.cols.forcedByKind[id];
+    // A recovery forcer names a rule that really did force this node into the
+    // build (while recovering its own deps), so it marks an edge exactly as a
+    // plain rule forcer does - each node still records a single forcer, so
+    // forced edges remain a spanning forest.
     const kind = FORCED_BY_KINDS[code - 1];
-    if (kind !== 'RULE' && kind !== 'DEP') return -1;
+    if (kind !== 'RULE' && kind !== 'RULE_RECOVERY' && kind !== 'DEP') {
+      return -1;
+    }
     return this.cols.forcedByPayload[id];
   }
 
@@ -617,11 +695,13 @@ export class BuildGraph {
           nStaticDeps: this.staticDepCount(id),
           nDynStages: this.dynStageCount(id),
           nTargets: this.targetCount(id),
+          depsUnknown: this.depsUnknownOf(id),
         }
       : {
           ...base,
           kind: 'dep',
           resolution: this.resolutionOf(id),
+          status: this.statusOf(id),
           resolvedRule: this.resolvedRuleOf(id),
         };
   }

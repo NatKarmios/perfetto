@@ -72,12 +72,21 @@
  *   `forced_by_kind` / `forced_by_target` mirror the node's `forcedBy` (the
  *   target is the forcing rule id / dep path / dune-file path, or NULL).
  * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id,
- *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages)` — one row per rule
- *   node, a view over `_dune_rule`. `outcome`: `executed` | `local-cache-hit` |
- *   `shared-cache-hit` | `unfinished`.
- * - `dune_dep(node_id, dep_id, path, resolution, resolved_rule_node_id,
- *   is_source)` — one row per dep node, a view over `_dune_dep`. `resolution`:
- *   `rule` | `source` | `expanded` | `unfinished`; `resolved_rule_node_id` is set
+ *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages, deps_unknown)` — one
+ *   row per rule node, a view over `_dune_rule`. `outcome`: `executed` |
+ *   `local-cache-hit` | `shared-cache-hit` | `failed-deps` | `failed-action` |
+ *   `cancelled` | `unfinished` (the last meaning the span never ended, i.e. a
+ *   truncated trace - not a failure). `deps_unknown` is 1 when dune reported
+ *   that it couldn't determine the rule's deps: `n_static_deps` is 0 either
+ *   way, so filter on this before reading a 0 as "this rule has no deps".
+ * - `dune_dep(node_id, dep_id, path, resolution, status,
+ *   resolved_rule_node_id, is_source)` — one row per dep node, a view over
+ *   `_dune_dep`. `resolution`: `rule` | `source` | `expanded` | `unknown` |
+ *   `unfinished` (`unknown` = dune couldn't tell because the dep's own build
+ *   failed or was cancelled; `unfinished` = the span never ended);
+ *   `status` (`ok` | `failed` | `cancelled`) is how building the dep itself
+ *   ended and is independent of what it resolved to;
+ *   `resolved_rule_node_id` is set
  *   iff `resolution = 'rule'` and that rule is itself a known node.
  * - `dune_rule_target(node_id, path, is_dir)` — a rule's output targets
  *   (`target_files`/`target_dirs`, each joined onto `dir` - see `joinDir` in
@@ -146,7 +155,13 @@ import type {
   NodeId,
   NodeTiming,
 } from './graph';
-import {DEP_RESOLUTIONS, FORCED_BY_KINDS, RULE_OUTCOMES, edges} from './graph';
+import {
+  DEP_RESOLUTIONS,
+  DEP_STATUSES,
+  FORCED_BY_KINDS,
+  RULE_OUTCOMES,
+  edges,
+} from './graph';
 import {
   TIMING_TABLE,
   buildLifecycleTiming,
@@ -553,7 +568,8 @@ function ruleRows(graph: BuildGraph): RowSource {
         const counts =
           `${graph.targetCount(id)}, ${graph.staticDepCount(id)}, ` +
           `${graph.dynStageCount(id)}`;
-        yield `(${id}, ${int(graph.dirStrIdOf(id))}, ${graph.outcomeCodeOf(id)}, ${counts})`;
+        const depsUnknown = graph.depsUnknownOf(id) ? 1 : 0;
+        yield `(${id}, ${int(graph.dirStrIdOf(id))}, ${graph.outcomeCodeOf(id)}, ${counts}, ${depsUnknown})`;
       }
     },
   };
@@ -565,7 +581,7 @@ function depRows(graph: BuildGraph): RowSource {
     *rows(): Iterable<string> {
       for (let id = graph.ruleCount; id < graph.nodeCount; id++) {
         const resolved = int(graph.resolvedRuleOf(id));
-        yield `(${id}, ${graph.resolutionCodeOf(id)}, ${resolved})`;
+        yield `(${id}, ${graph.resolutionCodeOf(id)}, ${graph.statusCodeOf(id)}, ${resolved})`;
       }
     },
   };
@@ -645,7 +661,8 @@ export async function buildNodeMirror(
     engine,
     RAW_RULE_TABLE,
     'node_id INTEGER PRIMARY KEY, dir_str_id INTEGER, outcome INTEGER, ' +
-      'n_targets INTEGER, n_static_deps INTEGER, n_dyn_stages INTEGER',
+      'n_targets INTEGER, n_static_deps INTEGER, n_dyn_stages INTEGER, ' +
+      'deps_unknown INTEGER',
     [
       'node_id',
       'dir_str_id',
@@ -653,6 +670,7 @@ export async function buildNodeMirror(
       'n_targets',
       'n_static_deps',
       'n_dyn_stages',
+      'deps_unknown',
     ],
     ruleRows(graph),
     opts,
@@ -660,9 +678,9 @@ export async function buildNodeMirror(
   const rawDepTable = await materializeTable(
     engine,
     RAW_DEP_TABLE,
-    'node_id INTEGER PRIMARY KEY, resolution INTEGER, ' +
+    'node_id INTEGER PRIMARY KEY, resolution INTEGER, status INTEGER, ' +
       'resolved_rule_node_id INTEGER',
-    ['node_id', 'resolution', 'resolved_rule_node_id'],
+    ['node_id', 'resolution', 'status', 'resolved_rule_node_id'],
     depRows(graph),
     opts,
   );
@@ -752,12 +770,13 @@ export async function buildNodeMirror(
         action_dur_ns LONG,
         n_targets LONG,
         n_static_deps LONG,
-        n_dyn_stages LONG
+        n_dyn_stages LONG,
+        deps_unknown LONG
       ) AS
       SELECT r.node_id, n.orig_id AS rule_id, ds.str AS dir,
         ${codeCase('r.outcome', RULE_OUTCOMES)} AS outcome,
         s.id AS action_slice_id, t.dur_ns AS action_dur_ns,
-        r.n_targets, r.n_static_deps, r.n_dyn_stages
+        r.n_targets, r.n_static_deps, r.n_dyn_stages, r.deps_unknown
       FROM ${RAW_RULE_TABLE} r
       JOIN ${RAW_NODE_TABLE} n ON n.node_id = r.node_id
       LEFT JOIN ${STRING_TABLE} ds ON ds.id = r.dir_str_id
@@ -771,12 +790,14 @@ export async function buildNodeMirror(
         dep_id LONG,
         path STRING,
         resolution STRING,
+        status STRING,
         resolved_rule_node_id LONG,
         is_source LONG
       ) AS
       SELECT d.node_id, n.orig_id AS dep_id,
         coalesce(ps.str, '#' || n.orig_id) AS path,
         ${codeCase('d.resolution', DEP_RESOLUTIONS)} AS resolution,
+        ${codeCase('d.status', DEP_STATUSES)} AS status,
         d.resolved_rule_node_id,
         iif(d.resolution = ${DEP_RESOLUTIONS.indexOf('source')}, 1, 0)
           AS is_source
