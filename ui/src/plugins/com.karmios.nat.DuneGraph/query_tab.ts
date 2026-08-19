@@ -54,46 +54,36 @@ import type {PathTreeItem, PathTreeLeaf, PathTreeRow} from './path_tree';
 import {buildPathTree, collectGroupKeys} from './path_tree';
 import {PathTreeView} from './path_tree_view';
 
-// Columns whose value is a build-dep/exec-rule slice id, so a row maps back to
-// a graph node. A raw `slice_id` renders as a plain slice link; the "chip"
-// columns render as a coloured kind chip + label + slice link. `node` comes
-// from the dune_node view, `src`/`dst` from the dune_edge view, and `src`/`dst`
-// are also synthesized from the relation functions' `*_slice_id` (see runQuery).
-const SLICE_ID_COL = 'slice_id';
-const NODE_COL = 'node';
+// Columns whose value IS a graph node's id (`dune_node.node_id`), so a row maps
+// back to a node without touching the trace: `node_id` itself, from `dune_node`
+// and the per-kind detail tables, and the `src`/`dst` endpoints of `dune_edge`
+// and of every relation function. All three render as a coloured kind chip +
+// label + ＋/－ toggle.
+const NODE_COL = 'node_id';
 const SRC_COL = 'src';
 const DST_COL = 'dst';
 const CHIP_COLS = [NODE_COL, SRC_COL, DST_COL];
 
-// The relation functions expose the src/dst node as separate `*_slice_id` /
-// `*_kind` / `*_id` columns rather than a single `src`/`dst`; we fold them into
-// chips (the cell resolves its node from the slice id alone - the DataGrid
-// projects rows to opaque aliases, so a cell renderer can't read siblings).
-const SRC_SLICE_COL = 'src_slice_id';
-const DST_SLICE_COL = 'dst_slice_id';
+// A node's primary lifecycle slice (`dune_node.slice_id`), rendered as a plain
+// slice link. Node-bearing too, but only indirectly: it's timing data rather
+// than an identity (NULL for a node whose timing never resolved, and several
+// slices share one node), and mapping it back is a query rather than a range
+// check - see `nodesBySliceId`.
+const SLICE_ID_COL = 'slice_id';
 
-// The raw relation component columns folded into the `src`/`dst` chips; hidden
-// by default (when both chips are present) but still addable from the column
-// menu. Also covers the `dune_edge` view's `src_node_id`/`dst_node_id`.
-const RELATION_COMPONENT_COLS = [
-  'src_node_id',
-  SRC_SLICE_COL,
-  'src_kind',
-  'src_id',
-  'dst_node_id',
-  DST_SLICE_COL,
-  'dst_kind',
-  'dst_id',
-];
+// The relation functions' per-endpoint detail columns, folded into the `src`/
+// `dst` chips (which already show a node's kind and label); hidden by default
+// when both chips are present, but still addable from the column menu.
+const RELATION_COMPONENT_COLS = ['src_kind', 'src_id', 'dst_kind', 'dst_id'];
 
-// The `dune_node` view columns folded into the `node` chip; hidden by default
-// (when `node` is present) but still addable from the column menu.
-const NODE_DETAIL_COLS = ['kind', 'orig_id', SLICE_ID_COL, 'label'];
+// The `dune_node` view columns folded into the `node_id` chip; hidden by default
+// (when `node_id` is present) but still addable from the column menu. `slice_id`
+// is deliberately not one of them - the chip no longer carries it.
+const NODE_DETAIL_COLS = ['kind', 'orig_id', 'label'];
 
-// `dune_node`'s synthetic dense id and its `dune.forced_by` mirror columns
-// (see sql_graph.ts's doc comment) - given special formatting as a tree
-// leaf's extras rather than plain `col=value` (see `formatExtraParts`).
-const NODE_ID_COL = 'node_id';
+// `dune_node`'s `dune.forced_by` mirror columns (see sql_graph.ts's doc
+// comment) - given special formatting as a tree leaf's extras rather than plain
+// `col=value` (see `formatExtraParts`).
 const FORCED_BY_KIND_COL = 'forced_by_kind';
 const FORCED_BY_TARGET_COL = 'forced_by_target';
 
@@ -130,7 +120,7 @@ export interface TreeLeafEntry {
 
 /**
  * Groups `rows` into path-tree items keyed off `col` (a node-bearing column -
- * `node`/`src`/`dst`/`slice_id`): each row's cell resolves to a graph node via
+ * `node_id`/`src`/`dst`/`slice_id`): each row's cell resolves to a graph node via
  * `resolve` (or stays dangling, filed under its raw value as a top-level leaf
  * - dangling ids aren't paths). Null/missing cells are skipped.
  *
@@ -182,9 +172,9 @@ export function buildNodeTreeItems(
  * parts (joined with ", " by the caller): a leading `×N` when `count` merged
  * more than one result row, then each of `cols` in order.
  *
- * `node_id` renders bare (`#1`, not `node_id=1`); `forced_by_kind` folds
- * together with `forced_by_target` (wherever either falls in `cols`) into one
- * `forced by <text>` part via `forcedByText`, consuming both columns - unless
+ * `forced_by_kind` folds together with `forced_by_target` (wherever either falls
+ * in `cols`) into one `forced by <text>` part via `forcedByText`, consuming both
+ * columns - unless
  * `forced_by_kind`'s value isn't a kind `forcedByText` recognises, in which
  * case both fall back to plain `col=value` rather than silently dropping the
  * target. Every other column delegates to `formatValue` (which decides
@@ -208,9 +198,7 @@ export function formatExtraParts(
     if (col === FORCED_BY_TARGET_COL && foldTarget) continue;
     const value = row[col];
     if (value === null || value === undefined) continue;
-    if (col === NODE_ID_COL) {
-      parts.push(`#${String(value)}`);
-    } else if (col === FORCED_BY_KIND_COL) {
+    if (col === FORCED_BY_KIND_COL) {
       const target = row[FORCED_BY_TARGET_COL];
       const targetStr =
         target === null || target === undefined ? undefined : String(target);
@@ -239,23 +227,21 @@ export function formatExtraParts(
  * a node cell, or in bulk via the toolbar. Driven by the `&` omnibox mode /
  * "Dune: query graph" command, which call `runQuery`.
  *
- * Node-aware rendering (coloured chip + slice link + ＋/－ toggle) applies to the
- * `node` column (dune_node view), the `src`/`dst` columns (dune_edge view), and
- * the `src`/`dst` pair synthesized from the relation functions
- * (`dune_descendants` / `dune_ancestors`). A raw `slice_id` renders as a plain
- * slice link.
+ * Node-aware rendering (coloured chip + slice link + ＋/－ toggle) applies to
+ * every column whose value is a `node_id`: `node_id` itself (dune_node and the
+ * per-kind detail tables) and the `src`/`dst` endpoints of `dune_edge` and the
+ * relation functions. A raw `slice_id` renders as a plain slice link.
  */
 export class DuneQueryTab implements Tab {
   private loading = false;
   private error?: string;
   private response?: QueryResponse;
   private dataSource?: InMemoryDataSource;
-  // Whether the result carries `src_slice_id`/`dst_slice_id` (relation shape).
-  private isRelation = false;
-  // The result's node-bearing cells resolved to graph nodes, computed once per
-  // query. Mapping a lifecycle slice id to its node is a query now, not a JS
-  // map lookup (see controller.ts), and every renderer below is synchronous -
-  // so the whole result is resolved up front, in one batch.
+  // Any `slice_id` cells in the result, resolved to graph nodes once per query.
+  // Mapping a lifecycle slice id to its node is a query, not a JS map lookup
+  // (see controller.ts), and every renderer below is synchronous - so the whole
+  // column is resolved up front, in one batch. Empty unless the result actually
+  // selected `slice_id`; a chip column needs no lookup at all.
   private nodesBySliceId = new Map<number, NodeId>();
   // Result rows that resolve to a known graph node, computed once per query.
   private mappable: NodeId[] = [];
@@ -296,7 +282,6 @@ export class DuneQueryTab implements Tab {
     this.response = undefined;
     this.dataSource = undefined;
     this.mappable = [];
-    this.isRelation = false;
     this.nodesBySliceId = new Map();
     this.collapsed.clear();
     m.redraw();
@@ -318,22 +303,11 @@ export class DuneQueryTab implements Tab {
       this.error = response.error;
     } else {
       this.response = response;
-      this.isRelation =
-        response.columns.includes(SRC_SLICE_COL) &&
-        response.columns.includes(DST_SLICE_COL);
-      // Back the synthetic chip columns with their slice ids so each cell can
-      // resolve its node from its own value.
-      if (this.isRelation) {
-        for (const row of response.rows) {
-          row[SRC_COL] = row[SRC_SLICE_COL];
-          row[DST_COL] = row[DST_SLICE_COL];
-        }
-      }
-      // Resolve every node-bearing cell to its node before rendering, so the
-      // cell renderers (and the CSV formatters, and the bulk actions) can stay
-      // synchronous.
+      // Resolve the `slice_id` column (if any) before rendering, so the cell
+      // renderers - and the CSV formatters, and the bulk actions - can stay
+      // synchronous. A no-op query when the column isn't present.
       this.nodesBySliceId = await this.controller.nodesForSliceIds(
-        sliceIdsIn(response, this.nodeBearingCols(response)),
+        sliceIdsIn(response, [SLICE_ID_COL]),
       );
       this.dataSource = new InMemoryDataSource(response.rows);
       this.mappable = this.mappableNodes(response);
@@ -375,9 +349,9 @@ export class DuneQueryTab implements Tab {
           'max_steps, step_kind), unbounded ' +
           'dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +
           'dune_children/dune_parents(node_id), or forced-only ' +
-          'dune_forcers/dune_forced(node_id) - any node / src / dst / slice_id ' +
-          'column becomes addable. To see transitive forcing on a result, ' +
-          'LEFT JOIN dune_forced()/dune_forcers() USING (dst_node_id).',
+          'dune_forcers/dune_forced(node_id) - any node_id / src / dst / ' +
+          'slice_id column becomes addable. To see transitive forcing on a ' +
+          'result, LEFT JOIN dune_forced()/dune_forcers() USING (dst).',
       );
     }
 
@@ -391,8 +365,8 @@ export class DuneQueryTab implements Tab {
         m(
           Callout,
           {icon: 'warning'},
-          'Return a node, src, dst, or slice_id column to add nodes to the ' +
-            'graph.',
+          'Return a node_id, src, dst, or slice_id column to add nodes to ' +
+            'the graph.',
         ),
       this.view === 'tree'
         ? this.renderTreeBody(response)
@@ -444,7 +418,7 @@ export class DuneQueryTab implements Tab {
                 if (this.collapsed.has(key)) this.collapsed.delete(key);
                 else this.collapsed.add(key);
               },
-              renderLeaf: (row) => this.renderTreeLeaf(response, row),
+              renderLeaf: (row) => this.renderTreeLeaf(response, col, row),
               groupActions: (row) =>
                 groupBulkActions(this.controller, nodesInGroup(row)),
             }),
@@ -462,7 +436,7 @@ export class DuneQueryTab implements Tab {
         response.rows,
         col,
         this.mergeDuplicates,
-        (v) => this.nodeForSliceValue(v),
+        (v) => this.nodeForValue(col, v),
       ),
     );
   }
@@ -481,6 +455,7 @@ export class DuneQueryTab implements Tab {
 
   private renderTreeLeaf(
     response: QueryResponse,
+    col: string,
     row: PathTreeLeaf<TreeLeafEntry>,
   ): m.Children {
     const {item: entry, prefix, label} = row;
@@ -494,48 +469,40 @@ export class DuneQueryTab implements Tab {
         node !== undefined ? this.nodeAnchor(node, label) : label,
       ),
       this.renderTreeExtras(response, entry),
-      this.renderNodeToggle(value),
+      this.renderNodeToggle(col, value),
     );
   }
 
   // Muted "×N" (when duplicates were merged) plus, when enabled, the row's
-  // other columns - `node_id`/`forced_by_*` specially formatted (see
-  // `formatExtraParts`), the rest as "col=value" text, a node-bearing sibling
-  // column (e.g. `dst` when grouping by `src`) rendering via its own node
-  // label rather than a raw slice id.
+  // other columns - `forced_by_*` specially formatted (see `formatExtraParts`),
+  // the rest as "col=value" text, a node-bearing sibling column (e.g. `dst` when
+  // grouping by `src`) rendering via its own node label rather than a raw id.
   private renderTreeExtras(
     response: QueryResponse,
     entry: TreeLeafEntry,
   ): m.Children {
-    const nodeBearing = new Set(this.nodeBearingCols(response));
     const parts = formatExtraParts(
       this.extraCols(response),
       entry.row,
       entry.count,
-      (col, value) => this.formatExtraValue(col, value, nodeBearing.has(col)),
+      (col, value) => this.formatExtraValue(col, value),
     );
     if (parts.length === 0) return undefined;
     const text = parts.join(', ');
     return m('span.pf-dune-query__extras', {title: text}, text);
   }
 
-  // A `dur_ns`/`action_dur_ns` column renders as a human duration; otherwise,
-  // only resolves `value` through a node label when `col` is itself a
-  // node-bearing column (e.g. `dst` when grouping by `src`) - `nodeLabelFor`
-  // treats any number/bigint as a slice id, so calling it on an arbitrary
-  // numeric column (a `distance`, say) risks a false-positive match against an
-  // unrelated slice id.
-  private formatExtraValue(
-    col: string,
-    value: SqlValue,
-    nodeBearing: boolean,
-  ): string {
+  // A `dur_ns`/`action_dur_ns` column renders as a human duration; a
+  // node-bearing column (e.g. `dst` when grouping by `src`) as its node's label;
+  // anything else as the raw value. `nodeLabelFor` resolves nothing for a column
+  // that isn't node-bearing, so an arbitrary numeric column (a `distance`, say)
+  // can't false-positive its way into a label.
+  private formatExtraValue(col: string, value: SqlValue): string {
     if (DURATION_COLS.has(col)) {
       const text = this.durationText(value);
       if (text !== undefined) return text;
     }
-    const label = nodeBearing ? this.nodeLabelFor(value) : undefined;
-    return label ?? String(value);
+    return this.nodeLabelFor(col, value) ?? String(value);
   }
 
   // `value` (a `dur_ns`-shaped column) as a human duration, or undefined if
@@ -558,12 +525,7 @@ export class DuneQueryTab implements Tab {
       this.extras === 'visible'
         ? this.defaultHiddenCols(response)
         : new Set<string>();
-    return [
-      ...this.chipCols(response).filter(
-        (c) => c !== groupCol && !response.columns.includes(c),
-      ),
-      ...response.columns.filter((c) => c !== groupCol && !hidden.has(c)),
-    ];
+    return response.columns.filter((c) => c !== groupCol && !hidden.has(c));
   }
 
   // Toolbar controls right of the row-count/SQL echo, shared verbatim between
@@ -754,12 +716,6 @@ export class DuneQueryTab implements Tab {
               ? this.durationDef(col)
               : {title: col};
     }
-    // Synthesized chip columns (relation src/dst) aren't in response.columns.
-    for (const col of chipCols) {
-      if (!response.columns.includes(col)) {
-        schema[escapePath(col)] = this.chipDef(col);
-      }
-    }
     return schema;
   }
 
@@ -770,19 +726,19 @@ export class DuneQueryTab implements Tab {
     return {
       title: col,
       cellRenderer: (value) => this.renderSliceCell(value),
-      actions: (value) => this.renderNodeToggle(value),
+      actions: (value) => this.renderNodeToggle(col, value),
     };
   }
 
-  // A `node` / `src` / `dst` column: the node as a coloured kind chip + label,
-  // linking to its slice (+ toggle). The value is a slice id (exported as the
+  // A `node_id` / `src` / `dst` column: the node as a coloured kind chip + label,
+  // linking to its slice (+ toggle). The value is the node id (exported as the
   // node's label).
   private chipDef(col: string): ColumnDef {
     return {
       title: col,
-      cellRenderer: (value) => this.renderNodeChip(value),
-      cellFormatter: (value) => this.nodeLabelFor(value) ?? String(value),
-      actions: (value) => this.renderNodeToggle(value),
+      cellRenderer: (value) => this.renderNodeChip(col, value),
+      cellFormatter: (value) => this.nodeLabelFor(col, value) ?? String(value),
+      actions: (value) => this.renderNodeToggle(col, value),
     };
   }
 
@@ -796,28 +752,22 @@ export class DuneQueryTab implements Tab {
     };
   }
 
-  // Default visible columns: lead with any synthesized chip columns (the
-  // relation `src`/`dst`, which aren't in `response.columns`), then every result
-  // column that isn't folded into a chip (see `defaultHiddenCols`). Returns
-  // undefined - "show all, in order" - when nothing is synthesized or hidden.
+  // Default visible columns: every result column that isn't folded into a chip
+  // (see `defaultHiddenCols`). Returns undefined - "show all, in order" - when
+  // nothing is hidden.
   private initialColumns(response: QueryResponse): Column[] | undefined {
     const hidden = this.defaultHiddenCols(response);
-    const synthesized = this.chipCols(response).filter(
-      (c) => !response.columns.includes(c),
-    );
-    if (hidden.size === 0 && synthesized.length === 0) return undefined;
-    const fields = [
-      ...synthesized,
-      ...response.columns.filter((c) => !hidden.has(c)),
-    ];
-    return fields.map((field) => ({id: shortUuid(), field: escapePath(field)}));
+    if (hidden.size === 0) return undefined;
+    return response.columns
+      .filter((c) => !hidden.has(c))
+      .map((field) => ({id: shortUuid(), field: escapePath(field)}));
   }
 
   // Columns hidden by default because a chip column supersedes them: the
-  // `node` chip folds in `dune_node`'s kind/orig_id/slice_id/label; the
-  // `src`/`dst` chips fold in the relation components + the `dune_edge` view's
-  // raw node_id endpoints. Only applied when the superseding chip is present, so
-  // an explicit `SELECT slice_id ...` (no `node`) still shows it.
+  // `node_id` chip folds in `dune_node`'s kind/orig_id/label, and the `src`/`dst`
+  // chips fold in the relation functions' per-endpoint kind/id. Only applied when
+  // the superseding chip is present, so an explicit `SELECT kind, label ...`
+  // (no `node_id`) still shows them.
   private defaultHiddenCols(response: QueryResponse): Set<string> {
     const present = new Set(response.columns);
     const chip = new Set(this.chipCols(response));
@@ -836,18 +786,18 @@ export class DuneQueryTab implements Tab {
   // The slice_id value as a link that jumps to the slice on the timeline (when
   // it resolves to a graph node), else the plain value.
   private renderSliceCell(value: SqlValue): m.Children {
-    const node = this.nodeForSliceValue(value);
+    const node = this.nodeForValue(SLICE_ID_COL, value);
     const text = value === null ? '' : String(value);
     if (node === undefined) return text;
     return this.nodeAnchor(node, text);
   }
 
-  // A src/dst node as a coloured kind chip plus its label, linking to the slice.
-  // A dep's path additionally gets a leading build/code icon (its `_build/<dir>/`
-  // prefix folded into the icon tooltip); a rule shows its bare id. Falls back to
-  // the raw slice id when the node isn't known.
-  private renderNodeChip(value: SqlValue): m.Children {
-    const node = this.nodeForSliceValue(value);
+  // A node as a coloured kind chip plus its label, linking to its slice. A dep's
+  // path additionally gets a leading build/code icon (its `_build/<dir>/` prefix
+  // folded into the icon tooltip); a rule shows its bare id. Falls back to the
+  // raw value when it isn't a node of the current graph.
+  private renderNodeChip(col: string, value: SqlValue): m.Children {
+    const node = this.nodeForValue(col, value);
     if (node === undefined) return value === null ? '' : String(value);
     const {icon, text} = decorateNode(this.controller.graph, node);
     return m(
@@ -887,63 +837,66 @@ export class DuneQueryTab implements Tab {
   }
 
   // ＋/－ toggle for a node cell: adds or removes that node, reflecting current
-  // membership. Absent when the cell's slice id isn't a graph node.
-  private renderNodeToggle(value: SqlValue): m.Children {
-    const node = this.nodeForSliceValue(value);
+  // membership. Absent when the cell doesn't name a node of the current graph.
+  private renderNodeToggle(col: string, value: SqlValue): m.Children {
+    const node = this.nodeForValue(col, value);
     if (node === undefined) return undefined;
     return nodeToggleButton(this.controller, node);
   }
 
   // Every distinct graph node reachable from the result's node-bearing columns
-  // (deduped across node/src/dst/slice_id), for the "Add all" bulk action.
+  // (deduped across node_id/src/dst/slice_id), for the "Add all" bulk action.
   private mappableNodes(response: QueryResponse): NodeId[] {
     return this.columnNodes(response, ...this.nodeBearingCols(response));
   }
 
-  // Distinct graph nodes drawn from the given (slice-id-valued) columns, deduped
-  // by node key. Used for both the whole-result and per-src/dst bulk actions.
+  // Distinct graph nodes drawn from the given node-bearing columns, deduped by
+  // node. Used for both the whole-result and per-src/dst bulk actions.
   private columnNodes(response: QueryResponse, ...cols: string[]): NodeId[] {
     const seen = new Set<NodeId>();
     for (const row of response.rows) {
       for (const col of cols) {
-        const node = this.nodeForSliceValue(row[col]);
+        const node = this.nodeForValue(col, row[col]);
         if (node !== undefined) seen.add(node);
       }
     }
     return [...seen];
   }
 
-  // Chip columns present in this result: the dune_node view's `node`, the
-  // dune_edge view's `src`/`dst`, and the `src`/`dst` synthesized from the
-  // relation functions' `*_slice_id` (see runQuery).
+  // Chip columns present in this result: `dune_node`'s `node_id` (also on the
+  // per-kind detail tables) and the `src`/`dst` endpoints of `dune_edge` and the
+  // relation functions.
   private chipCols(response: QueryResponse): string[] {
-    const cols = CHIP_COLS.filter((c) => response.columns.includes(c));
-    if (this.isRelation) {
-      for (const c of [SRC_COL, DST_COL]) {
-        if (!cols.includes(c)) cols.push(c);
-      }
-    }
-    return cols;
+    return CHIP_COLS.filter((c) => response.columns.includes(c));
   }
 
-  // All node-bearing (slice-id valued) columns: the chip columns plus a raw
-  // `slice_id`. Drives the "N nodes in result" bulk actions.
+  // All node-bearing columns: the chip columns plus a raw `slice_id`. Drives the
+  // "N nodes in result" bulk actions.
   private nodeBearingCols(response: QueryResponse): string[] {
     const cols = this.chipCols(response);
     if (response.columns.includes(SLICE_ID_COL)) cols.push(SLICE_ID_COL);
     return cols;
   }
 
-  private nodeLabelFor(value: SqlValue): string | undefined {
-    const node = this.nodeForSliceValue(value);
+  private nodeLabelFor(col: string, value: SqlValue): string | undefined {
+    const node = this.nodeForValue(col, value);
     return node === undefined ? undefined : this.controller.graph.labelOf(node);
   }
 
-  private nodeForSliceValue(value: SqlValue): NodeId | undefined {
+  // The graph node a cell in `col` names. A chip column's value *is* the node id,
+  // so resolving it is a range check against the current graph (see
+  // `controller.nodeForNodeId`); a `slice_id` comes out of the batch resolved in
+  // `runQuery`. Any other column resolves to nothing - a bare integer elsewhere
+  // in the result (a `distance`, a `dur_ns`) is not an id.
+  private nodeForValue(col: string, value: SqlValue): NodeId | undefined {
     if (typeof value !== 'number' && typeof value !== 'bigint') {
       return undefined;
     }
-    return this.nodesBySliceId.get(Number(value));
+    const id = Number(value);
+    if (col === SLICE_ID_COL) return this.nodesBySliceId.get(id);
+    return CHIP_COLS.includes(col)
+      ? this.controller.nodeForNodeId(id)
+      : undefined;
   }
 }
 

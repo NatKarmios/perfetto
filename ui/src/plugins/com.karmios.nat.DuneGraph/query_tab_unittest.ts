@@ -55,9 +55,9 @@ describe('buildNodeTreeItems', () => {
       [2, g.id('a/b/dep2.ml')],
       [3, g.id('42')],
     ]);
-    const rows: Row[] = [{node: 1}, {node: 2}, {node: 3}];
+    const rows: Row[] = [{node_id: 1}, {node_id: 2}, {node_id: 3}];
 
-    const items = buildNodeTreeItems(graph, rows, 'node', false, (v) =>
+    const items = buildNodeTreeItems(graph, rows, 'node_id', false, (v) =>
       nodes.get(Number(v)),
     );
 
@@ -69,8 +69,12 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('files a dirless rule at the top level', () => {
-    const items = buildNodeTreeItems(graph, [{node: 5}], 'node', false, () =>
-      g.id('7'),
+    const items = buildNodeTreeItems(
+      graph,
+      [{node_id: 5}],
+      'node_id',
+      false,
+      () => g.id('7'),
     );
     expect(project(graph, items)).toEqual([
       {dir: [], leaf: '/7', count: 1, node: '7'},
@@ -78,20 +82,23 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('merges rows resolving to the same node into one entry when merge is on', () => {
-    const rows: Row[] = [{node: 9}, {node: 9}, {node: 9}];
+    const rows: Row[] = [{node_id: 9}, {node_id: 9}, {node_id: 9}];
     const resolve = () => g.id('x.ml');
 
     expect(
-      project(graph, buildNodeTreeItems(graph, rows, 'node', true, resolve)),
+      project(graph, buildNodeTreeItems(graph, rows, 'node_id', true, resolve)),
     ).toEqual([{dir: [], leaf: 'x.ml', count: 3, node: 'x.ml'}]);
   });
 
   it('keeps one entry per row when merge is off', () => {
-    const rows: Row[] = [{node: 9}, {node: 9}];
+    const rows: Row[] = [{node_id: 9}, {node_id: 9}];
     const resolve = () => g.id('x.ml');
 
     expect(
-      project(graph, buildNodeTreeItems(graph, rows, 'node', false, resolve)),
+      project(
+        graph,
+        buildNodeTreeItems(graph, rows, 'node_id', false, resolve),
+      ),
     ).toEqual([
       {dir: [], leaf: 'x.ml', count: 1, node: 'x.ml'},
       {dir: [], leaf: 'x.ml', count: 1, node: 'x.ml'},
@@ -99,11 +106,11 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('files an unresolved value at the top level, keyed by its raw value', () => {
-    const rows: Row[] = [{node: 123}, {node: 123}];
+    const rows: Row[] = [{node_id: 123}, {node_id: 123}];
     const items = buildNodeTreeItems(
       graph,
       rows,
-      'node',
+      'node_id',
       true,
       () => undefined,
     );
@@ -113,8 +120,8 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('skips rows with a null or missing cell in the group column', () => {
-    const rows: Row[] = [{node: 9}, {node: null}, {other: 1}];
-    const items = buildNodeTreeItems(graph, rows, 'node', true, () =>
+    const rows: Row[] = [{node_id: 9}, {node_id: null}, {other: 1}];
+    const items = buildNodeTreeItems(graph, rows, 'node_id', true, () =>
       g.id('x.ml'),
     );
     expect(project(graph, items)).toEqual([
@@ -123,12 +130,12 @@ describe('buildNodeTreeItems', () => {
   });
 
   it('does not merge an unresolved value with a node sharing its string form', () => {
-    const rows: Row[] = [{node: 9}, {node: 9}];
+    const rows: Row[] = [{node_id: 9}, {node_id: 9}];
     // First row resolves, second doesn't - shouldn't be treated as the same
     // entry just because String(value) collides with the resolved node's label.
     let calls = 0;
     const resolve = () => (calls++ === 0 ? g.id('9') : undefined);
-    const items = buildNodeTreeItems(graph, rows, 'node', true, resolve);
+    const items = buildNodeTreeItems(graph, rows, 'node_id', true, resolve);
     expect(project(graph, items)).toEqual([
       {dir: [], leaf: '9', count: 1, node: '9'},
       {dir: [], leaf: '9', count: 1, node: undefined},
@@ -139,7 +146,7 @@ describe('buildNodeTreeItems', () => {
 describe('formatExtraParts', () => {
   const formatValue = (_col: string, value: SqlValue) => String(value);
 
-  it('formats node_id bare and folds forced_by_kind/target for a RULE forcer', () => {
+  it('folds forced_by_kind/target for a RULE forcer', () => {
     const row: Row = {
       node_id: 1,
       forced_by_kind: 'RULE',
@@ -147,12 +154,12 @@ describe('formatExtraParts', () => {
     };
     const cols = ['node_id', 'forced_by_kind', 'forced_by_target'];
     expect(formatExtraParts(cols, row, 1, formatValue)).toEqual([
-      '#1',
+      'node_id=1',
       'forced by rule 2',
     ]);
   });
 
-  it('formats node_id bare and folds forced_by_kind/target for a DEP forcer', () => {
+  it('folds forced_by_kind/target for a DEP forcer', () => {
     const row: Row = {
       node_id: 3,
       forced_by_kind: 'DEP',
@@ -160,7 +167,7 @@ describe('formatExtraParts', () => {
     };
     const cols = ['node_id', 'forced_by_kind', 'forced_by_target'];
     expect(formatExtraParts(cols, row, 1, formatValue)).toEqual([
-      '#3',
+      'node_id=3',
       'forced by a/b',
     ]);
   });
@@ -174,7 +181,7 @@ describe('formatExtraParts', () => {
     };
     const cols = ['node_id', 'forced_by_kind', 'forced_by_target', 'distance'];
     expect(formatExtraParts(cols, row, 1, formatValue)).toEqual([
-      '#1',
+      'node_id=1',
       'forced by rule 2',
       'distance=4',
     ]);
@@ -183,7 +190,7 @@ describe('formatExtraParts', () => {
   it('omits the forced-by part entirely when forced_by_kind is null', () => {
     const row: Row = {node_id: 1, forced_by_kind: null, forced_by_target: null};
     const cols = ['node_id', 'forced_by_kind', 'forced_by_target'];
-    expect(formatExtraParts(cols, row, 1, formatValue)).toEqual(['#1']);
+    expect(formatExtraParts(cols, row, 1, formatValue)).toEqual(['node_id=1']);
   });
 
   it('degrades to a generic phrase when forced_by_target is absent', () => {
@@ -214,7 +221,7 @@ describe('formatExtraParts', () => {
     const row: Row = {node_id: 1};
     expect(formatExtraParts(['node_id'], row, 3, formatValue)).toEqual([
       '×3',
-      '#1',
+      'node_id=1',
     ]);
   });
 

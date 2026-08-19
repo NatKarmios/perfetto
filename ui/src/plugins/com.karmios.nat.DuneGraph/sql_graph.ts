@@ -56,14 +56,17 @@
  * `dune_node`: `kind` already discriminates which detail table applies, so an
  * FK would be redundant, and every join is a plain `... USING (node_id)`.
  *
- * - `dune_node(node_id, node, kind, orig_id, slice_id, label, forced_by_kind,
+ * - `dune_node(node_id, kind, orig_id, slice_id, label, forced_by_kind,
  *   forced_by_target, ts, dur_ns, n_occurrences)` — one row per node, a typed
  *   PERFETTO VIEW over the raw `_dune_node` table the rows are inserted into,
  *   joined to the timing table (`lifecycle_sql.ts`) on (kind, orig_id).
- *   `node` and `slice_id` are both the node's primary lifecycle slice id as a
- *   `SliceTable::Id` (`JOINID(slice.id)`, LEFT JOINed since a node whose timing
- *   never resolved has none); `node` is the ergonomic column the query tab
- *   renders as a chip. `ts` is the slice's own timestamp; `dur_ns` the span's
+ *   `node_id` is the node's identity everywhere (it's what the query tab
+ *   chip-renders and what the relation functions take); `slice_id` is its
+ *   primary lifecycle slice as a `SliceTable::Id` (`JOINID(slice.id)`, LEFT
+ *   JOINed since a node whose timing never resolved has none, and many-to-one
+ *   in reverse since a rule's start/finish/action instants share a `rule_id`) -
+ *   descriptive timing data, not an identifier.
+ *   `ts` is the slice's own timestamp; `dur_ns` the span's
  *   duration, NULL for an unfinished span; `n_occurrences` how many same-keyed
  *   spans were seen (>1 under watch mode, or for a dep built repeatedly).
  *   `forced_by_kind` / `forced_by_target` mirror the node's `forcedBy` (the
@@ -92,11 +95,11 @@
  *   apply to.
  * - `dune_string(id, str)` — the blob's intern table (see above). Also a plain
  *   table, for the same reason.
- * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage, src_node_id,
- *   dst_node_id)` — a typed PERFETTO VIEW over the raw
- *   `_dune_edge(src, dst, flags)` table, with `src` / `dst` the endpoints'
- *   lifecycle slice ids (`JOINID(slice.id)`, chip-rendered, LEFT JOINed for the
- *   same reason as `dune_node`) and the raw node_id endpoints. Directed edges
+ * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage)` — a typed
+ *   PERFETTO VIEW over the raw `_dune_edge(src, dst, flags)` table, with
+ *   `src` / `dst` the endpoints' `node_id`s (chip-rendered; join
+ *   `dune_node USING`-style on them for an endpoint's label or slice).
+ *   Directed edges
  *   where "source depends on dest" (dest is the prerequisite / upstream node):
  *     rule -> dep  (`edge_kind`: static | dynamic, latter carries `dyn_deps_stage`)
  *     dep  -> rule (`edge_kind`: resolved)
@@ -107,7 +110,7 @@
  *   integer (see {@link edgeFlags}), so an edge row is three integers - at 28M
  *   rows the difference between ~50 and ~160 bytes per row decides whether the
  *   tier can be built at all. The relation functions read the raw `_dune_edge` /
- *   `_dune_node` directly (they need the node_id endpoints, not the slice ids).
+ *   `_dune_node` directly.
  * - `_dune_node_out(node_id, first_rowid, n)` — forward adjacency as a *rowid
  *   range*. The edge rows are inserted in node-id order, i.e. in exactly the
  *   order of the in-memory CSR, so a node's out-edges are contiguous and can be
@@ -153,9 +156,8 @@ import type {PerfRun} from './perf';
 import {measure, measureSync} from './perf';
 
 // `dune_node` / `dune_rule` / `dune_dep` / `dune_edge` are typed PERFETTO VIEWS
-// (so slice-id columns are real SliceTable::Ids, the ergonomic `node` / `src` /
-// `dst` chip columns exist, and the stored integer codes and dict ids read back
-// as text) over the raw tables we actually INSERT the rows into - a CREATE
+// (so slice-id columns are real SliceTable::Ids, and the stored integer codes
+// and dict ids read back as text) over the raw tables we actually INSERT the rows into - a CREATE
 // PERFETTO TABLE/VIEW can't be chunk-inserted, and a plain CREATE TABLE can't
 // express the column types. Internal queries (relation functions, distance) read
 // the raw tables directly.
@@ -394,29 +396,31 @@ function codeCase(col: string, values: readonly string[], base = 0): string {
  * row itself, since `JOINID(slice.id)` only holds for a column read straight
  * off `slice`.
  *
- * `join` picks how a node with no timing behaves: `left` keeps it with a NULL
- * slice, `inner` drops it. Both cases existed before this and are preserved.
+ * Both halves are LEFT: a node whose timing never resolved to a lifecycle
+ * instant keeps its row with a NULL `slice_id` rather than vanishing from the
+ * mirror.
  *
- * This is the plugin's hottest join - the relation functions pay it twice per
- * projected row, and against a `PERFETTO TABLE` each probe is a scan of the
- * whole table, so a full `dune_node` projection on a monorepo-scale trace is
- * ~80 s. That is a known, measured cost with a known two-line fix that is *not*
- * currently affordable; see the comment on `TIMING_TABLE` in lifecycle_sql.ts
- * before touching either side of it. The `kind` side of the key is written here
- * as the integer code that table stores, not as the name the views expose.
+ * Against a `PERFETTO TABLE` each probe is a scan of the whole timing table, so
+ * this is an expensive join - a full `dune_node` projection on a monorepo-scale
+ * trace is ~80 s. It has a known two-line fix that is *not* currently
+ * affordable; see the comment on `TIMING_TABLE` in lifecycle_sql.ts before
+ * touching either side of it. `dune_node` is now the only caller: the relation
+ * functions used to pay it twice per projected row to report endpoint slice ids,
+ * and stopped needing it once their endpoints became `node_id`s. The `kind` side
+ * of the key is written here as the integer code that table stores, not as the
+ * name the views expose.
  */
 function timingJoin(
   node: string,
   timing: string,
   slice: string,
-  join: 'inner' | 'left',
   space: NodeSpace,
 ): string {
   return `
       LEFT JOIN ${TIMING_TABLE} ${timing}
         ON ${timing}.kind = ${timingKindExpr(node, space)}
         AND ${timing}.key = ${node}.orig_id
-      ${join === 'left' ? 'LEFT JOIN' : 'JOIN'} slice ${slice}
+      LEFT JOIN slice ${slice}
         ON ${slice}.id =
           coalesce(${timing}.start_slice_id, ${timing}.finish_slice_id)`;
 }
@@ -691,8 +695,8 @@ export async function buildNodeMirror(
   // Typed views over the raw tables: this is where the stored integers become
   // the public schema again - dict ids resolve through `dune_string`, codes
   // through a CASE, a node's kind from which side of `ruleCount` its id falls,
-  // and the slice-id columns (plus the ergonomic `node` chip column) become
-  // SliceTable::Ids, which a plain CREATE TABLE can't declare. The id columns
+  // and the slice-id columns become SliceTable::Ids, which a plain CREATE TABLE
+  // can't declare. The id columns
   // are sourced as `slice.id` from a join (not a raw INTEGER col) so they
   // genuinely carry the id type - the same way the stdlib declares JOINID
   // columns.
@@ -712,7 +716,6 @@ export async function buildNodeMirror(
     await engine.query(`
       CREATE PERFETTO VIEW ${NODE_TABLE}(
         node_id LONG,
-        node JOINID(slice.id),
         kind STRING,
         orig_id LONG,
         slice_id JOINID(slice.id),
@@ -723,7 +726,7 @@ export async function buildNodeMirror(
         dur_ns LONG,
         n_occurrences LONG
       ) AS
-      SELECT n.node_id, s.id AS node, ${kindExpr('n', space)} AS kind,
+      SELECT n.node_id, ${kindExpr('n', space)} AS kind,
         n.orig_id, s.id AS slice_id, ${labelExpr('n', 'ls', space)} AS label,
         ${codeCase('n.forced_by_kind', FORCED_BY_KINDS, 1)} AS forced_by_kind,
         CASE
@@ -737,7 +740,7 @@ export async function buildNodeMirror(
       ${labelJoin('n', 'ls', space)}
       LEFT JOIN ${STRING_TABLE} fs
         ON n.forced_by_kind != ${ruleForcer} AND fs.id = n.forced_by_target_id
-      ${timingJoin('n', 't', 's', 'left', space)}
+      ${timingJoin('n', 't', 's', space)}
     `);
     await engine.query(`
       CREATE PERFETTO VIEW ${RULE_TABLE}(
@@ -972,36 +975,27 @@ export async function buildEdgeMirror(
     });
   }
 
-  // Typed view over the raw edge table exposing `src` / `dst` as SliceTable::Ids
-  // (chip-rendered node columns) plus the unpacked
-  // `forced`/`edge_kind`/`dyn_deps_stage`, and the raw node_id endpoints
-  // (`src_node_id` / `dst_node_id`, hidden by default in the query tab but handy
-  // for joining back to `dune_node.node_id`). The graph macros read the raw
-  // `_dune_edge` directly. LEFT JOINed to `slice` for the same reason as
-  // `dune_node` above - the join to `_dune_node` itself stays INNER, since every
-  // edge's endpoints are nodes in the node mirror.
+  // Typed view over the raw edge table: the endpoints as `node_id`s (which is
+  // what the query tab chip-renders, and what the relation functions take as
+  // their argument) plus the unpacked `forced`/`edge_kind`/`dyn_deps_stage`
+  // unpacked out of `flags`. Nothing but `_dune_edge` is read - an endpoint's
+  // slice/kind/label is one `JOIN dune_node ON node_id = src` away, and paying
+  // for it here would put four joins under all 28M rows.
   await measure(perf, 'sql: create edge view', async () => {
     const kindCode = '((e.flags >> 1) & 3)';
     await engine.query(`
       CREATE PERFETTO VIEW ${EDGE_TABLE}(
-        src JOINID(slice.id),
-        dst JOINID(slice.id),
+        src LONG,
+        dst LONG,
         forced LONG,
         edge_kind STRING,
-        dyn_deps_stage LONG,
-        src_node_id LONG,
-        dst_node_id LONG
+        dyn_deps_stage LONG
       ) AS
-      SELECT ss.id AS src, sd.id AS dst, (e.flags & 1) AS forced,
+      SELECT e.src AS src, e.dst AS dst, (e.flags & 1) AS forced,
         ${codeCase(kindCode, EDGE_KIND_CODES)} AS edge_kind,
         iif(${kindCode} = ${EDGE_KIND_CODES.indexOf('dynamic')},
-          e.flags >> 3, NULL) AS dyn_deps_stage,
-        e.src AS src_node_id, e.dst AS dst_node_id
+          e.flags >> 3, NULL) AS dyn_deps_stage
       FROM ${RAW_EDGE_TABLE} e
-      JOIN ${RAW_NODE_TABLE} sn ON sn.node_id = e.src
-      ${timingJoin('sn', 'st', 'ss', 'left', space)}
-      JOIN ${RAW_NODE_TABLE} dn ON dn.node_id = e.dst
-      ${timingJoin('dn', 'dt', 'sd', 'left', space)}
     `);
   });
 
@@ -1053,12 +1047,13 @@ export async function buildEdgeMirror(
 // depends on `node_id`).
 type Direction = 'down' | 'up';
 
-// Shared 11-column result shape for every relation function below. `src` is
+// Shared 9-column result shape for every relation function below. `src` is
 // the depender (upstream), `dst` the prerequisite, regardless of which
-// direction the function walks.
+// direction the function walks; both are `node_id`s, so a result row feeds
+// straight back into another relation function (or joins to `dune_node`).
 const RELATION_COLS = `
-    src_node_id LONG, src_slice_id JOINID(slice.id), src_kind STRING, src_id STRING,
-    dst_node_id LONG, dst_slice_id JOINID(slice.id), dst_kind STRING, dst_id STRING,
+    src LONG, src_kind STRING, src_id STRING,
+    dst LONG, dst_kind STRING, dst_id STRING,
     distance LONG, rule_distance LONG, dep_distance LONG`;
 
 // Every relation function, and the extra scalar args (beyond `node_id`) its
@@ -1137,7 +1132,7 @@ function countedExpr(prefix: string): string {
 }
 
 // Projects a `walk(node_id, distance, rule_distance, dep_distance)` CTE (one
-// row per reached node) into the shared 11-column relation shape, placing the
+// row per reached node) into the shared 9-column relation shape, placing the
 // anchor (`param`) on the correct side - `src` for a 'down' walk (anchor is the
 // depender), `dst` for an 'up' walk (anchor is the prerequisite) - and
 // excluding the anchor itself (`distance > 0`) from the result.
@@ -1154,14 +1149,10 @@ function relationProjection(
   const anchorLabel = labelExpr('a', 'al', space);
   const cols =
     dir === 'down'
-      ? `a.node_id AS src_node_id, sa.id AS src_slice_id,
-      ${anchorKind} AS src_kind, ${anchorLabel} AS src_id,
-      w.node_id AS dst_node_id, sw.id AS dst_slice_id,
-      ${walkedKind} AS dst_kind, ${walkedLabel} AS dst_id`
-      : `w.node_id AS src_node_id, sw.id AS src_slice_id,
-      ${walkedKind} AS src_kind, ${walkedLabel} AS src_id,
-      a.node_id AS dst_node_id, sa.id AS dst_slice_id,
-      ${anchorKind} AS dst_kind, ${anchorLabel} AS dst_id`;
+      ? `a.node_id AS src, ${anchorKind} AS src_kind, ${anchorLabel} AS src_id,
+      w.node_id AS dst, ${walkedKind} AS dst_kind, ${walkedLabel} AS dst_id`
+      : `w.node_id AS src, ${walkedKind} AS src_kind, ${walkedLabel} AS src_id,
+      a.node_id AS dst, ${anchorKind} AS dst_kind, ${anchorLabel} AS dst_id`;
   return `
     SELECT
       ${cols},
@@ -1169,10 +1160,8 @@ function relationProjection(
     FROM walk w
     JOIN ${RAW_NODE_TABLE} wn ON wn.node_id = w.node_id
     ${labelJoin('wn', 'wl', space)}
-    ${timingJoin('wn', 'wt', 'sw', 'inner', space)}
     JOIN ${RAW_NODE_TABLE} a ON a.node_id = ${param}
     ${labelJoin('a', 'al', space)}
-    ${timingJoin('a', 'at', 'sa', 'inner', space)}
     WHERE w.distance > 0`;
 }
 
@@ -1206,12 +1195,15 @@ function relationProjection(
 // the counted column first - the reported split is the node's minimum under
 // whichever metric `step_kind` selects, not necessarily its minimum `distance`.
 //
-// `walk` is MATERIALIZED, and that is not a hint - it is the difference between
-// 0.3 s and >90 s for `dune_children` on merlin's widest rule (1,266 children).
-// Left to itself the planner drives the projection below from `slice` (the
-// `sw.id = coalesce(...)` join can't be probed by id off a LEFT JOINed timing
-// row) and re-runs the whole recursive walk per slice. Materializing it makes
-// the walk run once and the projection a lookup per reached node.
+// `walk` is MATERIALIZED so the recursion runs once and the projection below is
+// a lookup per reached node. This was worth 0.3 s against >90 s for
+// `dune_children` on merlin's widest rule (1,266 children) back when the
+// projection also joined `slice` for the endpoints' slice ids: the planner drove
+// the whole query from `slice` (that join can't be probed by id off a LEFT JOINed
+// timing row) and re-ran the recursive walk per slice. That join is gone now that
+// the endpoints are `node_id`s, so the hint may no longer be load-bearing - but
+// the projection still joins `_dune_node` and `dune_string` per row, and nothing
+// in the UI can interrupt a query that picks the bad plan, so it stays.
 function boundedBody(dir: Direction, param: string, space: NodeSpace): string {
   const {join, dest} = edgeStep(dir, 's.node_id');
   return `
@@ -1310,7 +1302,7 @@ function wrapperBody(fn: string, param: string): string {
  *   construction; `dune_forcers` walks up (what transitively forced
  *   `node_id`), `dune_forced` walks down (what `node_id` transitively forced).
  *
- * All eight return the same 11-column shape (`RELATION_COLS`):
+ * All eight return the same 9-column shape (`RELATION_COLS`):
  *   (src_*, dst_*, distance, rule_distance, dep_distance)
  * `src` is the depender (upstream), `dst` the prerequisite, regardless of which
  * direction the function walks; `distance == rule_distance + dep_distance`.
@@ -1327,9 +1319,9 @@ function wrapperBody(fn: string, param: string): string {
  * unbounded call, which used to run a second forced-only BFS just to compute
  * it. Per-edge forcing is still on `dune_edge.forced`; to annotate a result
  * with transitive forced-reachability, join against `dune_forced`/`dune_forcers`:
- *   SELECT d.*, f.dst_node_id IS NOT NULL AS forced
+ *   SELECT d.*, f.dst IS NOT NULL AS forced
  *   FROM dune_descendants(42, NULL, NULL) d
- *   LEFT JOIN dune_forced(42) f USING (dst_node_id)
+ *   LEFT JOIN dune_forced(42) f USING (dst)
  *
  * `dune_descendants`/`dune_ancestors` used to take a single `node_id` arg; that
  * form is gone - a `RETURNS TABLE` function is registered as a virtual table

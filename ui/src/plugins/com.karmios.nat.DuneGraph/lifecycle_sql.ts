@@ -89,20 +89,24 @@ export const TIMING_TABLE = '_dune_timing';
  * Why this is a `PERFETTO TABLE` and not a plain, indexed SQLite table, even
  * though a plain one answers the mirror's hottest join ~1,000× faster.
  *
- * Every read of this table is an equality lookup on (kind, key), and the node
- * mirror's views join it that way for every row they project - twice per row for
- * the relation functions, which need the timing of both endpoints. A
- * `PERFETTO TABLE` serves that probe by *scanning the whole table per driving
- * row*, at 94 µs a probe natively (~205 µs in wasm); a `PERFETTO INDEX` on
- * (kind, key) does not change that, and neither does making `kind` an integer.
- * On the monorepo trace's 818k nodes that is 78 s to project `dune_node` once
- * and 31 s for `dune_children` on a 156k-child rule whose walk itself takes
- * under 0.1 s.
+ * Every read of this table is an equality lookup on (kind, key), and
+ * `dune_node` joins it that way for every row it projects. A `PERFETTO TABLE`
+ * serves that probe by *scanning the whole table per driving row*, at 94 µs a
+ * probe natively (~205 µs in wasm); a `PERFETTO INDEX` on (kind, key) does not
+ * change that, and neither does making `kind` an integer. On the monorepo
+ * trace's 818k nodes that is 78 s to project `dune_node` once.
+ *
+ * The relation functions used to pay it twice per projected row (the timing of
+ * both endpoints), which cost 31 s for `dune_children` on a 156k-child rule
+ * whose walk itself takes under 0.1 s. They no longer read this table at all:
+ * their endpoints are `node_id`s, so there is no slice to look up. `dune_node`
+ * is the only caller left.
  *
  * Moving the table to `CREATE TABLE ... WITHOUT ROWID` with
  * `PRIMARY KEY (kind, key)` fixes exactly that: measured on the same trace, same
- * rows out, 818k probes drop from 77 s to 0.08 s, `dune_node` to 1.0 s and that
- * `dune_children` to 0.53 s. It was landed and then **reverted**, because it
+ * rows out, 818k probes drop from 77 s to 0.08 s and `dune_node` to 1.0 s (and,
+ * at the time, that `dune_children` to 0.53 s). It was landed and then
+ * **reverted**, because it
  * costs the edge tier more than it is worth:
  *
  * - The plain table is only 33.7 MB of SQLite pages (8,240 pages, ~28 B/row for
