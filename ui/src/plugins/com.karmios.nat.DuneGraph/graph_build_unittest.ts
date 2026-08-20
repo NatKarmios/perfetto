@@ -22,7 +22,13 @@
  * a fixture builder wouldn't produce.
  */
 
-import type {DepRecord, RuleRecord, StringTable} from './graph_blob';
+import type {
+  CoreRecord,
+  DepRecord,
+  DepSetRecord,
+  RuleRecord,
+  StringTable,
+} from './graph_blob';
 import {GraphBuilder} from './graph_build';
 import type {BuildGraph} from './graph';
 import {danglingId, edges, isDangling} from './graph';
@@ -46,7 +52,6 @@ function ruleRecord(
     targetFileIds: [],
     targetDirIds: [],
     outcome: 'executed',
-    depIds: [],
     depsUnknown: false,
     dynDepStages: [],
     ...opts,
@@ -57,12 +62,33 @@ function depRecord(depId: number, opts: Partial<DepRecord> = {}): DepRecord {
   return {depId, resolution: {kind: 'source'}, status: 'ok', ...opts};
 }
 
+// A dep set: its adds, and its core when it has one. Both id spaces start at 0
+// in the blob, and so do the tests', since that is exactly where a lenient
+// parse or a `0`-as-absent sentinel would go wrong.
+function setRecord(
+  setId: number,
+  addIds: readonly number[],
+  coreId?: number,
+): DepSetRecord {
+  return {setId, coreId, addIds};
+}
+
+function coreRecord(coreId: number, depIds: readonly number[]): CoreRecord {
+  return {coreId, depIds};
+}
+
 function build(
   rules: readonly RuleRecord[],
   deps: readonly DepRecord[],
+  sets: readonly DepSetRecord[] = [],
+  cores: readonly CoreRecord[] = [],
 ): BuildGraph {
   const builder = new GraphBuilder();
   builder.strings(DICT);
+  // The blob's order, which the builder relies on: cores, sets, then the rules
+  // that name them.
+  for (const core of cores) builder.core(core);
+  for (const set of sets) builder.depSet(set);
   for (const rule of rules) builder.rule(rule);
   for (const dep of deps) builder.dep(dep);
   return builder.finish();
@@ -73,6 +99,28 @@ function targets(graph: BuildGraph, id: number): number[] {
   const out: number[] = [];
   for (let i = graph.outStart(id); i < graph.outEnd(id); i++) {
     out.push(graph.outTarget(i));
+  }
+  return out;
+}
+
+// The retained factored tables, read the same way: a core's members, a set's
+// adds. What the SQL mirror will store instead of the expanded edges.
+function coreMembers(graph: BuildGraph, core: number): number[] {
+  const out: number[] = [];
+  for (
+    let i = graph.coreMemberStart(core);
+    i < graph.coreMemberEnd(core);
+    i++
+  ) {
+    out.push(graph.coreMemberTarget(i));
+  }
+  return out;
+}
+
+function setAdds(graph: BuildGraph, set: number): number[] {
+  const out: number[] = [];
+  for (let i = graph.depSetAddStart(set); i < graph.depSetAddEnd(set); i++) {
+    out.push(graph.depSetAddTarget(i));
   }
   return out;
 }
@@ -132,11 +180,13 @@ describe('GraphBuilder edges', () => {
     const graph = build(
       [
         ruleRecord(10, {
-          depIds: [1, 2],
-          dynDepStages: [[3], [], [4, 5]],
+          depSet: 0,
+          // Stage 1 names no set at all, which is the blob's empty stage.
+          dynDepStages: [1, undefined, 2],
         }),
       ],
       [1, 2, 3, 4, 5].map((id) => depRecord(id)),
+      [setRecord(0, [1, 2]), setRecord(1, [3]), setRecord(2, [4, 5])],
     );
 
     expect(graph.staticDepCount(0)).toBe(2);
@@ -183,7 +233,11 @@ describe('GraphBuilder edges', () => {
   });
 
   it('keeps a reference to an unrecorded node as a dangling target', () => {
-    const graph = build([ruleRecord(10, {depIds: [1, 7]})], [depRecord(1)]);
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1)],
+      [setRecord(0, [1, 7])],
+    );
 
     const [known, missing] = targets(graph, 0);
     expect(known).toBe(graph.nodeForDepId(1));
@@ -200,7 +254,11 @@ describe('GraphBuilder edges', () => {
   });
 
   it('drops an unusable dep id rather than storing a reference to it', () => {
-    const graph = build([ruleRecord(10, {depIds: [NaN, 1]})], [depRecord(1)]);
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1)],
+      [setRecord(0, [NaN, 1])],
+    );
 
     expect(graph.staticDepCount(0)).toBe(1);
     expect(targets(graph, 0)).toEqual([graph.nodeForDepId(1)]);
@@ -210,11 +268,12 @@ describe('GraphBuilder edges', () => {
     // A rule's dep and a dep's rule are both forward references at ingest time:
     // the rules section is parsed first, and a dep can name a later dep.
     const graph = build(
-      [ruleRecord(10, {depIds: [2]})],
+      [ruleRecord(10, {depSet: 0})],
       [
         depRecord(1, {resolution: {kind: 'expanded', depIds: [2]}}),
         depRecord(2, {resolution: {kind: 'rule', ruleId: 10}}),
       ],
+      [setRecord(0, [2])],
     );
 
     expect(targets(graph, 0)).toEqual([graph.nodeForDepId(2)]);
@@ -226,8 +285,9 @@ describe('GraphBuilder edges', () => {
 
   it('builds one contiguous CSR over both kinds', () => {
     const graph = build(
-      [ruleRecord(10, {depIds: [1, 2]}), ruleRecord(11, {depIds: [2]})],
+      [ruleRecord(10, {depSet: 0}), ruleRecord(11, {depSet: 1})],
       [depRecord(1, {resolution: {kind: 'rule', ruleId: 11}}), depRecord(2)],
+      [setRecord(0, [1, 2]), setRecord(1, [2])],
     );
 
     // Every node's run is [outStart, outEnd), the runs are in node-id order, and
@@ -239,6 +299,197 @@ describe('GraphBuilder edges', () => {
     }
     expect(expectedStart).toBe(graph.edgeCount);
     expect(graph.edgeCount).toBe(4);
+  });
+});
+
+describe('GraphBuilder dep sets', () => {
+  it('expands a set as its core members, then its own adds', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [1, 2, 3, 4].map((id) => depRecord(id)),
+      [setRecord(0, [3, 4], 0)],
+      [coreRecord(0, [1, 2])],
+    );
+
+    // The rule's static run is the whole set, flat - the store is expanded
+    // exactly as it was before the blob factored the sets out.
+    expect(graph.staticDepCount(0)).toBe(4);
+    expect(targets(graph, 0)).toEqual(
+      [1, 2, 3, 4].map((id) => graph.nodeForDepId(id)),
+    );
+  });
+
+  it('expands a set with no core to its adds alone', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1), depRecord(2)],
+      [setRecord(0, [1, 2])],
+    );
+
+    expect(graph.coreOfDepSet(0)).toBeUndefined();
+    expect(targets(graph, 0)).toEqual([
+      graph.nodeForDepId(1),
+      graph.nodeForDepId(2),
+    ]);
+  });
+
+  it('expands one shared set into each rule that names it', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0}), ruleRecord(11, {depSet: 0})],
+      [1, 2, 3].map((id) => depRecord(id)),
+      [setRecord(0, [3], 0)],
+      [coreRecord(0, [1, 2])],
+    );
+
+    expect(targets(graph, 0)).toEqual(targets(graph, 1));
+    expect(graph.edgeCount).toBe(6);
+    // Shared in the retained tables, not copied per rule.
+    expect(graph.coreCount).toBe(1);
+    expect(graph.depSetCount).toBe(1);
+    expect(graph.depSetOf(0)).toBe(graph.depSetOf(1));
+  });
+
+  // Core ids are allocated from 0, so a set whose core is 0 must expand through
+  // it rather than being read as having none.
+  it('treats core 0 as a real core, not as "no core"', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1), depRecord(2)],
+      [setRecord(0, [2], 0)],
+      [coreRecord(0, [1])],
+    );
+
+    expect(graph.coreOfDepSet(0)).toBe(0);
+    expect(targets(graph, 0)).toEqual([
+      graph.nodeForDepId(1),
+      graph.nodeForDepId(2),
+    ]);
+  });
+
+  // The other half of the same trap: set ids are allocated from 0 too, so a
+  // rule that named no set must not pick up set 0's deps.
+  it('gives a rule that named no set no deps, even though set 0 exists', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0}), ruleRecord(11)],
+      [depRecord(1)],
+      [setRecord(0, [1])],
+    );
+
+    expect(graph.depSetOf(0)).toBe(0);
+    expect(graph.staticDepCount(0)).toBe(1);
+    expect(graph.depSetOf(1)).toBeUndefined();
+    expect(graph.staticDepCount(1)).toBe(0);
+    expect(targets(graph, 1)).toEqual([]);
+  });
+
+  it('keeps the retained tables as node references, alongside the flat CSR', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0, dynDepStages: [1, undefined]})],
+      [1, 2, 3].map((id) => depRecord(id)),
+      [setRecord(0, [2], 0), setRecord(1, [3])],
+      [coreRecord(0, [1])],
+    );
+
+    const set = graph.depSetOf(0)!;
+    const core = graph.coreOfDepSet(set)!;
+    // Members are node ids, not the dict ids the blob wrote - the mirror reads
+    // these instead of the expanded edges.
+    expect(coreMembers(graph, core)).toEqual([graph.nodeForDepId(1)]);
+    expect(setAdds(graph, set)).toEqual([graph.nodeForDepId(2)]);
+    // And the blob's own ids are still recoverable.
+    expect(graph.coreIdOf(core)).toBe(0);
+    expect(graph.depSetIdOf(set)).toBe(0);
+    // Stage 0 named set 1; stage 1 named none but still holds its slot.
+    expect(graph.dynStageCount(0)).toBe(2);
+    expect(graph.dynStageSetOf(0, 0)).toBe(1);
+    expect(graph.dynStageSetOf(0, 1)).toBeUndefined();
+  });
+
+  it('keeps a set member the blob never recorded as a dangling reference', () => {
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1)],
+      [setRecord(0, [2], 0)],
+      [coreRecord(0, [1])],
+    );
+
+    const [member, add] = targets(graph, 0);
+    expect(member).toBe(graph.nodeForDepId(1));
+    expect(isDangling(add)).toBe(true);
+    expect(danglingId(add)).toBe(2);
+    // Same encoding in the retained table it was expanded from.
+    expect(setAdds(graph, 0)).toEqual([add]);
+  });
+
+  it('gives a rule naming an unknown set no deps, and says so', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const graph = build(
+      [ruleRecord(10, {depSet: 7})],
+      [depRecord(1)],
+      [setRecord(0, [1])],
+    );
+
+    // Not the same as having no deps: the deps have gone missing, so it's
+    // counted rather than quietly conflated.
+    expect(graph.staticDepCount(0)).toBe(0);
+    expect(graph.depSetOf(0)).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('1 rule dep-set references'),
+    );
+    warn.mockRestore();
+  });
+
+  it('keeps the adds of a set naming an unknown core, and says so', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1)],
+      [setRecord(0, [1], 4)],
+    );
+
+    expect(graph.coreOfDepSet(0)).toBeUndefined();
+    expect(targets(graph, 0)).toEqual([graph.nodeForDepId(1)]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('1 dep sets named a core'),
+    );
+    warn.mockRestore();
+  });
+
+  // Expansion is a plain concatenation, on purpose: `adds` is the set
+  // difference `S \ core`, so nothing pays for a dedup pass. If an encoder ever
+  // breaks that, the duplicate edge is real and has to be reported rather than
+  // left as an unexplained double.
+  it('counts an add that repeats a core member', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const graph = build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1), depRecord(2)],
+      [setRecord(0, [1, 2], 0)],
+      [coreRecord(0, [1])],
+    );
+
+    expect(targets(graph, 0)).toEqual([
+      graph.nodeForDepId(1),
+      graph.nodeForDepId(1),
+      graph.nodeForDepId(2),
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('1 dep-set additions'),
+    );
+    warn.mockRestore();
+  });
+
+  it('says nothing at all about a well-formed blob', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    build(
+      [ruleRecord(10, {depSet: 0})],
+      [depRecord(1), depRecord(2)],
+      [setRecord(0, [2], 0)],
+      [coreRecord(0, [1])],
+    );
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

@@ -334,6 +334,15 @@ export interface GraphColumns {
   // rare (the monorepo trace has none at all), so this holds an entry only for
   // the rules that have any.
   readonly ruleDynStages: ReadonlyMap<NodeId, Int32Array>;
+  // The dep set (a dense index into the factored block below) whose expansion
+  // *is* the rule's static edges, or NO_REF when the rule named none - which
+  // covers both "no deps" and `ruleDepsUnknown` (see {@link
+  // BuildGraph.depSetOf}). Not read by anything on the traversal path: the
+  // edges are already expanded into the CSR.
+  readonly ruleDepSet: Int32Array;
+  // Rule node id -> the dep set of each dynamic-dep stage, NO_REF for a stage
+  // that named none. Parallel to `ruleDynStages`, and equally rare.
+  readonly ruleDynStageSet: ReadonlyMap<NodeId, Int32Array>;
 
   // Deps, indexed by node id minus ruleCount.
   readonly depDictId: Int32Array;
@@ -349,6 +358,33 @@ export interface GraphColumns {
   // follows from the position (see {@link BuildGraph.outEdges}).
   readonly edgeOffset: Int32Array; // nodeCount + 1
   readonly edgeTarget: Int32Vector;
+
+  /**
+   * The blob's factored dep sets, kept alongside the flat CSR above rather than
+   * discarded once expanded.
+   *
+   * A rule names its deps by *set*, and the same set recurs across thousands of
+   * rules (205,224 distinct sets behind 28.1M references on the monorepo
+   * trace), with the popular sets sharing a *core* as their common prefix (688
+   * cores holding 125,584 members between them, behind 47,181 of the sets).
+   * `graph_build.ts` expands all of that into the CSR, because the flat form is
+   * what makes the walks fast and it is not what the memory goes on. The
+   * factored form is retained because the SQL edge mirror stores *it* - that is
+   * where the row count falls by 6x - and the only other way to get it back
+   * would be to re-parse the blob. It costs ~4.2M ints.
+   *
+   * Both member tables hold node references in exactly the encoding
+   * `edgeTarget` uses (a node id, or a {@link dangling} reference), and are
+   * contiguous per owner and in owner order, so a rowid range serves the
+   * forward direction. Nothing on the traversal path reads any of this.
+   */
+  readonly coreBlobId: Int32Array; // the blob's own `core_id`, by core index
+  readonly coreMemberOffset: Int32Array; // coreCount + 1, into coreMemberTarget
+  readonly coreMemberTarget: Int32Vector;
+  readonly depSetBlobId: Int32Array; // the blob's own `set_id`, by set index
+  readonly depSetCore: Int32Array; // core index, NO_REF for an uncored set
+  readonly depSetAddOffset: Int32Array; // setCount + 1, into depSetAddTarget
+  readonly depSetAddTarget: Int32Vector;
 
   // Trace-side id -> node id (rules) / node id minus ruleCount (deps).
   readonly ruleIndex: IntIndex;
@@ -367,6 +403,8 @@ function emptyColumns(): GraphColumns {
     ruleTargetId: new Int32Array(0),
     ruleDepsUnknown: new Uint8Array(0),
     ruleDynStages: new Map(),
+    ruleDepSet: new Int32Array(0),
+    ruleDynStageSet: new Map(),
     depDictId: new Int32Array(0),
     depResolution: new Uint8Array(0),
     depStatus: new Uint8Array(0),
@@ -374,6 +412,13 @@ function emptyColumns(): GraphColumns {
     forcedByPayload: new Int32Array(0),
     edgeOffset: new Int32Array(1),
     edgeTarget: new Int32Vector(),
+    coreBlobId: new Int32Array(0),
+    coreMemberOffset: new Int32Array(1),
+    coreMemberTarget: new Int32Vector(),
+    depSetBlobId: new Int32Array(0),
+    depSetCore: new Int32Array(0),
+    depSetAddOffset: new Int32Array(1),
+    depSetAddTarget: new Int32Vector(),
     ruleIndex: new IntIndex(),
     depIndex: new IntIndex(),
   };
@@ -391,11 +436,16 @@ export class BuildGraph {
   readonly ruleCount: number;
   readonly depCount: number;
   readonly nodeCount: number;
+  // The factored dep-set tables' sizes (see GraphColumns' factored block).
+  readonly coreCount: number;
+  readonly depSetCount: number;
 
   constructor(private readonly cols: GraphColumns) {
     this.ruleCount = cols.ruleId.length;
     this.depCount = cols.depDictId.length;
     this.nodeCount = this.ruleCount + this.depCount;
+    this.coreCount = cols.coreBlobId.length;
+    this.depSetCount = cols.depSetBlobId.length;
   }
 
   // Whether `id` names a node of this graph. Every lookup that comes from
@@ -549,6 +599,36 @@ export class BuildGraph {
 
   dynStageCount(id: NodeId): number {
     return this.cols.ruleDynStages.get(id)?.length ?? 0;
+  }
+
+  /**
+   * The dep set whose expansion *is* this rule's static edges, as an index into
+   * the factored tables (see GraphColumns), or undefined when the rule named no
+   * set at all.
+   *
+   * Undefined covers both a rule with no deps and one whose deps the blob could
+   * not determine - {@link BuildGraph.depsUnknownOf} is what tells those apart,
+   * exactly as it does for the edge count. Set indices start at 0, so a real
+   * set is never confusable with "none".
+   *
+   * For the SQL mirror only: the rule's edges are already expanded into the
+   * CSR, so nothing on the traversal path needs this.
+   */
+  depSetOf(id: NodeId): number | undefined {
+    if (!this.isRule(id)) return undefined;
+    const set = this.cols.ruleDepSet[id];
+    return set === NO_REF ? undefined : set;
+  }
+
+  // The dep set of one of a rule's dynamic-dep stages, or undefined when that
+  // stage named none (an empty stage still holds its slot - see
+  // {@link dynStageCount}).
+  dynStageSetOf(id: NodeId, stage: number): number | undefined {
+    const sets = this.cols.ruleDynStageSet.get(id);
+    if (sets === undefined || stage < 0 || stage >= sets.length) {
+      return undefined;
+    }
+    return sets[stage] === NO_REF ? undefined : sets[stage];
   }
 
   targetCount(id: NodeId): number {
@@ -727,6 +807,58 @@ export class BuildGraph {
   // The target at CSR index `i`: a node id, or a {@link dangling} reference.
   outTarget(i: number): number {
     return this.cols.edgeTarget.at(i);
+  }
+
+  /**
+   * The factored dep sets, read the same way as the CSR above: a half-open
+   * range of member slots per owner, and a target per slot (a node id, or a
+   * {@link dangling} reference for a member the blob never recorded a node
+   * for). A set's membership is its core's members followed by its own adds,
+   * and the two are disjoint - see GraphColumns' factored block, and
+   * `graph_build.ts` for why they are kept at all.
+   *
+   * Nothing on the traversal path reads these: the sets are already expanded
+   * into `edgeTarget`. They exist for the SQL mirror, which stores the factored
+   * form.
+   */
+  coreOfDepSet(set: number): number | undefined {
+    const core = this.cols.depSetCore[set];
+    return core === NO_REF ? undefined : core;
+  }
+
+  // The blob's own `core_id` / `set_id` behind a dense index - per-process join
+  // keys within one blob, never stable identities (the same caveat `ruleId`
+  // carries), kept so the mirror can be lined up against the raw blob.
+  coreIdOf(core: number): number {
+    return this.cols.coreBlobId[core];
+  }
+
+  depSetIdOf(set: number): number {
+    return this.cols.depSetBlobId[set];
+  }
+
+  coreMemberStart(core: number): number {
+    return this.cols.coreMemberOffset[core];
+  }
+
+  coreMemberEnd(core: number): number {
+    return this.cols.coreMemberOffset[core + 1];
+  }
+
+  coreMemberTarget(i: number): number {
+    return this.cols.coreMemberTarget.at(i);
+  }
+
+  depSetAddStart(set: number): number {
+    return this.cols.depSetAddOffset[set];
+  }
+
+  depSetAddEnd(set: number): number {
+    return this.cols.depSetAddOffset[set + 1];
+  }
+
+  depSetAddTarget(i: number): number {
+    return this.cols.depSetAddTarget.at(i);
   }
 
   /**

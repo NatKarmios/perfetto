@@ -35,12 +35,27 @@
  * The fixtures go through the real {@link GraphBuilder} and the real record
  * types, so they exercise the ingest and linking path rather than a parallel
  * hand-rolled one.
+ *
+ * The blob names a rule's deps by *dep set* rather than listing them, so
+ * `staticDeps` is sugar: it synthesises a private one-rule set underneath. Where
+ * a test wants the sharing itself - one set behind two rules, or a set split
+ * across a core and its adds - it writes the set out and hands the same handle
+ * to each rule:
+ *
+ *     const s = depSet({core: ['x.cmi', 'y.cmi'], adds: ['a.ml']});
+ *     const g = testGraph([
+ *       rule('lib/a.cmo', {depSet: s}),
+ *       rule('lib/b.cmo', {depSet: s}),   // same set, same core
+ *       ...
+ *     ]);
  */
 
 import type {BuildGraph, NodeId} from './graph';
 import {GraphBuilder} from './graph_build';
 import type {
+  CoreRecord,
   DepRecord,
+  DepSetRecord,
   ForcedByTag,
   RuleRecord,
   StringTable,
@@ -108,6 +123,33 @@ export interface NodeSpec {
 export interface FixtureNames {
   dep(name: string): number;
   rule(name: string): number;
+  // The blob `set_id` of a dep set, allocating it (and its core) on first use.
+  set(ref: DepSetRef): number;
+}
+
+/**
+ * A dep set written in names, as returned by {@link depSet}. Opaque and
+ * compared by identity: handing the same handle to two rules is what makes them
+ * share one set (and one core), which is the whole shape the blob's factoring
+ * produces and the only way a test above the parser gets to see it.
+ */
+export class DepSetRef {
+  constructor(readonly opts: DepSetOpts) {}
+}
+
+export interface DepSetOpts {
+  // The set's shared core, if it has one. Optional because most real sets have
+  // none (~158k of 205k on a monorepo trace) - the uncored case should be the
+  // easy one to write.
+  readonly core?: readonly string[];
+  // What the set adds on top of its core, or its whole membership when it has
+  // none. Disjoint from `core` in a well-formed blob; a fixture is free to
+  // overlap them, which is how the builder's collision counter gets tested.
+  readonly adds?: readonly string[];
+}
+
+export function depSet(opts: DepSetOpts): DepSetRef {
+  return new DepSetRef(opts);
 }
 
 export interface DepOpts {
@@ -125,7 +167,12 @@ export interface DepOpts {
 }
 
 export interface RuleOpts {
+  // Static deps as a private, unshared set of their own - sugar for
+  // `depSet: depSet({adds: [...]})`, and mutually exclusive with `depSet`.
   readonly staticDeps?: readonly string[];
+  // A dep set shared with other rules (see {@link depSet}).
+  readonly depSet?: DepSetRef;
+  // One stage per entry; an empty stage keeps its slot and names no set.
   readonly dynamicDeps?: readonly (readonly string[])[];
   readonly dir?: string;
   readonly targetFiles?: readonly string[];
@@ -206,13 +253,59 @@ export function rule(name: string, opts: RuleOpts = {}): NodeSpec {
       targetDirIds: (opts.targetDirs ?? []).map((n) => names.dep(n)),
       outcome: opts.outcome ?? 'executed',
       forcedBy: forcedByTag(names, opts.forcedBy),
-      depIds: (opts.staticDeps ?? []).map((n) => names.dep(n)),
+      depSet: staticSet(names, opts),
       depsUnknown: opts.depsUnknown ?? false,
       dynDepStages: (opts.dynamicDeps ?? []).map((stage) =>
-        stage.map((n) => names.dep(n)),
+        // The blob has no line for the empty set, so a stage with no deps names
+        // no set at all - and still holds its slot.
+        stage.length === 0 ? undefined : names.set(depSet({adds: stage})),
       ),
     }),
   };
+}
+
+// The set id a rule's static deps go in: the shared one it was handed, or a
+// private one holding `staticDeps`. A rule with neither (or with unknown deps)
+// names no set, which is how the blob writes "no deps".
+function staticSet(names: FixtureNames, opts: RuleOpts): number | undefined {
+  if (opts.depSet !== undefined) return names.set(opts.depSet);
+  const deps = opts.staticDeps ?? [];
+  return deps.length === 0 ? undefined : names.set(depSet({adds: deps}));
+}
+
+/**
+ * Allocates a `graph-depsets` line (and a `graph-cores` line, where the set has
+ * a core) per distinct {@link DepSetRef}, keyed by handle identity so a shared
+ * handle produces exactly one set.
+ *
+ * Both id spaces start at 0, like the blob's, so the fixtures exercise the
+ * "empty field is not id 0" distinction rather than dodging it.
+ */
+class Sets {
+  private readonly ids = new Map<DepSetRef, number>();
+  readonly cores: CoreRecord[] = [];
+  readonly sets: DepSetRecord[] = [];
+
+  constructor(private readonly dep: (name: string) => number) {}
+
+  id(ref: DepSetRef): number {
+    const existing = this.ids.get(ref);
+    if (existing !== undefined) return existing;
+    const setId = this.sets.length;
+    this.ids.set(ref, setId);
+    const {core, adds} = ref.opts;
+    let coreId: number | undefined;
+    if (core !== undefined) {
+      coreId = this.cores.length;
+      this.cores.push({coreId, depIds: core.map(this.dep)});
+    }
+    this.sets.push({
+      setId,
+      coreId,
+      addIds: (adds ?? []).map(this.dep),
+    });
+    return setId;
+  }
 }
 
 /**
@@ -255,9 +348,11 @@ export class TestGraph {
 export function testGraph(specs: readonly NodeSpec[]): TestGraph {
   const deps = new Names('dep');
   const rules = new Names('rule');
+  const sets = new Sets((name) => deps.id(name));
   const names: FixtureNames = {
     dep: (name) => deps.id(name),
     rule: (name) => rules.id(name),
+    set: (ref) => sets.id(ref),
   };
   // Intern every fixture's own name first, so ids don't depend on the order
   // references happen to be resolved in.
@@ -269,6 +364,10 @@ export function testGraph(specs: readonly NodeSpec[]): TestGraph {
     record: spec.build(names),
   }));
   builder.strings(deps.strings());
+  // Cores and sets first, in the blob's own order: a rule's set has to be known
+  // by the time the rule arrives, since that's when it's expanded.
+  for (const core of sets.cores) builder.core(core);
+  for (const set of sets.sets) builder.depSet(set);
   for (const {kind, record} of built) {
     if (kind === 'rule') builder.rule(record as RuleRecord);
   }

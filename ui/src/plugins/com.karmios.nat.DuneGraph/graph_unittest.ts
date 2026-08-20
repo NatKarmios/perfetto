@@ -15,7 +15,7 @@
 import type {GraphEdge, NodeId} from './graph';
 import {descendants, edges, forcers, inducedEdges, ReverseIndex} from './graph';
 import type {TestGraph} from './graph_test_helper';
-import {dep, rule, testGraph} from './graph_test_helper';
+import {dep, depSet, rule, testGraph} from './graph_test_helper';
 
 // Simplified edge shape for assertions: (source name, dest name, forced).
 function simplify(g: TestGraph, edgeList: readonly GraphEdge[]) {
@@ -408,5 +408,33 @@ describe('edges', () => {
     ]);
     // The dropped reference is still one of the rule's declared static deps.
     expect(g.graph.staticDepCount(g.id('r1'))).toEqual(3);
+  });
+
+  // The blob shares one dep set between rules and splits it over a core; the
+  // store expands it, so the edge set is the same as if each rule had listed
+  // every dep itself.
+  it('gives each rule sharing a dep set the whole set as its own edges', () => {
+    const shared = depSet({core: ['x', 'y'], adds: ['z']});
+    const g = testGraph([
+      rule('r1', {depSet: shared}),
+      rule('r2', {depSet: shared}),
+      dep('x'),
+      dep('y'),
+      dep('z'),
+    ]);
+
+    expect(simplify(g, [...edges(g.graph)])).toEqual([
+      ['r1', 'x', false],
+      ['r1', 'y', false],
+      ['r1', 'z', false],
+      ['r2', 'x', false],
+      ['r2', 'y', false],
+      ['r2', 'z', false],
+    ]);
+    // Core members first, then the adds - the set's own text order is gone, so
+    // this is the only order there is.
+    expect(g.names(g.graph.outTargets(g.id('r1')))).toEqual(['x', 'y', 'z']);
+    expect(g.graph.staticDepCount(g.id('r2'))).toEqual(3);
+    expect(g.names(descendants(g.graph, g.id('r2')))).toEqual(['x', 'y', 'z']);
   });
 });

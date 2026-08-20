@@ -30,6 +30,8 @@ import {GraphBuilder} from './graph_build';
 import type {BlobChunkMeta, SectionChunks} from './graph_blob';
 import {
   BLOB_TRACK,
+  CORES_SECTION,
+  DEPSETS_SECTION,
   DEPS_SECTION,
   DICT_SECTION,
   RULES_SECTION,
@@ -156,7 +158,17 @@ export class TraceGraphSource implements GraphSource {
     const index = await this.readChunkIndex(perf);
     if (index.size === 0) throw noBlobTrackError();
     const sections = new Map<string, SectionChunks>();
-    for (const name of [DICT_SECTION, RULES_SECTION, DEPS_SECTION]) {
+    // The parser fixes the order it consumes these in (a rule's dep set has to
+    // be known by the time the rule arrives), so this is just the set of
+    // sections to look for - a trace missing one, `graph-cores` in particular,
+    // is normal and parses as empty.
+    for (const name of [
+      DICT_SECTION,
+      CORES_SECTION,
+      DEPSETS_SECTION,
+      RULES_SECTION,
+      DEPS_SECTION,
+    ]) {
       sections.set(name, this.sectionChunks(name, index.get(name) ?? [], perf));
     }
     const builder = new GraphBuilder();

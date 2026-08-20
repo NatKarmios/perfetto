@@ -14,13 +14,17 @@
 
 import type {
   BlobChunk,
+  CoreRecord,
   DepRecord,
+  DepSetRecord,
   GraphBlobSink,
   RuleRecord,
   SectionChunks,
   StringTable,
 } from './graph_blob';
 import {
+  CORES_SECTION,
+  DEPSETS_SECTION,
   DEPS_SECTION,
   DICT_SECTION,
   EMPTY_STRING_TABLE,
@@ -45,24 +49,49 @@ function chunk(
 // allowed to do, since a record isn't reused after the call.
 class Collected implements GraphBlobSink {
   dict: StringTable = EMPTY_STRING_TABLE;
+  readonly cores: CoreRecord[] = [];
+  readonly sets: DepSetRecord[] = [];
   readonly rules: RuleRecord[] = [];
   readonly deps: DepRecord[] = [];
+  // Which sink method was called when, deduped - the parser fixes the section
+  // order and `graph_build.ts` depends on it (a rule's set must already be in).
+  readonly order: string[] = [];
 
   strings(table: StringTable): void {
+    this.note('strings');
     this.dict = table;
   }
 
+  core(record: CoreRecord): void {
+    this.note('core');
+    this.cores.push(record);
+  }
+
+  depSet(record: DepSetRecord): void {
+    this.note('depSet');
+    this.sets.push(record);
+  }
+
   rule(record: RuleRecord): void {
+    this.note('rule');
     this.rules.push(record);
   }
 
   dep(record: DepRecord): void {
+    this.note('dep');
     this.deps.push(record);
+  }
+
+  private note(what: string): void {
+    if (this.order[this.order.length - 1] !== what) this.order.push(what);
   }
 }
 
-// Most tests pass one chunk per section; passing an array splits the payload at
-// a chosen point, which is how the chunk-boundary behaviour is exercised.
+// Most tests pass one chunk per section; passing an array yields those chunks in
+// order, which is how the chunk-boundary behaviour is exercised. Note the
+// exporter splits only on line boundaries and drops the separator there, so a
+// realistic multi-chunk payload has whole records per chunk and no trailing
+// newline on any but the last.
 async function parse(
   sections: Record<string, string | readonly string[]>,
 ): Promise<Collected> {
@@ -177,19 +206,33 @@ describe('parseGraphBlob - graph-dict', () => {
     expect(blob.dict.size).toEqual(2);
   });
 
-  it('reassembles a value split across a chunk boundary', async () => {
+  it('closes the record when a chunk ends without a newline', async () => {
+    // The exporter splits only on line boundaries and drops the separator at
+    // the split, so a chunk's last record has no trailing newline and the next
+    // chunk opens a fresh record. Carrying the partial across would glue the
+    // two together and destroy both.
     const blob = await parse({
-      [DICT_SECTION]: ['0\tsome/pa', 'th/here\n1\tb\n'],
+      [DICT_SECTION]: ['0\tsome/path/here', '1\tb\n'],
     });
     expect(blob.dict.get(0)).toEqual('some/path/here');
     expect(blob.dict.get(1)).toEqual('b');
+    expect(blob.dict.size).toEqual(2);
+  });
+
+  it('parses newline-terminated chunks too', async () => {
+    // The shape dune emits now: every chunk ends in a newline. Closing each
+    // chunk off has to be a no-op here rather than inventing a blank entry.
+    const blob = await parse({[DICT_SECTION]: ['0\ta\n', '1\tb\n']});
+    expect(blob.dict.get(0)).toEqual('a');
+    expect(blob.dict.get(1)).toEqual('b');
+    expect(blob.dict.size).toEqual(2);
   });
 });
 
 describe('parseGraphBlob - graph-rules', () => {
   it('parses a complete executed-rule line', async () => {
     const blob = await parse({
-      [RULES_SECTION]: '412\t6\t7,8\t9\tX\td5\t1,2\t3,4|5\n',
+      [RULES_SECTION]: '412\t6\t7,8\t9\tX\td5\t84\t12|13\n',
     });
     expect(blob.rules).toEqual([
       {
@@ -199,9 +242,10 @@ describe('parseGraphBlob - graph-rules', () => {
         targetDirIds: [9],
         outcome: 'executed',
         forcedBy: {kind: 'DEP', depId: 5},
-        depIds: [1, 2],
+        // One set id, not a dep list; likewise one set id per dyn stage.
+        depSet: 84,
         depsUnknown: false,
-        dynDepStages: [[3, 4], [5]],
+        dynDepStages: [12, 13],
       },
     ]);
   });
@@ -228,7 +272,9 @@ describe('parseGraphBlob - graph-rules', () => {
       targetDirIds: [],
       outcome: 'unfinished',
       forcedBy: {kind: 'DEP', depId: 5},
-      depIds: [],
+      // An unfinished span carries an *empty* `<dep_set>`, not `?`: dune never
+      // got as far as knowing, but it isn't claiming it couldn't tell either.
+      depSet: undefined,
       depsUnknown: false,
       dynDepStages: [],
     });
@@ -240,15 +286,45 @@ describe('parseGraphBlob - graph-rules', () => {
     const blob = await parse({
       [RULES_SECTION]: '1\t\t\t\tD\t\t?\t\n2\t\t\t\tX\t\t\t\n',
     });
-    expect(blob.rules.map((r) => [r.depIds, r.depsUnknown])).toEqual([
-      [[], true],
-      [[], false],
+    expect(blob.rules.map((r) => [r.depSet, r.depsUnknown])).toEqual([
+      [undefined, true],
+      [undefined, false],
     ]);
   });
 
   it('parses the deps a failed rule did recover', async () => {
-    const blob = await parse({[RULES_SECTION]: '1\t\t\t\tD\t\t4,5\t\n'});
-    expect(blob.rules[0].depIds).toEqual([4, 5]);
+    const blob = await parse({[RULES_SECTION]: '1\t\t\t\tD\t\t45\t\n'});
+    expect(blob.rules[0].depSet).toBe(45);
+    expect(blob.rules[0].depsUnknown).toBe(false);
+  });
+
+  // The trap this whole field walks past: set ids are allocated from 0, so an
+  // empty `<dep_set>` coerced to a number would hand every dep-free rule set
+  // 0's dependencies.
+  it('reads an empty dep_set as no set, never as set 0', async () => {
+    const blob = await parse({
+      [RULES_SECTION]: '1\t\t\t\tX\t\t\t\n2\t\t\t\tX\t\t0\t\n',
+    });
+    expect(blob.rules[0].depSet).toBeUndefined();
+    expect(blob.rules[0].depsUnknown).toBe(false);
+    // ...and set 0 itself is a real set, not the absent one.
+    expect(blob.rules[1].depSet).toBe(0);
+  });
+
+  // Whether the set exists is the builder's business; the parser reports what
+  // the line said.
+  it('passes a dep_set through without checking that the set exists', async () => {
+    const blob = await parse({
+      [DEPSETS_SECTION]: '0\t\t7\n',
+      [RULES_SECTION]: '1\t\t\t\tX\t\t9\t\n',
+    });
+    expect(blob.rules[0].depSet).toBe(9);
+  });
+
+  it('reads a malformed dep_set as no set rather than as a truncation', async () => {
+    // A comma is what the field used to hold; it is malformed input now.
+    const blob = await parse({[RULES_SECTION]: '1\t\t\t\tX\t\t4,5\t\n'});
+    expect(blob.rules[0].depSet).toBeUndefined();
     expect(blob.rules[0].depsUnknown).toBe(false);
   });
 
@@ -263,6 +339,23 @@ describe('parseGraphBlob - graph-rules', () => {
   it('parses an empty dyn_dep_stages field as no stages', async () => {
     const blob = await parse({[RULES_SECTION]: '0\t1\t2\t\tX\t\t\t\n'});
     expect(blob.rules[0].dynDepStages).toEqual([]);
+  });
+
+  // Stages are numbered by position, so an empty one has to keep its slot -
+  // dropping it would renumber every stage after it.
+  it('keeps an empty dyn_dep stage as a slot with no set', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t3||5\n'});
+    expect(blob.rules[0].dynDepStages).toEqual([3, undefined, 5]);
+  });
+
+  it('reads stage 0 as a set id, not as an empty stage', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t0|1\n'});
+    expect(blob.rules[0].dynDepStages).toEqual([0, 1]);
+  });
+
+  it('reads a comma inside a stage as malformed, not as a list', async () => {
+    const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t3,4|5\n'});
+    expect(blob.rules[0].dynDepStages).toEqual([undefined, 5]);
   });
 
   it('leaves dirId undefined when the field is empty', async () => {
@@ -293,21 +386,117 @@ describe('parseGraphBlob - graph-rules', () => {
     expect(blob.rules[0].forcedBy).toBeUndefined();
   });
 
-  it('parses a record split across a chunk boundary', async () => {
-    // Two rule lines, cut mid-way through the first one's dep list.
-    const payload = '412\t6\t7,8\t9\tX\td5\t1,2\t3,4|5\n7\t\t\t\tL\t\t9\t\n';
-    const cut = payload.indexOf('1,2') + 1;
+  it('closes the record when a chunk ends without a newline', async () => {
+    // Split between the two lines, with the separator dropped - the shape the
+    // exporter actually emits. Both rules must survive, and in particular the
+    // first must keep its own set id rather than absorbing the second line.
     const blob = await parse({
-      [RULES_SECTION]: [payload.slice(0, cut), payload.slice(cut)],
+      [RULES_SECTION]: [
+        '412\t6\t7,8\t9\tX\td5\t184\t12|13',
+        '7\t\t\t\tL\t\t9\t\n',
+      ],
     });
     expect(blob.rules.map((r) => r.ruleId)).toEqual([412, 7]);
-    expect(blob.rules[0].depIds).toEqual([1, 2]);
-    expect(blob.rules[1].depIds).toEqual([9]);
+    expect(blob.rules[0].depSet).toBe(184);
+    expect(blob.rules[1].depSet).toBe(9);
+  });
+
+  it('parses newline-terminated chunks too', async () => {
+    const blob = await parse({
+      [RULES_SECTION]: [
+        '412\t6\t7,8\t9\tX\td5\t184\t12|13\n',
+        '7\t\t\t\tL\t\t9\t\n',
+      ],
+    });
+    expect(blob.rules.map((r) => r.ruleId)).toEqual([412, 7]);
+    expect(blob.rules[0].depSet).toBe(184);
+    expect(blob.rules[1].depSet).toBe(9);
   });
 
   it('parses a final record with no trailing newline', async () => {
     const blob = await parse({[RULES_SECTION]: '0\t\t\t\tX\t\t\t'});
     expect(blob.rules.map((r) => r.ruleId)).toEqual([0]);
+  });
+});
+
+describe('parseGraphBlob - graph-cores', () => {
+  it('parses a core and its members', async () => {
+    const blob = await parse({[CORES_SECTION]: '0\t1,2,3\n1\t4,5\n'});
+    expect(blob.cores).toEqual([
+      {coreId: 0, depIds: [1, 2, 3]},
+      {coreId: 1, depIds: [4, 5]},
+    ]);
+  });
+
+  it('parses a single-member core, and a chunk ending without a newline', async () => {
+    const blob = await parse({[CORES_SECTION]: ['0\t7', '1\t123,9\n']});
+    expect(blob.cores).toEqual([
+      {coreId: 0, depIds: [7]},
+      {coreId: 1, depIds: [123, 9]},
+    ]);
+  });
+
+  it('skips a line with no member field, or no usable core id', async () => {
+    const blob = await parse({[CORES_SECTION]: 'garbage\nx\t1\n2\t1\n'});
+    expect(blob.cores).toEqual([{coreId: 2, depIds: [1]}]);
+  });
+});
+
+describe('parseGraphBlob - graph-depsets', () => {
+  it('parses a cored set and an uncored one', async () => {
+    const blob = await parse({[DEPSETS_SECTION]: '0\t\t1,2\n1\t3\t4\n'});
+    expect(blob.sets).toEqual([
+      // An empty `<core_id>` means no core - the set is exactly its adds.
+      {setId: 0, coreId: undefined, addIds: [1, 2]},
+      {setId: 1, coreId: 3, addIds: [4]},
+    ]);
+  });
+
+  // Cores are allocated from 0 up, so `0` in this field is a real core and an
+  // empty field is not it.
+  it('keeps core 0 apart from no core at all', async () => {
+    const blob = await parse({[DEPSETS_SECTION]: '0\t0\t1\n1\t\t2\n'});
+    expect(blob.sets.map((s) => s.coreId)).toEqual([0, undefined]);
+  });
+
+  it('parses an empty add list without falling over', async () => {
+    // The encoder never writes this (a core is a strict subset of its set), but
+    // it must not take the line - or the section - down.
+    const blob = await parse({[DEPSETS_SECTION]: '0\t2\t\n1\t\t5\n'});
+    expect(blob.sets).toEqual([
+      {setId: 0, coreId: 2, addIds: []},
+      {setId: 1, coreId: undefined, addIds: [5]},
+    ]);
+  });
+
+  it('skips a line with too few fields, or no usable set id', async () => {
+    const blob = await parse({
+      [DEPSETS_SECTION]: '0\t1\nx\t\t1\n3\t\t1\n',
+    });
+    expect(blob.sets).toEqual([{setId: 3, coreId: undefined, addIds: [1]}]);
+  });
+
+  it('closes the record when a chunk ends without a newline', async () => {
+    const blob = await parse({[DEPSETS_SECTION]: ['0\t\t1,23', '1\t4\t5\n']});
+    expect(blob.sets).toEqual([
+      {setId: 0, coreId: undefined, addIds: [1, 23]},
+      {setId: 1, coreId: 4, addIds: [5]},
+    ]);
+  });
+});
+
+describe('parseGraphBlob - section order', () => {
+  // `graph_build.ts` expands a rule's dep set as the rule arrives, so every
+  // core and set has to be in by then. The parser owns this order.
+  it('hands over the dict, then cores, then sets, then rules, then deps', async () => {
+    const blob = await parse({
+      [DEPS_SECTION]: '1\ts\t\t\n',
+      [RULES_SECTION]: '1\t\t\t\tX\t\t0\t\n',
+      [DEPSETS_SECTION]: '0\t0\t2\n',
+      [CORES_SECTION]: '0\t1\n',
+      [DICT_SECTION]: '0\ta\n',
+    });
+    expect(blob.order).toEqual(['strings', 'core', 'depSet', 'rule', 'dep']);
   });
 });
 
@@ -384,7 +573,23 @@ describe('parseGraphBlob - graph-deps', () => {
 describe('parseGraphBlob - missing sections', () => {
   it('treats an absent section as empty rather than throwing', async () => {
     const blob = await parse({[DICT_SECTION]: '0\ta\n'});
+    expect(blob.cores).toEqual([]);
+    expect(blob.sets).toEqual([]);
     expect(blob.rules).toEqual([]);
     expect(blob.deps).toEqual([]);
+  });
+
+  // A build whose dep sets were all too small to be worth a shared core emits
+  // no `graph-cores` instants at all. That is the normal shape for a small
+  // project, not a truncated trace, and must never become an error.
+  it('parses a blob with no graph-cores section at all', async () => {
+    const blob = await parse({
+      [DICT_SECTION]: '0\ta\n1\tb\n',
+      [DEPSETS_SECTION]: '0\t\t0,1\n',
+      [RULES_SECTION]: '7\t\t\t\tX\t\t0\t\n',
+    });
+    expect(blob.cores).toEqual([]);
+    expect(blob.sets).toEqual([{setId: 0, coreId: undefined, addIds: [0, 1]}]);
+    expect(blob.rules[0].depSet).toBe(0);
   });
 });
