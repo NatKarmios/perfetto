@@ -56,13 +56,24 @@ const TIMELINE_WORKSPACE_NAME = 'Dune graph';
  * side panel shows what a load would involve instead.
  *
  * The estimate comes from the blob's byte size, not from a parse (see
- * `GraphStats.estimatedEdges`), so it's available before any expensive work
- * has happened. It's the same number as the edge tier's own soft limit, and for
- * the same reason: the edge tier is what makes a load expensive, so a graph
- * small enough to mirror its edges without being asked is exactly one small
- * enough to load without being asked.
+ * `GraphStats.estimatedEdgeRows`), so it's available before any expensive work
+ * has happened.
+ *
+ * It is counted in *stored rows*, which is why this is its own number rather
+ * than the edge tier's `EDGE_SOFT_LIMIT`: since dune started factoring dep sets
+ * the tier stores far fewer rows than the graph has edges (6.33M against 28.8M
+ * on the monorepo trace), and byte sizes can only predict the former. The two
+ * caps still count edges, because by the time they are consulted the graph is
+ * parsed and the exact edge count is known.
+ *
+ * 2M rows is ~6 s of edge tier in the wasm engine, on the 18.9 s / 6.33M
+ * measurement in `PERF_SUMMARY.LOCAL.md` - a few seconds is the same bar the
+ * soft cap was originally set by. On the four sample traces this keeps the
+ * decision exactly where it was, but with room to spare rather than by 10%: the
+ * monorepo trace estimates 5.7M rows against the old estimate's 2.2M "edges"
+ * versus a 2M limit, and the three small ones estimate 10k-27k.
  */
-const AUTO_LOAD_EDGE_LIMIT = EDGE_SOFT_LIMIT;
+const AUTO_LOAD_EDGE_ROW_LIMIT = 2_000_000;
 
 // How many slice ids `nodesForSliceIds` resolves per query.
 const SLICE_LOOKUP_BATCH = 5_000;
@@ -632,18 +643,18 @@ export class DuneGraphController {
   }
 
   // Whether a load of this trace would start by itself (see
-  // AUTO_LOAD_EDGE_LIMIT). False until the stats are in.
+  // AUTO_LOAD_EDGE_ROW_LIMIT). False until the stats are in.
   get autoLoads(): boolean {
     return (
       this.statsValue !== undefined &&
-      this.statsValue.estimatedEdges <= AUTO_LOAD_EDGE_LIMIT
+      this.statsValue.estimatedEdgeRows <= AUTO_LOAD_EDGE_ROW_LIMIT
     );
   }
 
   // The point past which a load isn't started unprompted, so the panel can
   // explain the decision in the same units the estimate is in.
-  get autoLoadEdgeLimit(): number {
-    return AUTO_LOAD_EDGE_LIMIT;
+  get autoLoadEdgeRowLimit(): number {
+    return AUTO_LOAD_EDGE_ROW_LIMIT;
   }
 
   // Whether any load step is currently running.

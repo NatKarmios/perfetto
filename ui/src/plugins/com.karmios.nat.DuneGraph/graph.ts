@@ -1257,12 +1257,17 @@ export interface GraphStats {
   readonly lifecycleInstants: number;
 
   /**
-   * Roughly how many dependency edges the graph holds. **An estimate**, derived
-   * from the payload's size rather than its contents (see
-   * `trace_graph_source.ts`): it's what's available before a parse, and it's
-   * the number that predicts whether a load fits in memory at all.
+   * Roughly how many rows the SQL edge tier would store. **An estimate**,
+   * derived from the payload's size rather than its contents (see
+   * `trace_graph_source.ts`): it's what's available before a parse, and it's the
+   * number that predicts whether a load fits in memory at all.
+   *
+   * Rows, not edges. Since dune started factoring dep sets there is no way to
+   * estimate the *edge* count from byte sizes at all - that is precisely what
+   * the factoring hides - and the stored row count is the one that predicts
+   * cost anyway.
    */
-  readonly estimatedEdges: number;
+  readonly estimatedEdgeRows: number;
 }
 
 // One section of the source's raw payload: how much of it there is, and how

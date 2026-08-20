@@ -120,9 +120,9 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     );
   }
 
-  // The trace's headline counts. `estimatedEdges` is the number that decides
+  // The trace's headline counts. `estimatedEdgeRows` is the number that decides
   // whether this is a click or a coffee break (see controller.ts's
-  // AUTO_LOAD_EDGE_LIMIT), so it's called out rather than listed.
+  // AUTO_LOAD_EDGE_ROW_LIMIT), so it's called out rather than listed.
   private renderStats(controller: DuneGraphController): m.Children {
     const stats = controller.stats;
     if (stats === undefined) return undefined;
@@ -144,19 +144,21 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
           stats.lifecycleInstants.toLocaleString(),
         ),
         this.statRow(
-          'edges (estimated)',
-          `~${stats.estimatedEdges.toLocaleString()}`,
+          'edge rows (estimated)',
+          `~${stats.estimatedEdgeRows.toLocaleString()}`,
         ),
       ),
       overLimit &&
         m(
           Callout,
           {icon: 'warning'},
-          `This graph is large: roughly ${stats.estimatedEdges.toLocaleString()} ` +
-            `edges, past the ${controller.autoLoadEdgeLimit.toLocaleString()} ` +
-            'above which it is not loaded automatically. Loading it can take ' +
-            'minutes and a lot of memory. The edge tables (dune_edge and the ' +
-            'relation functions) are left out at this size and can be built ' +
+          `This graph is large: roughly ` +
+            `${stats.estimatedEdgeRows.toLocaleString()} dependency rows to ` +
+            `store, past the ` +
+            `${controller.autoLoadEdgeRowLimit.toLocaleString()} above which ` +
+            'it is not loaded automatically. Loading it can take a while and a ' +
+            'lot of memory. The edge tables (dune_edge and the relation ' +
+            'functions) may be left out at this size and can be built ' +
             'separately afterwards.',
         ),
     ];

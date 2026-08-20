@@ -52,12 +52,19 @@ const DEP_TRACK = 'build-dep';
 const ACTION_TRACK = 'exec-rule-action';
 const LIFECYCLE_TRACKS = [RULE_TRACK, DEP_TRACK, ACTION_TRACK];
 
-// Average bytes per dep id in the `graph-rules` payload, used to turn that
-// section's byte size into an edge-count estimate without parsing it (see
-// `stats()`). The section is overwhelmingly comma-separated decimal dep ids -
-// on the monorepo trace of the perf plan's baseline, 262 MB of blob against
-// 28.0M real edges, this is within a few percent.
+// Average bytes per dep id in the sections that carry dep ids, used to turn
+// their byte size into a row-count estimate without parsing them (see
+// `stats()`). Those sections are overwhelmingly comma-separated decimal ids, so
+// the figure is a straight bytes-per-id average.
 const BYTES_PER_DEP_ID = 7;
+
+// The sections whose ids become rows in the SQL edge tier: dep-set members and
+// adds, and the dep nodes' own (unfactored) edges. `graph-rules` is deliberately
+// *not* among them - since dune started factoring dep sets it names one set id
+// per rule instead of inlining its deps, so its size says nothing about how many
+// edges the rule holds. Estimating from it is how this number came to read 2.2M
+// for a 28.8M-edge graph.
+const EDGE_ROW_SECTIONS = [CORES_SECTION, DEPSETS_SECTION, DEPS_SECTION];
 
 // What the panel shows - and what `load()` throws - when the trace carries no
 // graph at all. Shared so the cheap `stats()` probe fails exactly the way a
@@ -101,13 +108,13 @@ export class TraceGraphSource implements GraphSource {
     `);
     const sections: GraphSectionStats[] = [];
     let bytes = 0;
-    let rulesBytes = 0;
+    let edgeRowBytes = 0;
     const it = blob.iter({section: STR, chunks: NUM, bytes: LONG_NULL});
     for (; it.valid(); it.next()) {
       const sectionBytes = it.bytes === null ? 0 : Number(it.bytes);
       sections.push({name: it.section, chunks: it.chunks, bytes: sectionBytes});
       bytes += sectionBytes;
-      if (it.section === RULES_SECTION) rulesBytes = sectionBytes;
+      if (EDGE_ROW_SECTIONS.includes(it.section)) edgeRowBytes += sectionBytes;
     }
     if (sections.length === 0) throw noBlobTrackError();
 
@@ -121,7 +128,7 @@ export class TraceGraphSource implements GraphSource {
       sections,
       bytes,
       lifecycleInstants: lifecycle.firstRow({instants: NUM}).instants,
-      estimatedEdges: Math.round(rulesBytes / BYTES_PER_DEP_ID),
+      estimatedEdgeRows: Math.round(edgeRowBytes / BYTES_PER_DEP_ID),
     };
   }
 

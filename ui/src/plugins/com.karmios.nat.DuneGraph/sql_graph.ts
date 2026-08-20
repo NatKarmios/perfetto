@@ -263,34 +263,39 @@ const YIELD_EVERY = 10;
  * to be asked for; past the hard cap it refuses, because there the build doesn't
  * get slow, it takes the engine down with it.
  *
- * Both come from measurement (see PERF_PLAN.LOCAL.md), and both were revised
- * once the build was measured *in the wasm engine* rather than extrapolated from
- * `trace_processor -q`, which turns out to overstate the per-row cost by ~4×.
- * The monorepo trace's own 28.7M edges - the case the old 10M hard cap refused -
- * build in **57 s** and take the wasm heap from 1,468 MB to 3,010 MB
- * (**~54 bytes/row** marginal), against a 4 GB ceiling on the memory32 build and
- * 16 GB on the memory64 build every current browser loads
- * (`gn/standalone/wasm.gni`). So the hard cap is set above that measured point
- * with headroom: 40M rows is ~2.2 GB of edges, which fits alongside a
- * proportionally larger trace on memory64 and is the point past which even that
- * stops being true.
+ * Both come from measurement (see PERF_PLAN.LOCAL.md and PERF_SUMMARY.LOCAL.md),
+ * both in the wasm engine rather than extrapolated from `trace_processor -q`,
+ * which overstates the per-row cost by ~4×.
  *
- * The soft cap is unchanged and is about *time*, not memory: 2M rows is ~4 s, a
- * fine thing to do inside a load, where 28.7M is a minute and a half with the
- * reverse index and wants to be asked for.
+ * **Note these count edges, not rows.** Since the tier was factored on dep sets
+ * an edge is no longer a row: the monorepo trace's 28.8M edges are 6.33M stored
+ * rows, and the whole tier - reverse indexes included - builds in **18.9 s for
+ * +519 MB** of wasm heap (1,011 -> 1,530 MB), against 114 s and +1,895 MB when
+ * every edge was a row. Edges are what the caps keep counting because by the
+ * time they are consulted the graph is parsed and the exact edge count is known,
+ * where the row count would have to be predicted. The *pre-parse* gate has the
+ * opposite problem and so counts rows - see controller.ts's
+ * AUTO_LOAD_EDGE_ROW_LIMIT.
  *
- * **Both are now several times more conservative than they need to be**, and are
- * left alone here only so that factoring the tier is a behaviour-preserving
- * change. Every number above was measured against one row per edge; the same
- * 28.8M-edge trace now builds its whole edge tier, reverse indexes included, in
- * **18.9 s for +519 MB** of wasm heap (1,011 -> 1,530 MB), against 92 s and
- * +1,478 MB before. Revisiting the two caps, the auto-load gate and
- * `trace_graph_source.ts`'s `estimatedEdges` - which derives an edge count from
- * the *bytes* of a section that no longer contains one edge per id - is a
- * separate change.
+ * Both caps were raised by that measurement, each keeping the bar it was
+ * originally set by:
+ *
+ * - The soft cap is about *time*: a few seconds is a fine thing to do inside a
+ *   load. That used to be 2M edges at ~4 s; at 1.5 µs/edge it is now ~10M, and
+ *   28.8M at 18.9 s still wants to be asked for.
+ * - The hard cap is about *memory*, against a 4 GB ceiling on the memory32 build
+ *   (16 GB on memory64, which every current browser loads - see
+ *   `gn/standalone/wasm.gni`). At the measured 18 bytes/edge marginal, 100M
+ *   edges is ~1.8 GB, which still fits alongside a trace and a node tier on
+ *   memory32. The old 40M was set at 54 bytes/edge, i.e. the same ~2.2 GB.
+ *
+ * The soft cap therefore no longer separates any of the sample traces - the
+ * monorepo trace is over it and the rest are orders of magnitude under - but it
+ * is what stops a mid-size project paying for the tier unasked, and the band it
+ * opens (2M-10M edges, now a plain load) is the point of factoring the tier.
  */
-export const EDGE_SOFT_LIMIT = 2_000_000;
-export const EDGE_HARD_LIMIT = 40_000_000;
+export const EDGE_SOFT_LIMIT = 10_000_000;
+export const EDGE_HARD_LIMIT = 100_000_000;
 
 /**
  * Edge count above which the reverse path is left unindexed.
@@ -306,7 +311,9 @@ export const EDGE_HARD_LIMIT = 40_000_000;
  * This used to be 2M, on an extrapolated ~1.1 GB for the index at 28M rows.
  * Measured in the wasm engine on the monorepo trace's 28.7M edges the single
  * `dst` index it used to mean was **27.5 s and +101 MB** - 11× cheaper than the
- * estimate - and it is what makes the reverse direction usable at all:
+ * estimate - and now that the tier is factored the widest of the six indexes is
+ * `_dune_depset_add(dep_node_id)` at 4.03M rows rather than one at 28.7M. It is
+ * also what makes the reverse direction usable at all:
  * `dune_parents` on the most-depended node goes from **39.8 s to 1.2 s**, and
  * even `dune_all_ancestors`, which was supposed not to care, halves (43.4 s to
  * 19.1 s). So the two thresholds collapse into one: if the edge tier is built at
