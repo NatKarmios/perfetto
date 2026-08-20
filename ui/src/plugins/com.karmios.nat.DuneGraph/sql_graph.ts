@@ -21,11 +21,12 @@
  * their costs differ by orders of magnitude (see PERF_PLAN.LOCAL.md): the node
  * tier ({@link buildNodeMirror}) is one row per node plus its per-kind detail -
  * hundreds of thousands of rows on a monorepo-scale trace - while the edge tier
- * ({@link buildEdgeMirror}) is one row per *edge*, which on the same trace is
- * tens of millions. The node tier is what the side panel and the derived
- * timeline track need; the edge tier is what the relation functions and
- * `distances()` need. The edge tier reads `_dune_node` (its view joins both
- * endpoints), so it must be built after the node tier and disposed *before* it.
+ * ({@link buildEdgeMirror}) is the edges, which on the same trace are 28.8M of
+ * them (stored factored, so ~6.3M rows). The node tier is what the side panel
+ * and the derived timeline track need; the edge tier is what the relation
+ * functions and `distances()` need. The edge tier reads the node tier's
+ * `_dune_rule` and `_dune_dep` (and owns an index on the former), so it must be
+ * built after the node tier and disposed *before* it.
  *
  * **Every stored column is an integer.** The tables the rows are INSERTed into
  * hold ids, small codes and counts and nothing else; the text a query wants is
@@ -105,26 +106,58 @@
  * - `dune_string(id, str)` — the blob's intern table (see above). Also a plain
  *   table, for the same reason.
  * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage)` — a typed
- *   PERFETTO VIEW over the raw `_dune_edge(src, dst, flags)` table, with
- *   `src` / `dst` the endpoints' `node_id`s (chip-rendered; join
- *   `dune_node USING`-style on them for an endpoint's label or slice).
+ *   PERFETTO VIEW, with `src` / `dst` the endpoints' `node_id`s (chip-rendered;
+ *   join `dune_node USING`-style on them for an endpoint's label or slice).
  *   Directed edges
  *   where "source depends on dest" (dest is the prerequisite / upstream node):
  *     rule -> dep  (`edge_kind`: static | dynamic, latter carries `dyn_deps_stage`)
  *     dep  -> rule (`edge_kind`: resolved)
  *     dep  -> dep  (`edge_kind`: expanded)
  *   `forced` is 1 iff `dest` was forced into the build by `source` (i.e. dest's
- *   `forcedBy` names source); see `isForcedEdge` in graph.ts. All three of
- *   `forced` / `edge_kind` / `dyn_deps_stage` are packed into the one `flags`
- *   integer (see {@link edgeFlags}), so an edge row is three integers - at 28M
- *   rows the difference between ~50 and ~160 bytes per row decides whether the
- *   tier can be built at all. The relation functions read the raw `_dune_edge` /
- *   `_dune_node` directly.
- * - `_dune_node_out(node_id, first_rowid, n)` — forward adjacency as a *rowid
- *   range*. The edge rows are inserted in node-id order, i.e. in exactly the
- *   order of the in-memory CSR, so a node's out-edges are contiguous and can be
- *   found by rowid instead of through an index on `src` (see {@link edgeStep}).
- *   An index on 28M rows costs ~1.1 GB; this table costs ~15 MB.
+ *   `forcedBy` names source); see `isForcedEdge` in graph.ts.
+ *   **A rule's edges are not stored.** They are the members of the dep set the
+ *   blob named for it, and the same set recurs across thousands of rules, so the
+ *   view reconstructs them from the factored tables below - which is what takes
+ *   the tier from 28.8M stored rows to ~6M (see {@link buildEdgeMirror}).
+ *   Only a *dep* node's edges are still flat, in `_dune_edge(src, dst)`. `edge_kind`
+ *   and `dyn_deps_stage` are per-arm constants of the view rather than stored
+ *   columns, which is what retired the packed `flags` integer this tier used to
+ *   carry. The relation functions read none of this: they read the arms
+ *   directly (see {@link edgeArms}).
+ * - `_dune_core(core_id, first_rowid, n)` /
+ *   `_dune_core_member(core_id, dep_node_id)` — the shared *cores*: the common
+ *   member prefix of the popular dep sets (688 cores holding 125,583 members on
+ *   the monorepo trace, behind 47,181 of its 205,224 sets).
+ * - `_dune_depset(set_id, core_id, first_rowid, n)` /
+ *   `_dune_depset_add(set_id, dep_node_id)` — the dep sets: a core (or NULL) plus
+ *   the members the set adds on top of it, which are disjoint from the core by
+ *   construction. 205,224 sets / 4.03M adds on the monorepo trace, standing in
+ *   for 28.1M rule -> dep edges.
+ * - `_dune_rule_dyn_stage(node_id, stage, set_id)` — a rule's dynamic-dep
+ *   stages, each naming a set of the same table (NULL for an empty stage). Rare:
+ *   no real trace to hand has any dynamic deps at all.
+ * - `_dune_forced_edge(dst, src)` — the forced edges, materialized. A node has
+ *   at most *one* forcer (`forcedBy` is indexed by node id, see graph.ts), so
+ *   there are at most `nodeCount` of these - 772,532 against 28.8M edges on the
+ *   monorepo trace - and `dst` is their primary key. Cheap enough to make the
+ *   forced walks a table lookup instead of a predicate over the whole relation.
+ * - `_dune_node_out(node_id, first_rowid, n)` — forward adjacency for the *dep*
+ *   nodes as a *rowid range*. Their edge rows are inserted in node-id order,
+ *   i.e. in exactly the order of the in-memory CSR, so a node's out-edges are
+ *   contiguous and can be found by rowid instead of through an index on `src`.
+ * - `_dune_edge_all(src, dst)` — the whole edge relation, factored arms and flat
+ *   ones alike, as a plain view. For the callers that scan the edge set in full
+ *   (`graph_reachable_bfs!`, the distance query) and nothing else.
+ *
+ * The two header tables (`_dune_core`, `_dune_depset`) and the member tables
+ * they address are the mirror's one departure from "every table is keyed by
+ * `node_id`": their key is the *dense index* `graph_build.ts` assigned each core
+ * and set on arrival, not the blob's own `core_id` / `set_id`. Dense from zero
+ * means the key is the rowid, so a header lookup is a primary-key hit and needs
+ * no index; the blob's own ids are per-process join keys with no meaning outside
+ * one blob (see `BuildGraph.coreIdOf`), nothing user-facing exposes them, and
+ * the graph hands out the dense index anyway (`BuildGraph.depSetOf`), so
+ * nothing has to translate. `_dune_rule.dep_set` holds the same dense index.
  *
  * `node_id` **is the in-memory graph's own node id** (see graph.ts): the graph
  * numbers its nodes densely from zero for exactly the reason the stdlib graph
@@ -148,19 +181,12 @@
 import {sqliteString} from '../../base/string_utils';
 import type {Engine} from '../../trace_processor/engine';
 import {NUM} from '../../trace_processor/query_result';
-import type {
-  BuildGraph,
-  EdgeKind,
-  GraphEdge,
-  NodeId,
-  NodeTiming,
-} from './graph';
+import type {BuildGraph, NodeId, NodeTiming} from './graph';
 import {
   DEP_RESOLUTIONS,
   DEP_STATUSES,
   FORCED_BY_KINDS,
   RULE_OUTCOMES,
-  edges,
 } from './graph';
 import {
   TIMING_TABLE,
@@ -183,9 +209,23 @@ const RAW_RULE_TABLE = '_dune_rule';
 const DEP_TABLE = 'dune_dep';
 const RAW_DEP_TABLE = '_dune_dep';
 const EDGE_TABLE = 'dune_edge';
+// Dep-node edges only, now that a rule's are factored (see the file header).
 const RAW_EDGE_TABLE = '_dune_edge';
 // Forward adjacency as rowid ranges over RAW_EDGE_TABLE (see the file header).
 const OUT_TABLE = '_dune_node_out';
+// The factored dep sets a rule's static and dynamic edges are stored as.
+const CORE_TABLE = '_dune_core';
+const CORE_MEMBER_TABLE = '_dune_core_member';
+const DEPSET_TABLE = '_dune_depset';
+const DEPSET_ADD_TABLE = '_dune_depset_add';
+const DYN_STAGE_TABLE = '_dune_rule_dyn_stage';
+// The forced edges, materialized (see the file header).
+const FORCED_EDGE_TABLE = '_dune_forced_edge';
+// The whole edge relation as (src, dst), for the callers that scan it in full.
+const ALL_EDGE_VIEW = '_dune_edge_all';
+// Index on a *node*-tier table that only the edge tier needs, so the edge tier
+// creates and drops it (see buildEdgeMirror).
+const RULE_DEP_SET_INDEX = '_dune_rule_dep_set';
 // The two tables with no view over them: their columns are already exactly what
 // a query wants (see the file header).
 const RULE_TARGET_TABLE = 'dune_rule_target';
@@ -238,41 +278,45 @@ const YIELD_EVERY = 10;
  * The soft cap is unchanged and is about *time*, not memory: 2M rows is ~4 s, a
  * fine thing to do inside a load, where 28.7M is a minute and a half with the
  * reverse index and wants to be asked for.
+ *
+ * **Both are now several times more conservative than they need to be**, and are
+ * left alone here only so that factoring the tier is a behaviour-preserving
+ * change. Every number above was measured against one row per edge; the same
+ * 28.8M-edge trace now builds its whole edge tier, reverse indexes included, in
+ * **18.9 s for +519 MB** of wasm heap (1,011 -> 1,530 MB), against 92 s and
+ * +1,478 MB before. Revisiting the two caps, the auto-load gate and
+ * `trace_graph_source.ts`'s `estimatedEdges` - which derives an edge count from
+ * the *bytes* of a section that no longer contains one edge per id - is a
+ * separate change.
  */
 export const EDGE_SOFT_LIMIT = 2_000_000;
 export const EDGE_HARD_LIMIT = 40_000_000;
 
 /**
- * Edge count above which no index on `dst` is built.
+ * Edge count above which the reverse path is left unindexed.
  *
- * Forward walks never need one (they read the rowid ranges in `_dune_node_out`),
- * and neither does the unbounded reverse BFS in principle
- * (`graph_reachable_bfs!` reads the edge set once however it's shaped). Only
- * the *bounded* reverse walk - `dune_ancestors` / `dune_parents` - has to look
- * an edge up by `dst`.
+ * Forward walks never need an index (they read owner tables by primary key and
+ * member tables by rowid range - see {@link edgeArms}), and neither does the
+ * unbounded reverse BFS in principle (`graph_reachable_bfs!` reads the edge set
+ * once however it's shaped). Only the *bounded* reverse walk - `dune_ancestors`
+ * / `dune_parents` - has to find an edge by where it lands, which now means six
+ * indexes rather than one (see {@link buildEdgeMirror}) over ~5M rows rather
+ * than one over 28.8M.
  *
  * This used to be 2M, on an extrapolated ~1.1 GB for the index at 28M rows.
- * Measured in the wasm engine on the monorepo trace's 28.7M edges it is **27.5 s
- * and +101 MB** - 11× cheaper than the estimate - and it is what makes the
- * reverse direction usable at all: `dune_parents` on the most-depended node goes
- * from **39.8 s to 1.2 s**, and even `dune_all_ancestors`, which was supposed
- * not to care, halves (43.4 s to 19.1 s). So the two thresholds collapse into
- * one: if the edge tier is built at all, the index is built with it.
+ * Measured in the wasm engine on the monorepo trace's 28.7M edges the single
+ * `dst` index it used to mean was **27.5 s and +101 MB** - 11× cheaper than the
+ * estimate - and it is what makes the reverse direction usable at all:
+ * `dune_parents` on the most-depended node goes from **39.8 s to 1.2 s**, and
+ * even `dune_all_ancestors`, which was supposed not to care, halves (43.4 s to
+ * 19.1 s). So the two thresholds collapse into one: if the edge tier is built at
+ * all, the indexes are built with it.
  *
  * The threshold and {@link SqlEdgeMirror.reverseIndexed} stay rather than being
  * deleted, because the index is still the first thing to give up if a graph ever
  * turns up that the edge tier itself fits but the index doesn't.
  */
 export const REVERSE_INDEX_EDGE_LIMIT = EDGE_HARD_LIMIT;
-
-// Stored code of an edge kind: its index in this list, packed into `flags`.
-// Order is part of the encoding, so only ever append.
-const EDGE_KIND_CODES: readonly EdgeKind[] = [
-  'static',
-  'dynamic',
-  'resolved',
-  'expanded',
-];
 
 // Directed dependency distance between two nodes, broken down by node kind.
 // `total` is the number of hops on a shortest path; `dep`/`rule` are how many
@@ -569,7 +613,8 @@ function ruleRows(graph: BuildGraph): RowSource {
           `${graph.targetCount(id)}, ${graph.staticDepCount(id)}, ` +
           `${graph.dynStageCount(id)}`;
         const depsUnknown = graph.depsUnknownOf(id) ? 1 : 0;
-        yield `(${id}, ${int(graph.dirStrIdOf(id))}, ${graph.outcomeCodeOf(id)}, ${counts}, ${depsUnknown})`;
+        yield `(${id}, ${int(graph.dirStrIdOf(id))}, ${graph.outcomeCodeOf(id)}, ` +
+          `${counts}, ${depsUnknown}, ${int(graph.depSetOf(id))})`;
       }
     },
   };
@@ -662,7 +707,7 @@ export async function buildNodeMirror(
     RAW_RULE_TABLE,
     'node_id INTEGER PRIMARY KEY, dir_str_id INTEGER, outcome INTEGER, ' +
       'n_targets INTEGER, n_static_deps INTEGER, n_dyn_stages INTEGER, ' +
-      'deps_unknown INTEGER',
+      'deps_unknown INTEGER, dep_set INTEGER',
     [
       'node_id',
       'dir_str_id',
@@ -671,6 +716,7 @@ export async function buildNodeMirror(
       'n_static_deps',
       'n_dyn_stages',
       'deps_unknown',
+      'dep_set',
     ],
     ruleRows(graph),
     opts,
@@ -843,34 +889,45 @@ export async function buildNodeMirror(
 // ---------------------------------------------------------------------------
 
 /**
- * An edge's `forced` flag, kind and dynamic-dep stage packed into one integer:
- * bit 0 is `forced`, bits 1-2 the {@link EDGE_KIND_CODES} index, the rest the
- * stage (meaningful only for a `dynamic` edge). Three integer columns instead of
- * seven mixed ones is the difference between ~50 and ~160 bytes per row, and at
- * 28M rows that decides whether the tier can be built at all.
+ * Where each owner's stored members start in its member table, as a running
+ * total: the count of every *stored* member (dangling references never reach
+ * SQL, so this is not the in-memory table's own offset array) preceding owner
+ * `owner`'s run. `offsets[count]` is therefore the total row count, and
+ * `offsets[owner] + 1` the rowid the owner's first member lands on - rows are
+ * inserted in this same owner order into a freshly created table, so SQLite's
+ * rowids run 1..N with it.
+ *
+ * Shared by the two member tables (`_dune_core_member`, `_dune_depset_add`),
+ * whose accessors have the same shape.
  */
-function edgeFlags(edge: GraphEdge): number {
-  const kind = EDGE_KIND_CODES.indexOf(edge.edgeKind ?? 'static');
-  return (
-    (edge.forced ? 1 : 0) |
-    (Math.max(kind, 0) << 1) |
-    ((edge.dynDepsStage ?? 0) << 3)
-  );
+function memberOffsets(
+  count: number,
+  start: (owner: number) => number,
+  end: (owner: number) => number,
+  target: (i: number) => number,
+): Int32Array {
+  const offsets = new Int32Array(count + 1);
+  let total = 0;
+  for (let owner = 0; owner < count; owner++) {
+    offsets[owner] = total;
+    for (let i = start(owner); i < end(owner); i++) {
+      if (target(i) >= 0) total++;
+    }
+  }
+  offsets[count] = total;
+  return offsets;
 }
 
-/**
- * Where each node's out-edges start in the edge table, as a running total: the
- * count of every *stored* edge (dangling references never reach SQL, so this is
- * not the in-memory CSR's own offset array) preceding node `id`'s run.
- * `offsets[nodeCount]` is therefore the total row count, and `offsets[id] + 1`
- * the rowid the node's first edge lands on - rows are inserted in this same node
- * order into a freshly created table, so SQLite's rowids run 1..N with it.
- */
-function edgeOffsets(graph: BuildGraph): Int32Array {
+// The same, for the *dep* nodes' out-edges - the only edges still stored flat
+// (see the file header). Indexed by node id across the whole space so
+// {@link outRows} can stay as it is: a rule contributes a zero-length run,
+// which is exactly what a node with no stored out-edges already looked like.
+function depEdgeOffsets(graph: BuildGraph): Int32Array {
   const offsets = new Int32Array(graph.nodeCount + 1);
   let total = 0;
   for (let id = 0; id < graph.nodeCount; id++) {
     offsets[id] = total;
+    if (id < graph.ruleCount) continue;
     for (let i = graph.outStart(id); i < graph.outEnd(id); i++) {
       if (graph.outTarget(i) >= 0) total++;
     }
@@ -879,19 +936,145 @@ function edgeOffsets(graph: BuildGraph): Int32Array {
   return offsets;
 }
 
-function edgeRows(graph: BuildGraph, count: number): RowSource {
+/**
+ * The one full pass over the in-memory CSR the edge tier still makes, and the
+ * two things only a full pass can answer:
+ *
+ * - `edgeCount`, the number of edges the mirror represents. Not the number of
+ *   stored *rows* any more - a rule's edges are stored factored, so the two
+ *   differ by ~6x - but it is what the caps are written against and what the
+ *   panel reports, so it is still counted exactly rather than estimated.
+ * - `forcedSrc[dst]`, the source of `dst`'s forced edge or -1. A node records a
+ *   single forcer (see `isForcedEdge` in graph.ts), so this is a column, not a
+ *   list - which is the whole reason {@link FORCED_EDGE_TABLE} is affordable.
+ *
+ * `forcedSrc` is *not* just `graph.forcerOf`: a node's recorded forcer need not
+ * list it as a dependency, and on the monorepo trace 45,503 of 818,035 recorded
+ * forcers name no edge at all. Only pairs that really are edges belong in the
+ * forced edge table, which is why this reads the CSR rather than the forcer
+ * column. Filling it by `dst` also makes the table's rows unique in `dst` (a
+ * duplicated `src -> dst` edge, e.g. a dep listed both statically and
+ * dynamically, collapses into the one row), which is what lets `dst` be its
+ * INTEGER PRIMARY KEY.
+ */
+interface EdgeCensus {
+  readonly edgeCount: number;
+  readonly forcedSrc: Int32Array;
+  readonly forcedCount: number;
+}
+
+function censusEdges(graph: BuildGraph): EdgeCensus {
+  const forcedSrc = new Int32Array(graph.nodeCount).fill(-1);
+  let edgeCount = 0;
+  let forcedCount = 0;
+  for (let source = 0; source < graph.nodeCount; source++) {
+    for (let i = graph.outStart(source); i < graph.outEnd(source); i++) {
+      const dest = graph.outTarget(i);
+      if (dest < 0) continue;
+      edgeCount++;
+      if (graph.forcerOf(dest) === source && forcedSrc[dest] < 0) {
+        forcedSrc[dest] = source;
+        forcedCount++;
+      }
+    }
+  }
+  return {edgeCount, forcedSrc, forcedCount};
+}
+
+// One header row per owner, mapping it to the rowid range of its run in the
+// member table (see {@link memberOffsets}). Unlike `_dune_node_out` every owner
+// gets a row even when its run is empty: the row carries the owner's other
+// columns too (a set's `core_id`), and a set with no adds still has a core.
+function ownerRows(offsets: Int32Array, extra?: (owner: number) => string) {
+  const count = offsets.length - 1;
   return {
     count,
     *rows(): Iterable<string> {
-      for (const edge of edges(graph)) {
-        yield `(${edge.source}, ${edge.dest}, ${edgeFlags(edge)})`;
+      for (let owner = 0; owner < count; owner++) {
+        const cols = extra === undefined ? '' : `, ${extra(owner)}`;
+        yield `(${owner}${cols}, ${offsets[owner] + 1}, ${
+          offsets[owner + 1] - offsets[owner]
+        })`;
+      }
+    },
+  };
+}
+
+// One row per stored member, in owner order - which is what makes the header
+// tables' rowid ranges work. Dangling references are skipped, exactly as they
+// are for the flat edges.
+function memberRows(
+  offsets: Int32Array,
+  start: (owner: number) => number,
+  end: (owner: number) => number,
+  target: (i: number) => number,
+): RowSource {
+  const count = offsets.length - 1;
+  return {
+    count: offsets[count],
+    *rows(): Iterable<string> {
+      for (let owner = 0; owner < count; owner++) {
+        for (let i = start(owner); i < end(owner); i++) {
+          const node = target(i);
+          if (node >= 0) yield `(${owner}, ${node})`;
+        }
+      }
+    },
+  };
+}
+
+// One row per (rule, dynamic-dep stage): the stage's dep set, or NULL for an
+// empty stage (`3||5` in the blob is three stages, the middle one with no deps -
+// see graph.ts). Rare enough that this is usually empty: the monorepo trace has
+// no dynamic deps at all.
+function dynStageRows(graph: BuildGraph): RowSource {
+  let count = 0;
+  for (let id = 0; id < graph.ruleCount; id++) count += graph.dynStageCount(id);
+  return {
+    count,
+    *rows(): Iterable<string> {
+      for (let id = 0; id < graph.ruleCount; id++) {
+        const stages = graph.dynStageCount(id);
+        for (let stage = 0; stage < stages; stage++) {
+          yield `(${id}, ${stage}, ${int(graph.dynStageSetOf(id, stage))})`;
+        }
+      }
+    },
+  };
+}
+
+// The dep nodes' flat out-edges, in node order (so the rowid ranges in
+// {@link outRows} address them).
+function depEdgeRows(graph: BuildGraph, count: number): RowSource {
+  return {
+    count,
+    *rows(): Iterable<string> {
+      for (let id = graph.ruleCount; id < graph.nodeCount; id++) {
+        for (let i = graph.outStart(id); i < graph.outEnd(id); i++) {
+          const target = graph.outTarget(i);
+          if (target >= 0) yield `(${id}, ${target})`;
+        }
+      }
+    },
+  };
+}
+
+// The forced edges (see {@link censusEdges}), keyed by `dst`: one row per node
+// that some node forced into the build *and* depends on.
+function forcedEdgeRows(census: EdgeCensus): RowSource {
+  return {
+    count: census.forcedCount,
+    *rows(): Iterable<string> {
+      const {forcedSrc} = census;
+      for (let dst = 0; dst < forcedSrc.length; dst++) {
+        if (forcedSrc[dst] >= 0) yield `(${dst}, ${forcedSrc[dst]})`;
       }
     },
   };
 }
 
 // One row per node that has any out-edges, mapping it to the rowid range of its
-// run in the edge table (see {@link edgeOffsets}). Nodes with none are simply
+// run in the edge table (see {@link depEdgeOffsets}). Nodes with none are simply
 // absent, which is exactly what a join against this wants.
 function outRows(offsets: Int32Array): RowSource {
   const nodeCount = offsets.length - 1;
@@ -910,21 +1093,281 @@ function outRows(offsets: Int32Array): RowSource {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The edge relation, as SQL.
+//
+// A rule's edges are not stored; they are its dep set's members, which is one
+// join from the set's core plus one range scan of the set's own adds (the
+// factoring is depth 1 - a core never references another core - so no recursion
+// is involved anywhere below). That makes the relation a five-arm union, and
+// everything that reads edges reads it through one of the three shapes here:
+//
+// - {@link edgeArms} - the arms as *join chains off a known node*, for a single
+//   hop in a walk. This is the shape the relation functions use, and the one
+//   the perf of the whole tier rests on: see the comment there.
+// - {@link ALL_EDGE_VIEW} - the arms as a plain `(src, dst)` view, for the
+//   callers that scan the whole relation (`graph_reachable_bfs!`).
+// - {@link EDGE_TABLE} - the same arms with `forced` / `edge_kind` /
+//   `dyn_deps_stage` decorations, i.e. the public compatibility view.
+// ---------------------------------------------------------------------------
+
+// The member side of a rule arm, given the alias of its `_dune_depset` row:
+// either the set's core's members or the set's own adds, both reached by rowid
+// range off a header table (see {@link memberOffsets}), so neither member table
+// needs an index on its owner column.
+//
+// The core join is an inner join on purpose: 158,043 of the monorepo trace's
+// 205,224 sets have no core, and `xs.core_id IS NULL` has to drop those rows
+// rather than emit a NULL endpoint.
+function coreMemberJoin(set: string): string {
+  return `JOIN ${CORE_TABLE} xc ON xc.core_id = ${set}.core_id
+        JOIN ${CORE_MEMBER_TABLE} xm
+          ON xm.rowid >= xc.first_rowid
+          AND xm.rowid < xc.first_rowid + xc.n`;
+}
+
+function depSetAddJoin(set: string): string {
+  return `JOIN ${DEPSET_ADD_TABLE} xa
+          ON xa.rowid >= ${set}.first_rowid
+          AND xa.rowid < ${set}.first_rowid + ${set}.n`;
+}
+
+/**
+ * The arms of the edge relation as join chains reaching the nodes one hop from
+ * `source` (a node-id expression) in direction `dir`, each with the expression
+ * naming the endpoint the hop lands on.
+ *
+ * **Each arm is spliced into its own recursive term** rather than joined as one
+ * union - that is the load-bearing decision in this file, and it was measured,
+ * not assumed. SQLite pushes a *constant* constraint down into a compound
+ * subquery happily (`WHERE src = 12345` against the union view is ~0.15 ms),
+ * but it does not push down a constraint that comes from joining the recursive
+ * table: `JOIN <union view> e ON e.src = s.node_id` inside a recursive term
+ * re-derives the whole relation per iteration. On a synthetic 5.4M-row stand-in
+ * for this mirror a depth-2 walk cost **2.7 s** that way against **~0 ms** with
+ * the arms as separate recursive terms - a >1,000x difference that only grows
+ * with the real trace's 28.8M. SQLite allows a recursive CTE to have several
+ * recursive terms as long as each references the recursive table once, which is
+ * what makes this expressible at all.
+ *
+ * So: `dune_edge` stays a compatibility view for ad-hoc SQL (where a constant
+ * constraint *is* pushed down and the view is fine), and the walks get the arms.
+ *
+ * The two directions are different join chains over the same tables, not the
+ * same chain read backwards, because the forward path is rowid ranges (no index
+ * on an owner column) while the reverse path probes the member tables by
+ * `dep_node_id` and then walks back up to the rules through the indexes listed
+ * in {@link buildEdgeMirror}.
+ *
+ * `forcedOnly` restricts to forced edges, which are materialized flat, so both
+ * directions collapse to a single arm over {@link FORCED_EDGE_TABLE} - no flag
+ * test and no range scan (this is what `dune_forcers` / `dune_forced` walk).
+ */
+interface EdgeArm {
+  readonly join: string;
+  readonly dest: string;
+}
+
+function edgeArms(
+  dir: Direction,
+  source: string,
+  opts: {forcedOnly?: boolean} = {},
+): readonly EdgeArm[] {
+  if (opts.forcedOnly) {
+    return dir === 'down'
+      ? [
+          {
+            join: `JOIN ${FORCED_EDGE_TABLE} xf ON xf.src = ${source}`,
+            dest: 'xf.dst',
+          },
+        ]
+      : [
+          {
+            join: `JOIN ${FORCED_EDGE_TABLE} xf ON xf.dst = ${source}`,
+            dest: 'xf.src',
+          },
+        ];
+  }
+  if (dir === 'down') {
+    // A rule node's set (static) or one stage's set (dynamic), expanded; then a
+    // dep node's own out-edges, still flat, by rowid range exactly as before.
+    const ruleSet = `JOIN ${RAW_RULE_TABLE} xr ON xr.node_id = ${source}
+        JOIN ${DEPSET_TABLE} xs ON xs.set_id = xr.dep_set`;
+    const stageSet = `JOIN ${DYN_STAGE_TABLE} xg ON xg.node_id = ${source}
+        JOIN ${DEPSET_TABLE} xs ON xs.set_id = xg.set_id`;
+    return [
+      {
+        join: `${ruleSet}\n        ${coreMemberJoin('xs')}`,
+        dest: 'xm.dep_node_id',
+      },
+      {
+        join: `${ruleSet}\n        ${depSetAddJoin('xs')}`,
+        dest: 'xa.dep_node_id',
+      },
+      {
+        join: `${stageSet}\n        ${coreMemberJoin('xs')}`,
+        dest: 'xm.dep_node_id',
+      },
+      {
+        join: `${stageSet}\n        ${depSetAddJoin('xs')}`,
+        dest: 'xa.dep_node_id',
+      },
+      {
+        join: `JOIN ${OUT_TABLE} xo ON xo.node_id = ${source}
+        JOIN ${RAW_EDGE_TABLE} xe
+          ON xe.rowid >= xo.first_rowid
+          AND xe.rowid < xo.first_rowid + xo.n`,
+        dest: 'xe.dst',
+      },
+    ];
+  }
+  // Upwards: from a dep node to everything that names it. Two chains per owner
+  // kind - the dep is either one of its set's own adds, or a member of the
+  // set's core, which every set sharing that core inherits.
+  const viaAdd = `JOIN ${DEPSET_ADD_TABLE} xa ON xa.dep_node_id = ${source}`;
+  const viaCore = `JOIN ${CORE_MEMBER_TABLE} xm ON xm.dep_node_id = ${source}
+        JOIN ${DEPSET_TABLE} xs ON xs.core_id = xm.core_id`;
+  return [
+    {
+      join: `${viaCore}\n        JOIN ${RAW_RULE_TABLE} xr ON xr.dep_set = xs.set_id`,
+      dest: 'xr.node_id',
+    },
+    {
+      join: `${viaAdd}\n        JOIN ${RAW_RULE_TABLE} xr ON xr.dep_set = xa.set_id`,
+      dest: 'xr.node_id',
+    },
+    {
+      join: `${viaCore}\n        JOIN ${DYN_STAGE_TABLE} xg ON xg.set_id = xs.set_id`,
+      dest: 'xg.node_id',
+    },
+    {
+      join: `${viaAdd}\n        JOIN ${DYN_STAGE_TABLE} xg ON xg.set_id = xa.set_id`,
+      dest: 'xg.node_id',
+    },
+    {join: `JOIN ${RAW_EDGE_TABLE} xe ON xe.dst = ${source}`, dest: 'xe.src'},
+  ];
+}
+
+/**
+ * The whole edge relation as `(src, dst)`, for the callers that read it in full
+ * - `graph_reachable_bfs!` and the distance query, which scan the edge set once
+ * however it is shaped, so there is nothing a constraint or an index could save
+ * them. Written driving from the *owner* tables, so a full scan of it is a scan
+ * of `_dune_rule` with a rowid-range scan of the member tables per set.
+ *
+ * A plain view, not a PERFETTO one: it is internal, its two columns need no
+ * declared types, and PERFETTO views cannot be created over a plain table's
+ * rowid ranges without naming every column.
+ */
+function allEdgeView(): string {
+  return `
+    CREATE VIEW ${ALL_EDGE_VIEW} AS
+    SELECT xr.node_id AS src, xm.dep_node_id AS dst
+      FROM ${RAW_RULE_TABLE} xr
+      JOIN ${DEPSET_TABLE} xs ON xs.set_id = xr.dep_set
+      ${coreMemberJoin('xs')}
+    UNION ALL
+    SELECT xr.node_id, xa.dep_node_id
+      FROM ${RAW_RULE_TABLE} xr
+      JOIN ${DEPSET_TABLE} xs ON xs.set_id = xr.dep_set
+      ${depSetAddJoin('xs')}
+    UNION ALL
+    SELECT xg.node_id, xm.dep_node_id
+      FROM ${DYN_STAGE_TABLE} xg
+      JOIN ${DEPSET_TABLE} xs ON xs.set_id = xg.set_id
+      ${coreMemberJoin('xs')}
+    UNION ALL
+    SELECT xg.node_id, xa.dep_node_id
+      FROM ${DYN_STAGE_TABLE} xg
+      JOIN ${DEPSET_TABLE} xs ON xs.set_id = xg.set_id
+      ${depSetAddJoin('xs')}
+    UNION ALL
+    SELECT xe.src, xe.dst FROM ${RAW_EDGE_TABLE} xe`;
+}
+
+/**
+ * The public `dune_edge` view: the same five arms, with the columns the mirror
+ * has always exposed. `edge_kind` and `dyn_deps_stage` are per-arm constants
+ * now that the arms are separate (which is what retired the `flags` word and
+ * its packing), and `forced` is a primary-key probe into
+ * {@link FORCED_EDGE_TABLE} keyed by `dst` - at most one row per `dst`, so the
+ * LEFT JOIN cannot multiply an arm's rows.
+ *
+ * `UNION ALL` throughout: a set's adds are its members minus its core, so the
+ * first two arms are disjoint by construction (the blob contract guarantees it,
+ * and `graph_build.ts` asserts it at ingest). If that ever regresses the fix is
+ * `UNION`, at the cost of a sort over the whole relation.
+ */
+function edgeView(): string {
+  const resolvedCode = DEP_RESOLUTIONS.indexOf('rule');
+  // `forced` for an arm, given its endpoint expressions: dst's forcer (if it
+  // has one) has to be this very src.
+  const forcedJoin = (dst: string) =>
+    `LEFT JOIN ${FORCED_EDGE_TABLE} xf ON xf.dst = ${dst}`;
+  const forced = (src: string) => `iif(xf.src = ${src}, 1, 0) AS forced`;
+  const ruleSet = `JOIN ${DEPSET_TABLE} xs ON xs.set_id = xr.dep_set`;
+  const stageSet = `JOIN ${DEPSET_TABLE} xs ON xs.set_id = xg.set_id`;
+  return `
+    CREATE PERFETTO VIEW ${EDGE_TABLE}(
+      src LONG,
+      dst LONG,
+      forced LONG,
+      edge_kind STRING,
+      dyn_deps_stage LONG
+    ) AS
+    SELECT xr.node_id AS src, xm.dep_node_id AS dst,
+      ${forced('xr.node_id')},
+      'static' AS edge_kind, NULL AS dyn_deps_stage
+      FROM ${RAW_RULE_TABLE} xr
+      ${ruleSet}
+      ${coreMemberJoin('xs')}
+      ${forcedJoin('xm.dep_node_id')}
+    UNION ALL
+    SELECT xr.node_id, xa.dep_node_id, ${forced('xr.node_id')},
+      'static', NULL
+      FROM ${RAW_RULE_TABLE} xr
+      ${ruleSet}
+      ${depSetAddJoin('xs')}
+      ${forcedJoin('xa.dep_node_id')}
+    UNION ALL
+    SELECT xg.node_id, xm.dep_node_id, ${forced('xg.node_id')},
+      'dynamic', xg.stage
+      FROM ${DYN_STAGE_TABLE} xg
+      ${stageSet}
+      ${coreMemberJoin('xs')}
+      ${forcedJoin('xm.dep_node_id')}
+    UNION ALL
+    SELECT xg.node_id, xa.dep_node_id, ${forced('xg.node_id')},
+      'dynamic', xg.stage
+      FROM ${DYN_STAGE_TABLE} xg
+      ${stageSet}
+      ${depSetAddJoin('xs')}
+      ${forcedJoin('xa.dep_node_id')}
+    UNION ALL
+    SELECT xe.src, xe.dst, ${forced('xe.src')},
+      iif(xd.resolution = ${resolvedCode}, 'resolved', 'expanded'), NULL
+      FROM ${RAW_EDGE_TABLE} xe
+      JOIN ${RAW_DEP_TABLE} xd ON xd.node_id = xe.src
+      ${forcedJoin('xe.dst')}`;
+}
+
 /**
  * Builds the edge tier of the mirror (`dune_edge` + the relation functions +
  * `distances()`) on top of an already-built {@link SqlNodeMirror}, whose
  * `node_id` space the edge endpoints live in.
  *
- * This is the expensive half - one row per edge, tens of millions of them on a
- * monorepo-scale trace (see PERF_PLAN.LOCAL.md) - so it is built as its own
- * step, and the caller decides when (or whether) to pay for it. Past
- * {@link EDGE_HARD_LIMIT} rows it refuses outright rather than taking the engine
- * down: there is no partial state to leave behind, since nothing has been
- * created yet at that point.
+ * A rule's edges are stored *factored* - as the dep set the blob named, shared
+ * across every rule that named it - so this is no longer one row per edge: on
+ * the monorepo trace it is ~6M rows for 28.8M edges. What it still is, is the
+ * expensive half of the mirror, so it is built as its own step and the caller
+ * decides when (or whether) to pay for it. Past {@link EDGE_HARD_LIMIT} edges it
+ * refuses outright rather than taking the engine down: there is no partial state
+ * to leave behind, since nothing has been created yet at that point.
  *
  * Rebuilding is idempotent. The returned handle must be disposed *before* the
- * node mirror it was built against: its view joins `_dune_node`, and the
- * relation functions read it too.
+ * node mirror it was built against: its view joins `_dune_dep`, the relation
+ * functions read `_dune_node` and `_dune_rule`, and it owns an index on
+ * `_dune_rule`.
  */
 export async function buildEdgeMirror(
   engine: Engine,
@@ -940,15 +1383,16 @@ export async function buildEdgeMirror(
     nodeCount: nodes.nodeCount,
   };
 
-  // The offsets double as the exact row count, so the cap is checked against
-  // what will really be inserted rather than against the CSR's slot count
-  // (which includes references to nodes the blob never recorded).
-  const offsets = measureSync(perf, 'sql: edge offsets', (p) => {
-    const computed = edgeOffsets(graph);
-    p.rows(computed[graph.nodeCount]);
+  // One pass over the CSR: the exact edge count the caps are checked against
+  // (rather than the CSR's slot count, which includes references to nodes the
+  // blob never recorded) and the forced edges.
+  const census = measureSync(perf, 'sql: edge census', (p) => {
+    const computed = censusEdges(graph);
+    p.rows(computed.edgeCount);
+    p.note(`${computed.forcedCount.toLocaleString()} forced`);
     return computed;
   });
-  const edgeCount = offsets[graph.nodeCount];
+  const edgeCount = census.edgeCount;
   if (edgeCount > EDGE_HARD_LIMIT) {
     throw new Error(
       `This graph has ${edgeCount.toLocaleString()} edges, past the ` +
@@ -959,15 +1403,100 @@ export async function buildEdgeMirror(
     );
   }
 
-  // Drop the view first: it reads from the raw table materializeTable
+  // Where every stored member lands, which is what the header tables' rowid
+  // ranges are.
+  const {coreOffsets, setOffsets, depOffsets} = measureSync(
+    perf,
+    'sql: member offsets',
+    (p) => {
+      const offsets = {
+        coreOffsets: memberOffsets(
+          graph.coreCount,
+          (c) => graph.coreMemberStart(c),
+          (c) => graph.coreMemberEnd(c),
+          (i) => graph.coreMemberTarget(i),
+        ),
+        setOffsets: memberOffsets(
+          graph.depSetCount,
+          (set) => graph.depSetAddStart(set),
+          (set) => graph.depSetAddEnd(set),
+          (i) => graph.depSetAddTarget(i),
+        ),
+        depOffsets: depEdgeOffsets(graph),
+      };
+      p.rows(
+        offsets.coreOffsets[graph.coreCount] +
+          offsets.setOffsets[graph.depSetCount] +
+          offsets.depOffsets[graph.nodeCount],
+      );
+      return offsets;
+    },
+  );
+
+  // Drop the views first: they read from the raw tables materializeTable
   // recreates.
   await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
+  await engine.tryQuery(`DROP VIEW IF EXISTS ${ALL_EDGE_VIEW}`);
+
+  const coreTable = await materializeTable(
+    engine,
+    CORE_TABLE,
+    'core_id INTEGER PRIMARY KEY, first_rowid INTEGER, n INTEGER',
+    ['core_id', 'first_rowid', 'n'],
+    ownerRows(coreOffsets),
+    opts,
+  );
+  const coreMemberTable = await materializeTable(
+    engine,
+    CORE_MEMBER_TABLE,
+    'core_id INTEGER, dep_node_id INTEGER',
+    ['core_id', 'dep_node_id'],
+    memberRows(
+      coreOffsets,
+      (c) => graph.coreMemberStart(c),
+      (c) => graph.coreMemberEnd(c),
+      (i) => graph.coreMemberTarget(i),
+    ),
+    opts,
+  );
+  const depSetTable = await materializeTable(
+    engine,
+    DEPSET_TABLE,
+    'set_id INTEGER PRIMARY KEY, core_id INTEGER, first_rowid INTEGER, ' +
+      'n INTEGER',
+    ['set_id', 'core_id', 'first_rowid', 'n'],
+    ownerRows(setOffsets, (s) => int(graph.coreOfDepSet(s))),
+    opts,
+  );
+  const depSetAddTable = await materializeTable(
+    engine,
+    DEPSET_ADD_TABLE,
+    'set_id INTEGER, dep_node_id INTEGER',
+    ['set_id', 'dep_node_id'],
+    memberRows(
+      setOffsets,
+      (s) => graph.depSetAddStart(s),
+      (s) => graph.depSetAddEnd(s),
+      (i) => graph.depSetAddTarget(i),
+    ),
+    opts,
+  );
+  const stages = dynStageRows(graph);
+  const dynStageCount = stages.count;
+  const dynStageTable = await materializeTable(
+    engine,
+    DYN_STAGE_TABLE,
+    'node_id INTEGER, stage INTEGER, set_id INTEGER',
+    ['node_id', 'stage', 'set_id'],
+    stages,
+    opts,
+  );
   const rawEdgeTable = await materializeTable(
     engine,
     RAW_EDGE_TABLE,
-    'src INTEGER, dst INTEGER, flags INTEGER',
-    ['src', 'dst', 'flags'],
-    edgeRows(graph, edgeCount),
+    'src INTEGER, dst INTEGER',
+    ['src', 'dst'],
+    depEdgeRows(graph, depOffsets[graph.nodeCount]),
     opts,
   );
   const outTable = await materializeTable(
@@ -975,49 +1504,81 @@ export async function buildEdgeMirror(
     OUT_TABLE,
     'node_id INTEGER PRIMARY KEY, first_rowid INTEGER, n INTEGER',
     ['node_id', 'first_rowid', 'n'],
-    outRows(offsets),
+    outRows(depOffsets),
+    opts,
+  );
+  // The one index the *forward* path needs, because this is the only owner
+  // table not keyed by its owner column (a rule has several stages, so
+  // `node_id` can't be the rowid, and the stages are not scanned by rowid range
+  // - `_dune_depset` is reached from each stage's `set_id`). Unconditional,
+  // unlike the reverse-path indexes below: a downward hop would otherwise scan
+  // the whole table per rule. Free in practice - no dune trace to hand records
+  // a single dynamic dep - but a graph that did would make every walk quadratic.
+  await measure(perf, `sql: index ${DYN_STAGE_TABLE}`, async (p) => {
+    await engine.query(
+      `CREATE INDEX IF NOT EXISTS ${DYN_STAGE_TABLE}_node_id ` +
+        `ON ${DYN_STAGE_TABLE}(node_id)`,
+    );
+    p.rows(dynStageCount);
+  });
+
+  const forcedEdgeTable = await materializeTable(
+    engine,
+    FORCED_EDGE_TABLE,
+    'dst INTEGER PRIMARY KEY, src INTEGER',
+    ['dst', 'src'],
+    forcedEdgeRows(census),
     opts,
   );
 
-  // Forward adjacency needs no index at all - `_dune_node_out` turns a node
-  // into a rowid range over the edge table, which is stored in exactly that
-  // order. Only the *bounded* reverse walk looks an edge up by `dst`, and that
-  // index is affordable only on a small enough graph (see
-  // REVERSE_INDEX_EDGE_LIMIT). Plain (non-PERFETTO) index on a plain table;
-  // dropped automatically when the table is dropped.
+  // Indexes, all of them on the *reverse* path: a walk downwards reads owner
+  // tables by primary key and member tables by rowid range (see
+  // {@link edgeArms}), so nothing forward needs one. Upwards, every arm starts
+  // from a `dep_node_id` and has to climb back to the rules, and the forced
+  // walk downwards needs `src`.
+  //
+  // `_dune_rule(dep_set)` is an index on a *node*-tier table that only this
+  // tier uses, so this tier creates and drops it; it goes away by itself if the
+  // node tier is rebuilt underneath us.
+  //
+  // Plain (non-PERFETTO) indexes on plain tables - a PERFETTO INDEX is not used
+  // to serve a join probe (see PERF_SUMMARY.LOCAL.md), which is the trap this
+  // design would otherwise walk straight into.
   const reverseIndexed = edgeCount <= REVERSE_INDEX_EDGE_LIMIT;
   if (reverseIndexed) {
-    await measure(perf, `sql: index ${RAW_EDGE_TABLE}`, async (p) => {
+    await measure(perf, 'sql: index the reverse path', async (p) => {
+      const index = async (table: string, column: string) => {
+        await engine.query(
+          `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
+        );
+      };
+      await index(CORE_MEMBER_TABLE, 'dep_node_id');
+      await index(DEPSET_ADD_TABLE, 'dep_node_id');
+      await index(DEPSET_TABLE, 'core_id');
+      await index(DYN_STAGE_TABLE, 'set_id');
+      await index(RAW_EDGE_TABLE, 'dst');
+      await index(FORCED_EDGE_TABLE, 'src');
       await engine.query(
-        `CREATE INDEX ${RAW_EDGE_TABLE}_dst ON ${RAW_EDGE_TABLE}(dst)`,
+        `CREATE INDEX IF NOT EXISTS ${RULE_DEP_SET_INDEX} ` +
+          `ON ${RAW_RULE_TABLE}(dep_set)`,
       );
-      p.rows(edgeCount);
-      p.note('dst');
+      p.rows(
+        coreOffsets[graph.coreCount] +
+          setOffsets[graph.depSetCount] +
+          graph.depSetCount +
+          depOffsets[graph.nodeCount] +
+          census.forcedCount +
+          graph.ruleCount,
+      );
     });
   }
 
-  // Typed view over the raw edge table: the endpoints as `node_id`s (which is
-  // what the query tab chip-renders, and what the relation functions take as
-  // their argument) plus the unpacked `forced`/`edge_kind`/`dyn_deps_stage`
-  // unpacked out of `flags`. Nothing but `_dune_edge` is read - an endpoint's
-  // slice/kind/label is one `JOIN dune_node ON node_id = src` away, and paying
-  // for it here would put four joins under all 28M rows.
-  await measure(perf, 'sql: create edge view', async () => {
-    const kindCode = '((e.flags >> 1) & 3)';
-    await engine.query(`
-      CREATE PERFETTO VIEW ${EDGE_TABLE}(
-        src LONG,
-        dst LONG,
-        forced LONG,
-        edge_kind STRING,
-        dyn_deps_stage LONG
-      ) AS
-      SELECT e.src AS src, e.dst AS dst, (e.flags & 1) AS forced,
-        ${codeCase(kindCode, EDGE_KIND_CODES)} AS edge_kind,
-        iif(${kindCode} = ${EDGE_KIND_CODES.indexOf('dynamic')},
-          e.flags >> 3, NULL) AS dyn_deps_stage
-      FROM ${RAW_EDGE_TABLE} e
-    `);
+  // The internal (src, dst) view the full-relation scans read, and the public
+  // typed view. Both spell out the same five arms - see {@link edgeArms} for
+  // why the walks do *not* read either of them.
+  await measure(perf, 'sql: create edge views', async () => {
+    await engine.query(allEdgeView());
+    await engine.query(edgeView());
   });
 
   await measure(perf, 'sql: create relation functions', async () => {
@@ -1048,17 +1609,26 @@ export async function buildEdgeMirror(
 
     async [Symbol.asyncDispose](): Promise<void> {
       // Drop the relation function/macro vtabs first (a stale one left around
-      // after the raw table is dropped fails opaquely - "no such table:
-      // _dune_edge" - on the next ad-hoc query instead of cleanly), then the
-      // view, then the raw tables they (or the query tab) read from.
+      // after the raw tables are dropped fails opaquely - "no such table:
+      // _dune_depset" - on the next ad-hoc query instead of cleanly), then the
+      // views, then the raw tables they (or the query tab) read from.
       // Macros can't be dropped - there's no `DROP PERFETTO MACRO` - but
       // CREATE OR REPLACE on the next reload handles them.
       for (const {name} of RELATION_FUNCTIONS) {
         await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
       }
       await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
+      await engine.tryQuery(`DROP VIEW IF EXISTS ${ALL_EDGE_VIEW}`);
+      // Ours, on someone else's table (see above).
+      await engine.tryQuery(`DROP INDEX IF EXISTS ${RULE_DEP_SET_INDEX}`);
+      await forcedEdgeTable[Symbol.asyncDispose]();
       await outTable[Symbol.asyncDispose]();
       await rawEdgeTable[Symbol.asyncDispose]();
+      await dynStageTable[Symbol.asyncDispose]();
+      await depSetAddTable[Symbol.asyncDispose]();
+      await depSetTable[Symbol.asyncDispose]();
+      await coreMemberTable[Symbol.asyncDispose]();
+      await coreTable[Symbol.asyncDispose]();
     },
   };
 }
@@ -1096,49 +1666,15 @@ const RELATION_FUNCTIONS: ReadonlyArray<{
 // The whole edge set for a directed walk, shaped the way `graph_reachable_bfs!`
 // wants it: 'up' reverses the graph by swapping the endpoint columns. Only the
 // unbounded fast path uses this - the BFS reads the edge set once and in full,
-// so there is nothing an index or a rowid range could save it. `forcedOnly`
-// restricts to forced edges (`dune_forcers` / `dune_forced`), so every row a
-// caller gets back is forced by construction.
+// so there is nothing a constraint, an index or a rowid range could save it,
+// which is exactly the case the union view is good at. `forcedOnly` restricts to
+// forced edges (`dune_forcers` / `dune_forced`), which are materialized flat, so
+// every row a caller gets back is forced by construction.
 function edgeSet(dir: Direction, opts: {forcedOnly?: boolean} = {}): string {
-  const where = opts.forcedOnly ? ' WHERE (flags & 1)' : '';
+  const from = opts.forcedOnly ? FORCED_EDGE_TABLE : ALL_EDGE_VIEW;
   return dir === 'down'
-    ? `(SELECT src AS source_node_id, dst AS dest_node_id
-        FROM ${RAW_EDGE_TABLE}${where})`
-    : `(SELECT dst AS source_node_id, src AS dest_node_id
-        FROM ${RAW_EDGE_TABLE}${where})`;
-}
-
-/**
- * Joins `_dune_edge e` to the edges leaving `source` (a node-id expression) in
- * direction `dir`, and names the endpoint column the edge lands on.
- *
- * This is where the edge tier's "no index on the endpoints" design lands. A
- * 'down' step reads the CSR the table is *stored* in: `_dune_node_out` turns a
- * node into the contiguous rowid range of its out-edges, so the lookup is a
- * rowid range scan and no index on `src` exists. An 'up' step has to find rows
- * by `dst`, which is indexed only below {@link REVERSE_INDEX_EDGE_LIMIT}; above
- * it, the two functions that take one (`dune_ancestors` / `dune_parents`) scan
- * per hop and `dune_all_ancestors` is the fast answer instead.
- */
-function edgeStep(
-  dir: Direction,
-  source: string,
-  opts: {forcedOnly?: boolean} = {},
-): {readonly join: string; readonly dest: string} {
-  const forced = opts.forcedOnly ? ' AND (e.flags & 1)' : '';
-  if (dir === 'down') {
-    return {
-      join: `JOIN ${OUT_TABLE} o ON o.node_id = ${source}
-        JOIN ${RAW_EDGE_TABLE} e
-          ON e.rowid >= o.first_rowid
-          AND e.rowid < o.first_rowid + o.n${forced}`,
-      dest: 'e.dst',
-    };
-  }
-  return {
-    join: `JOIN ${RAW_EDGE_TABLE} e ON e.dst = ${source}${forced}`,
-    dest: 'e.src',
-  };
+    ? `(SELECT src AS source_node_id, dst AS dest_node_id FROM ${from})`
+    : `(SELECT dst AS source_node_id, src AS dest_node_id FROM ${from})`;
 }
 
 // The value `step_kind` selects as the walk's step-budget counter: every hop
@@ -1226,21 +1762,26 @@ function relationProjection(
 // the projection still joins `_dune_node` and `dune_string` per row, and nothing
 // in the UI can interrupt a query that picks the bad plan, so it stays.
 function boundedBody(dir: Direction, param: string, space: NodeSpace): string {
-  const {join, dest} = edgeStep(dir, 's.node_id');
-  return `
-    WITH RECURSIVE
-    states(node_id, distance, rule_distance, dep_distance) AS (
-      SELECT node_id, 0, 0, 0 FROM ${RAW_NODE_TABLE}
-      WHERE node_id = ${param}
-        AND ($step_kind IS NULL OR $step_kind IN ('dep', 'rule'))
-      UNION
+  // One recursive term per arm of the edge relation (see {@link edgeArms} for
+  // why they are not one joined union), each carrying the same budget test and
+  // the same distance bookkeeping.
+  const arms = edgeArms(dir, 's.node_id').map(
+    ({join, dest}) => `
       SELECT ${dest}, s.distance + 1,
         s.rule_distance + iif(${isRuleExpr(dest, space)}, 1, 0),
         s.dep_distance + iif(${isRuleExpr(dest, space)}, 0, 1)
       FROM states s
       ${join}
       WHERE ($max_steps IS NULL OR (${countedExpr('s.')}) < $max_steps)
-        AND s.distance < ${space.nodeCount}
+        AND s.distance < ${space.nodeCount}`,
+  );
+  return `
+    WITH RECURSIVE
+    states(node_id, distance, rule_distance, dep_distance) AS (
+      SELECT node_id, 0, 0, 0 FROM ${RAW_NODE_TABLE}
+      WHERE node_id = ${param}
+        AND ($step_kind IS NULL OR $step_kind IN ('dep', 'rule'))
+      UNION${arms.join('\n      UNION')}
     ),
     walk AS MATERIALIZED (
       SELECT node_id, distance, rule_distance, dep_distance FROM (
@@ -1263,6 +1804,12 @@ function boundedBody(dir: Direction, param: string, space: NodeSpace): string {
 // - reading each node's kind off its id rather than joining back to
 // `_dune_node`.
 //
+// The parent-tree walk used to re-join the edge relation to confirm each
+// (parent, child) pair was an edge. It is one by construction - the BFS built
+// the parent tree out of the same edge set - so that join was redundant, and
+// with a rule's edges no longer stored it would have been the one place a hop
+// had to be expanded twice. Dropped.
+//
 // `bfs` is MATERIALIZED for the same reason `walk` is in `boundedBody`, and with
 // the same order of magnitude at stake: it is referenced from inside the
 // recursive parent-tree walk, so without the hint the C++ BFS is re-run once per
@@ -1274,7 +1821,6 @@ function bfsBody(
   space: NodeSpace,
   opts: {forcedOnly?: boolean} = {},
 ): string {
-  const {join, dest} = edgeStep(dir, 'w.node_id', opts);
   return `
     WITH RECURSIVE
     bfs AS MATERIALIZED (
@@ -1290,7 +1836,6 @@ function bfsBody(
         w.dep_distance + iif(${isRuleExpr('b.node_id', space)}, 0, 1)
       FROM walk w
       JOIN bfs b ON b.parent_node_id = w.node_id
-      ${join} AND ${dest} = b.node_id
     )
     ${relationProjection(dir, param, space)}`;
 }
