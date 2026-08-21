@@ -72,6 +72,19 @@ function rowsOf(sql: readonly string[], table: string): string[][] {
   return rows;
 }
 
+// `_dune_dir`'s rows, each as `path@depth ^parent n=direct t=subtree d=durations`
+// with the direct/subtree triples being rules/deps/failed. Paths keep their SQL
+// quotes, so what is asserted below is the literal text inserted.
+function dirRows(sql: readonly string[]): string[] {
+  const rows = rowsOf(sql, '_dune_dir');
+  const pathOf = new Map(rows.map((r) => [r[0], r[3]]));
+  return rows.map(
+    (r) =>
+      `${r[3]}@${r[4]} ^${r[1] === 'NULL' ? '-' : pathOf.get(r[1])} ` +
+      `n=${r[5]}/${r[6]}/${r[7]} t=${r[8]}/${r[9]}/${r[10]} d=${r[11]}/${r[12]}`,
+  );
+}
+
 // The body of a generated PERFETTO FUNCTION.
 function functionBody(sql: readonly string[], name: string): string {
   const stmt = sql.find((q) => q.includes(`PERFETTO FUNCTION ${name}(`));
@@ -231,5 +244,62 @@ describe('sql_graph edge tier', () => {
       '_dune_edge_all',
     );
     expect(functionBody(sql, 'dune_forced')).toContain('_dune_forced_edge');
+  });
+});
+
+describe('sql_graph dir tier', () => {
+  // A rule per directory spelling dune produces, and deps both inside and
+  // outside `_build` - the case a rule-dir-only tree would drop.
+  const fixture = () =>
+    testGraph([
+      rule('1', {dir: '_build/default/lib', outcome: 'failed-action'}),
+      rule('2', {dir: '_build/default/lib'}),
+      rule('3', {dir: '_build/default/bin'}),
+      // `.` is dune's other spelling of the top level, and must not become a
+      // second row alongside a rule that reported no dir at all.
+      rule('4', {dir: '.'}),
+      rule('5'),
+      dep('_build/default/lib/x.cmi'),
+      dep('/usr/bin/ocamlopt'),
+      dep('dune-project'),
+    ]);
+
+  it('interns every prefix, counting rules and deps separately', async () => {
+    const sql = await capture(fixture().graph);
+    expect(dirRows(sql)).toEqual([
+      // Interior directories hold no rules of their own, only subtree totals.
+      "'_build'@0 ^- n=0/0/0 t=3/1/1 d=0/0",
+      "'_build/default'@1 ^'_build' n=0/0/0 t=3/1/1 d=0/0",
+      "'_build/default/lib'@2 ^'_build/default' n=2/1/1 t=2/1/1 d=0/0",
+      "'_build/default/bin'@2 ^'_build/default' n=1/0/0 t=1/0/0 d=0/0",
+      // The top level: both `.` and an absent dir land here, as does a dep with
+      // no directory in its path.
+      "''@0 ^- n=2/1/0 t=2/1/0 d=0/0",
+      // An absolute path's leading `/` stays with its first segment, so `/usr`
+      // is a root rather than an empty root holding `usr`.
+      "'/usr'@0 ^- n=0/0/0 t=0/1/0 d=0/0",
+      "'/usr/bin'@1 ^'/usr' n=0/1/0 t=0/1/0 d=0/0",
+    ]);
+  });
+
+  it('maps trace-side rule ids to directories, then drops the map', async () => {
+    const sql = await capture(fixture().graph);
+    // Keyed by `rule_id`, not `node_id`: it exists to be probed from
+    // `_dune_timing`, whose key is the trace-side id.
+    expect(rowsOf(sql, '_dune_rule_dir')).toEqual([
+      ['1', '2'],
+      ['2', '2'],
+      ['3', '3'],
+      ['4', '4'],
+      ['5', '4'],
+    ]);
+    // Scan the timing table, probe the map - never the other way round (see
+    // PERF_SUMMARY.LOCAL.md) - and don't leave 386k rows of pages behind.
+    const agg = sql.find((q) => q.includes('FROM _dune_timing t'));
+    expect(agg).toContain('JOIN _dune_rule_dir m ON m.rule_id = t.key');
+    const drops = sql.filter(
+      (q) => q === 'DROP TABLE IF EXISTS _dune_rule_dir',
+    );
+    expect(drops).toHaveLength(2);
   });
 });

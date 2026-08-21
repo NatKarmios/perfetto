@@ -105,6 +105,24 @@
  *   apply to.
  * - `dune_string(id, str)` — the blob's intern table (see above). Also a plain
  *   table, for the same reason.
+ * - `dune_dir(id, parent_id, name, path, depth, n_rules, n_deps, n_failed,
+ *   t_rules, t_deps, t_failed, self_dur_ns, total_dur_ns)` — the build's
+ *   directory hierarchy, one row per distinct directory *prefix*, shaped for an
+ *   id/parent_id tree (a root - `_build`, `_opam`, `/usr`, or the top level -
+ *   has a NULL `parent_id`; see dir_tree.ts for the segmentation). Its
+ *   directories are the union of every rule's `dir` and the containing directory
+ *   of every dep's path, because ~23% of the deps on a real trace (the opam
+ *   switch, the compiler, `/usr/bin`) live under no rule's `dir` at all. The
+ *   `n_*` columns count a directory's own members, the `t_*` columns its whole
+ *   subtree, itself included; `n_failed` counts rules whose outcome is
+ *   `failed-deps` or `failed-action` (a cancelled or unfinished rule is not a
+ *   failure). `self_dur_ns` / `total_dur_ns` sum the *rule* spans of the
+ *   directory / its subtree, 0 where nothing was timed - a dep's span is waiting
+ *   for build work rather than build work, so adding it would double-count.
+ *   The one table whose rows are neither nodes nor edges, so its ids are a dense
+ *   space of their own with no relation to `node_id`; `name` and `path` are
+ *   stored as text because a *prefix* of an interned directory is not itself
+ *   interned, the same reason `dune_rule_target.path` is.
  * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage)` — a typed
  *   PERFETTO VIEW, with `src` / `dst` the endpoints' `node_id`s (chip-rendered;
  *   join `dune_node USING`-style on them for an endpoint's label or slice).
@@ -180,7 +198,8 @@
 
 import {sqliteString} from '../../base/string_utils';
 import type {Engine} from '../../trace_processor/engine';
-import {NUM} from '../../trace_processor/query_result';
+import {LONG_NULL, NUM} from '../../trace_processor/query_result';
+import {DirTree, parentDir} from './dir_tree';
 import type {BuildGraph, NodeId, NodeTiming} from './graph';
 import {
   DEP_RESOLUTIONS,
@@ -230,6 +249,13 @@ const RULE_DEP_SET_INDEX = '_dune_rule_dep_set';
 // a query wants (see the file header).
 const RULE_TARGET_TABLE = 'dune_rule_target';
 const STRING_TABLE = 'dune_string';
+// The directory hierarchy: a raw table and its typed view like the node tables,
+// plus a transient rule -> directory map the duration rollup is aggregated
+// through and which is dropped again as soon as it has been (see
+// {@link ruleDurationsByDir}).
+const DIR_TABLE = 'dune_dir';
+const RAW_DIR_TABLE = '_dune_dir';
+const RULE_DIR_TABLE = '_dune_rule_dir';
 
 /**
  * Rows per `INSERT ... VALUES (row), (row), ...`.
@@ -654,10 +680,243 @@ function ruleTargetRows(graph: BuildGraph): RowSource {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The directory tier (part of the node tier: `dune_dir`, see the file header).
+// ---------------------------------------------------------------------------
+
+// Which rule outcomes `n_failed` counts: dune's two real failures. `cancelled`
+// and `unfinished` are not failures (an interrupted or truncated build is not a
+// broken one) and a cache hit is a success.
+const FAILED_OUTCOME_CODES: ReadonlySet<number> = new Set([
+  RULE_OUTCOMES.indexOf('failed-deps'),
+  RULE_OUTCOMES.indexOf('failed-action'),
+]);
+
+// The columns of RAW_DIR_TABLE, in insert order. Named once because the schema,
+// the INSERT and the view all have to agree on them.
+const DIR_COLUMNS = [
+  'id',
+  'parent_id',
+  'name',
+  'path',
+  'depth',
+  'n_rules',
+  'n_deps',
+  'n_failed',
+  't_rules',
+  't_deps',
+  't_failed',
+  'self_dur_ns',
+  'total_dur_ns',
+];
+
+/**
+ * The directory hierarchy plus each directory's direct membership, from one pass
+ * over the nodes.
+ *
+ * Both kinds of node contribute a directory - a rule its `dir`, a dep the
+ * directory its path lives in - because ~23% of the deps on a real trace live
+ * under no rule's `dir` at all (the opam switch, the compiler, `/usr/bin`), so a
+ * rule-dir-only tree would silently hide every dependency on them. Rules and
+ * deps are counted separately, so a directory holding only deps is still a
+ * visible row rather than an empty one.
+ *
+ * The counts are computed here rather than by aggregating `_dune_rule` /
+ * `_dune_dep` in SQL because the pass that has to happen anyway - interning
+ * every directory, which cannot be done in SQL without recursive string
+ * splitting - already visits every node. The SQL alternative would also want a
+ * dir id *per node* to group by (818k rows of resident pages), and the mirror
+ * has very little room for those (see PERF_SUMMARY.LOCAL.md).
+ */
+interface DirCensus {
+  readonly tree: DirTree;
+
+  // Each rule node's directory id, indexed by node id (rules are the first
+  // `ruleCount` nodes). Only RULE_DIR_TABLE reads it.
+  readonly ruleDirId: Int32Array;
+
+  // Per directory id: rules whose `dir` it is, deps whose path is directly in
+  // it, and how many of those rules failed. All three are `tree.size` long.
+  readonly nRules: Int32Array;
+  readonly nDeps: Int32Array;
+  readonly nFailed: Int32Array;
+}
+
+// The directory a rule is filed under, spelled the way dir_tree.ts wants it:
+// dune reports the top level either as no `dir` at all or as `.`, and `joinDir`
+// (graph.ts) already treats the two identically, so they must not become two
+// rows.
+function ruleDirKey(dir: string | undefined): string {
+  return dir === undefined || dir === '.' ? '' : dir;
+}
+
+function censusDirs(graph: BuildGraph): DirCensus {
+  const tree = new DirTree();
+  const ruleDirId = new Int32Array(graph.ruleCount);
+  // Grown as directories are interned; a directory that exists only as an
+  // intermediate prefix is never bumped, so these end up at most `tree.size`
+  // long and are padded out below.
+  const nRules: number[] = [];
+  const nDeps: number[] = [];
+  const nFailed: number[] = [];
+  const bump = (counts: number[], id: number) => {
+    while (counts.length <= id) counts.push(0);
+    counts[id]++;
+  };
+  for (let id = 0; id < graph.ruleCount; id++) {
+    const dirId = tree.intern(ruleDirKey(graph.dirOf(id)));
+    ruleDirId[id] = dirId;
+    bump(nRules, dirId);
+    if (FAILED_OUTCOME_CODES.has(graph.outcomeCodeOf(id))) {
+      bump(nFailed, dirId);
+    }
+  }
+  for (let id = graph.ruleCount; id < graph.nodeCount; id++) {
+    // A dep's path is its interned string; its directory is everything before
+    // the last segment boundary.
+    bump(nDeps, tree.intern(parentDir(graph.path(graph.traceIdOf(id)))));
+  }
+  const sized = (counts: number[]): Int32Array => {
+    const out = new Int32Array(tree.size);
+    out.set(counts);
+    return out;
+  };
+  return {
+    tree,
+    ruleDirId,
+    nRules: sized(nRules),
+    nDeps: sized(nDeps),
+    nFailed: sized(nFailed),
+  };
+}
+
+// RULE_DIR_TABLE's rows: a rule's *trace-side* id (which is what the timing
+// table is keyed by) against its directory.
+function ruleDirRows(graph: BuildGraph, census: DirCensus): RowSource {
+  return {
+    count: graph.ruleCount,
+    *rows(): Iterable<string> {
+      for (let id = 0; id < graph.ruleCount; id++) {
+        yield `(${graph.traceIdOf(id)}, ${census.ruleDirId[id]})`;
+      }
+    },
+  };
+}
+
+/**
+ * Each directory's own rules' total span duration, summed in SQL and read back
+ * as one row per directory.
+ *
+ * This is the one part of the directory tier that can't be computed from the
+ * graph: a node's timing lives only in `_dune_timing`. The shape is the one the
+ * perf work endorses (see PERF_SUMMARY.LOCAL.md) - **scan** the timing table and
+ * **probe** a small rowid-keyed map table, never the reverse. A per-driving-row
+ * probe of the timing table is the mirror's historically expensive path, and
+ * joining `_dune_rule` to it instead would need an index on `_dune_node.orig_id`
+ * that costs more pages than this whole map table.
+ *
+ * The map table is dropped again as soon as the aggregate has run: keeping it
+ * would leave ~386k rows of pages resident for the rest of the load, and
+ * everything downstream only ever wants the per-directory total. Durations are
+ * accumulated as `bigint` because their sum genuinely exceeds 2^53 at monorepo
+ * scale (~3.4e16 ns over all rules), i.e. a `number` would not be exact.
+ */
+async function ruleDurationsByDir(
+  engine: Engine,
+  graph: BuildGraph,
+  census: DirCensus,
+  opts: MirrorOptions,
+): Promise<bigint[]> {
+  const durations = new Array<bigint>(census.tree.size).fill(0n);
+  const map = await materializeTable(
+    engine,
+    RULE_DIR_TABLE,
+    'rule_id INTEGER PRIMARY KEY, dir_id INTEGER',
+    ['rule_id', 'dir_id'],
+    ruleDirRows(graph, census),
+    opts,
+  );
+  try {
+    await measure(opts.perf, `sql: sum ${DIR_TABLE} durations`, async (p) => {
+      const result = await engine.query(`
+        SELECT m.dir_id AS dir_id, sum(t.dur_ns) AS dur_ns
+        FROM ${TIMING_TABLE} t
+        JOIN ${RULE_DIR_TABLE} m ON m.rule_id = t.key
+        WHERE t.kind = ${timingKindCode('rule')}
+        GROUP BY 1
+      `);
+      const it = result.iter({dir_id: NUM, dur_ns: LONG_NULL});
+      let rows = 0;
+      for (; it.valid(); it.next()) {
+        rows++;
+        // NULL where every one of the directory's rules is unfinished.
+        durations[it.dir_id] = it.dur_ns ?? 0n;
+      }
+      p.rows(rows);
+    });
+  } finally {
+    await map[Symbol.asyncDispose]();
+  }
+  return durations;
+}
+
+/**
+ * RAW_DIR_TABLE's rows: a directory, its direct counts and its subtree totals.
+ *
+ * The subtree totals are rolled up here, in one descending pass, rather than by
+ * a recursive CTE in the view. A directory's id is always higher than its
+ * parent's (see dir_tree.ts), so by the time the pass reaches a row its own
+ * subtree has already been summed into it - no recursion, no `parent_id` index,
+ * and no per-query walk behind a view every caller reads.
+ */
+function dirRows(census: DirCensus, selfDurNs: readonly bigint[]): RowSource {
+  const dirs = census.tree.rows;
+  const tRules = census.nRules.slice();
+  const tDeps = census.nDeps.slice();
+  const tFailed = census.nFailed.slice();
+  const totalDurNs = [...selfDurNs];
+  for (let id = dirs.length - 1; id > 0; id--) {
+    const parent = dirs[id].parentId;
+    if (parent === undefined) continue;
+    tRules[parent] += tRules[id];
+    tDeps[parent] += tDeps[id];
+    tFailed[parent] += tFailed[id];
+    totalDurNs[parent] += totalDurNs[id];
+  }
+  return {
+    count: dirs.length,
+    *rows(): Iterable<string> {
+      for (const dir of dirs) {
+        yield `(${dir.id}, ${int(dir.parentId)}, ${sqliteString(dir.name)}, ` +
+          `${sqliteString(dir.path)}, ${dir.depth}, ` +
+          `${census.nRules[dir.id]}, ${census.nDeps[dir.id]}, ` +
+          `${census.nFailed[dir.id]}, ${tRules[dir.id]}, ${tDeps[dir.id]}, ` +
+          `${tFailed[dir.id]}, ${selfDurNs[dir.id]}, ${totalDurNs[dir.id]})`;
+      }
+    },
+  };
+}
+
+// The typed view over RAW_DIR_TABLE. Nothing to reconstitute - a directory row
+// is already what a query wants - but declaring the column types is what lets
+// the query tab and a DataGrid introspect it, and it keeps `dune_dir` in the
+// same public-view / raw-table split as the rest of the tier.
+function dirView(): string {
+  const types = DIR_COLUMNS.map(
+    (c) => `${c} ${c === 'name' || c === 'path' ? 'STRING' : 'LONG'}`,
+  );
+  return `
+      CREATE PERFETTO VIEW ${DIR_TABLE}(
+        ${types.join(',\n        ')}
+      ) AS
+      SELECT ${DIR_COLUMNS.join(', ')} FROM ${RAW_DIR_TABLE}
+  `;
+}
+
 /**
  * Builds the node tier of the mirror (`dune_string` / `dune_node` / `dune_rule`
- * / `dune_dep` / `dune_rule_target`, plus the timing table they join) from
- * `graph` and returns a handle that answers per-node timing and drops everything
+ * / `dune_dep` / `dune_rule_target` / `dune_dir`, plus the timing table they
+ * join) from `graph` and returns a handle that answers per-node timing and drops everything
  * it made when disposed. Rebuilding is idempotent: any pre-existing tables of
  * the same name are dropped first.
  *
@@ -678,7 +937,7 @@ export async function buildNodeMirror(
   // goes through the caller's dispose first), but then a stale view would make
   // the timing rebuild the confusing failure instead of this one.
   const dropViews = async () => {
-    for (const view of [NODE_TABLE, RULE_TABLE, DEP_TABLE]) {
+    for (const view of [NODE_TABLE, RULE_TABLE, DEP_TABLE, DIR_TABLE]) {
       await engine.tryQuery(`DROP VIEW IF EXISTS ${view}`);
     }
   };
@@ -762,6 +1021,27 @@ export async function buildNodeMirror(
     );
     p.rows(2 * targets.count);
   });
+
+  // The directory tier (see the file header and dir_tree.ts). Last of the raw
+  // tables because its duration rollup reads the timing table, and because it is
+  // the one table built from a *query's* result as well as from the graph.
+  const dirs = measureSync(perf, `sql: ${DIR_TABLE} census`, (p) => {
+    const census = censusDirs(graph);
+    p.rows(census.tree.size);
+    return census;
+  });
+  const selfDurNs = await ruleDurationsByDir(engine, graph, dirs, opts);
+  const rawDirTable = await materializeTable(
+    engine,
+    RAW_DIR_TABLE,
+    'id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT, path TEXT, ' +
+      'depth INTEGER, n_rules INTEGER, n_deps INTEGER, n_failed INTEGER, ' +
+      't_rules INTEGER, t_deps INTEGER, t_failed INTEGER, ' +
+      'self_dur_ns INTEGER, total_dur_ns INTEGER',
+    DIR_COLUMNS,
+    dirRows(dirs, selfDurNs),
+    opts,
+  );
 
   // Typed views over the raw tables: this is where the stored integers become
   // the public schema again - dict ids resolve through `dune_string`, codes
@@ -858,6 +1138,7 @@ export async function buildNodeMirror(
       JOIN ${RAW_NODE_TABLE} n ON n.node_id = d.node_id
       LEFT JOIN ${STRING_TABLE} ps ON ps.id = n.orig_id
     `);
+    await engine.query(dirView());
   });
 
   return {
@@ -883,6 +1164,7 @@ export async function buildNodeMirror(
       await rawRuleTable[Symbol.asyncDispose]();
       await rawDepTable[Symbol.asyncDispose]();
       await ruleTargetTable[Symbol.asyncDispose]();
+      await rawDirTable[Symbol.asyncDispose]();
       // After the views, all three of which resolve strings through it.
       await stringTable[Symbol.asyncDispose]();
       // Last: the views above join it.
