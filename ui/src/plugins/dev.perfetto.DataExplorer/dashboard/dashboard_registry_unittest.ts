@@ -22,12 +22,14 @@ import {
   checkOverlap,
   dashboardRegistry,
   findNonOverlappingPosition,
+  getItemBounds,
   getItemId,
   getNextItemPosition,
   getConsumersOf,
   getDriversOf,
   isDriverChart,
   parseBrushFilters,
+  serializeDashboardItems,
   validateDashboardItems,
 } from './dashboard_registry';
 
@@ -53,6 +55,15 @@ function makeLabelItem(id = 'label-1', text = ''): DashboardItem {
 
 function makeDividerItem(id = 'div-1', row = 3): DashboardItem {
   return {kind: 'divider', id, row};
+}
+
+function makeGridItem(
+  sourceNodeId: string,
+  id = 'grid-1',
+  col?: number,
+  row?: number,
+): DashboardItem & {kind: 'grid'} {
+  return {kind: 'grid', id, sourceNodeId, col, row};
 }
 
 function makeChartItem(
@@ -131,6 +142,11 @@ describe('getItemId', () => {
   test('returns id for label items', () => {
     const label = makeLabelItem('label-456');
     expect(getItemId(label)).toBe('label-456');
+  });
+
+  test('returns id for grid items', () => {
+    const grid = makeGridItem('n1', 'grid-789');
+    expect(getItemId(grid)).toBe('grid-789');
   });
 });
 
@@ -643,5 +659,166 @@ describe('findNonOverlappingPosition', () => {
     );
     // Should land on a later row since row 0 is packed.
     expect(pos.row).toBeGreaterThan(0);
+  });
+});
+
+// --- Grid items ---
+
+describe('validateDashboardItems with grids', () => {
+  test('validates a minimal grid item', () => {
+    const items = [{kind: 'grid', id: 'g1', sourceNodeId: 'n1'}];
+    const result = validateDashboardItems(items);
+    expect(result).toHaveLength(1);
+    expect(result?.[0].kind).toBe('grid');
+  });
+
+  test('validates a grid with columns and a tree', () => {
+    const items = [
+      {
+        kind: 'grid',
+        id: 'g1',
+        sourceNodeId: 'n1',
+        columns: ['path', 'size'],
+        tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 'path'},
+        col: 4,
+        row: 2,
+        colSpan: 12,
+        rowSpan: 8,
+      },
+    ];
+    expect(validateDashboardItems(items)).toEqual(items);
+  });
+
+  test('rejects a grid without an id', () => {
+    const items = [{kind: 'grid', sourceNodeId: 'n1'}];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid without a sourceNodeId', () => {
+    const items = [{kind: 'grid', id: 'g1'}];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid whose columns are not strings', () => {
+    const items = [{kind: 'grid', id: 'g1', sourceNodeId: 'n1', columns: [1]}];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid whose columns are not an array', () => {
+    const items = [
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1', columns: 'path'},
+    ];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid whose tree is missing a field', () => {
+    const items = [
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1', tree: {idField: 'id'}},
+    ];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid whose tree is not an object', () => {
+    const items = [{kind: 'grid', id: 'g1', sourceNodeId: 'n1', tree: 'yes'}];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('rejects a grid whose treeColumn is not a string', () => {
+    const items = [
+      {
+        kind: 'grid',
+        id: 'g1',
+        sourceNodeId: 'n1',
+        tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 7},
+      },
+    ];
+    expect(validateDashboardItems(items)).toBeUndefined();
+  });
+
+  test('accepts a mix of grids and other kinds', () => {
+    const items = [
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1'},
+      {kind: 'divider', id: 'd1', row: 3},
+      {kind: 'label', id: 'l1', text: 'Hello'},
+    ];
+    expect(validateDashboardItems(items)).toHaveLength(3);
+  });
+});
+
+describe('serialize/validate round-trip', () => {
+  test('a grid survives a JSON round-trip', () => {
+    const grid: DashboardItem = {
+      kind: 'grid',
+      id: 'g1',
+      sourceNodeId: 'n1',
+      columns: ['path', 'size'],
+      tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 'path'},
+      col: 1,
+      row: 2,
+      colSpan: 10,
+      rowSpan: 7,
+    };
+    const serialized = serializeDashboardItems([grid]);
+    const roundTripped = validateDashboardItems(
+      JSON.parse(JSON.stringify(serialized)) as unknown[],
+    );
+    expect(roundTripped).toEqual([grid]);
+  });
+
+  test('a flat grid survives a JSON round-trip', () => {
+    const grid: DashboardItem = makeGridItem('n1', 'g1', 0, 0);
+    const serialized = serializeDashboardItems([grid]);
+    const roundTripped = validateDashboardItems(
+      JSON.parse(JSON.stringify(serialized)) as unknown[],
+    );
+    // col/row survive; undefined optional fields are dropped by JSON.
+    expect(roundTripped).toEqual([
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1', col: 0, row: 0},
+    ]);
+  });
+});
+
+describe('getItemBounds for grids', () => {
+  test('uses the grid position and spans', () => {
+    const grid: DashboardItem = {
+      kind: 'grid',
+      id: 'g1',
+      sourceNodeId: 'n1',
+      col: 3,
+      row: 4,
+      colSpan: 10,
+      rowSpan: 7,
+    };
+    expect(getItemBounds(grid)).toEqual({
+      col: 3,
+      row: 4,
+      colSpan: 10,
+      rowSpan: 7,
+    });
+  });
+
+  test('falls back to the defaults', () => {
+    expect(getItemBounds(makeGridItem('n1'))).toEqual({
+      col: 0,
+      row: 0,
+      colSpan: DEFAULT_COL_SPAN,
+      rowSpan: DEFAULT_ROW_SPAN,
+    });
+  });
+});
+
+describe('brush segments with grids', () => {
+  test('a grid neither drives nor is listed as a consumer', () => {
+    const chart = makeChartItem('n1', 'c1', 0, 0);
+    const grid = makeGridItem('n1', 'g1', 0, 10);
+    const items: DashboardItem[] = [chart, makeDividerItem('d1', 8), grid];
+    expect(getDriversOf(grid, items)).toEqual([]);
+    expect(getConsumersOf(grid, items)).toEqual([]);
+    expect(isDriverChart(grid, items)).toBe(false);
+    // A grid below the divider is not a consumer in the driver/consumer sense
+    // either: it always applies its source's brush filters, so the chart above
+    // does not become a driver on its account.
+    expect(getConsumersOf(chart, items)).toEqual([]);
+    expect(isDriverChart(chart, items)).toBe(false);
   });
 });

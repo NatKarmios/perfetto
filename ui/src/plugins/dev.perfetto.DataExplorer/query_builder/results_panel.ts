@@ -51,8 +51,10 @@ import type {QueryExecutionService} from './query_execution_service';
 import {VisualisationNode} from './nodes/visualisation_node';
 import {ChartView} from './charts/chart_view';
 
-// Map PerfettoSqlType to DataGrid ColumnType
-function getColumnType(type: PerfettoSqlType): ColumnType {
+// Map PerfettoSqlType to DataGrid ColumnType.
+// Exported so that other DataGrid hosts (e.g. dashboard grid items) classify
+// columns the same way the results panel does.
+export function getColumnType(type: PerfettoSqlType): ColumnType {
   // ID types (id, joinid, arg_set_id) should be treated as identifiers
   // They're numeric but we want distinct value pickers
   if (isIdType(type) || type.kind === 'arg_set_id' || type.kind === 'boolean') {
@@ -92,8 +94,9 @@ export interface ResultsPanelAttrs {
   readonly onColumnAdd?: (column: Column) => void;
 }
 
-// Create cell renderer for timestamp columns
-function createTimestampCellRenderer(trace: Trace): CellRenderer {
+// Create cell renderer for timestamp columns. Exported because the dashboard
+// grid renders the same column types and must format them the same way.
+export function createTimestampCellRenderer(trace: Trace): CellRenderer {
   return (value) => {
     if (typeof value === 'number') {
       value = BigInt(Math.round(value));
@@ -108,8 +111,9 @@ function createTimestampCellRenderer(trace: Trace): CellRenderer {
   };
 }
 
-// Create cell renderer for duration columns
-function createDurationCellRenderer(trace: Trace): CellRenderer {
+// Create cell renderer for duration columns. Exported alongside
+// createTimestampCellRenderer, for the same reason.
+export function createDurationCellRenderer(trace: Trace): CellRenderer {
   return (value) => {
     if (typeof value === 'number') {
       value = BigInt(Math.round(value));

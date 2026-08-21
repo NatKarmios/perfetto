@@ -272,6 +272,30 @@
   }
 }
 
+// Title of a grid card. Unlike a chart's, it is not click-to-rename: it just
+// names the data source the grid is showing.
+.pf-dashboard__grid-header-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// Grid cards hand their content area over to the DataGrid, which does its own
+// scrolling and text selection. Dragging the card from here is suppressed (see
+// DRAG_EXCLUDED_SELECTORS) — the header is the drag handle.
+.pf-dashboard__grid-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 2px 4px;
+  cursor: default;
+  user-select: text;
+}
+
 // Label delete button — appears on hover in the top-right corner.
 .pf-dashboard__label-delete {
   position: absolute;

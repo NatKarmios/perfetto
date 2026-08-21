@@ -30,6 +30,7 @@ import {MenuItem, PopupMenu} from '../../../widgets/menu';
 import {
   type DashboardBrushFilter,
   type DashboardDataSource,
+  type DashboardGrid,
   type DashboardItem,
   DEFAULT_COL_SPAN,
   DEFAULT_ROW_SPAN,
@@ -49,6 +50,13 @@ import {
   DashboardChartView,
   createDefaultChartConfig,
 } from './dashboard_chart_view';
+import {
+  DashboardGridView,
+  gridViewKey,
+  suggestGridTree,
+} from './dashboard_grid_view';
+import {ColumnSelector} from '../query_builder/column_selector';
+import type {ColumnInfo} from '../query_builder/column_info';
 import {ResizeHandle} from '../../../widgets/resize_handle';
 import {Card} from '../../../widgets/card';
 import {
@@ -62,9 +70,10 @@ import {Switch} from '../../../widgets/switch';
 import {Select} from '../../../widgets/select';
 
 const DEFAULT_DIVIDER_LABEL = 'Filter boundary';
-// CSS selector for elements that should not initiate a card drag.
+// CSS selector for elements that should not initiate a card drag. Grids scroll
+// and select text, so a drag may only start from a grid card's header.
 const DRAG_EXCLUDED_SELECTORS =
-  'textarea, button, input, .pf-resize-handle, canvas';
+  'textarea, button, input, .pf-resize-handle, canvas, .pf-dashboard__grid-content';
 // Delay (ms) after a drag gesture during which title click-to-edit is
 // suppressed, so releasing the pointer doesn't accidentally open the editor.
 const DRAG_EDIT_SUPPRESS_MS = 300;
@@ -119,7 +128,7 @@ export interface DashboardAttrs {
   onBrushFiltersChange: (filters: Map<string, DashboardBrushFilter[]>) => void;
 }
 
-type SidePanelTab = 'add' | 'data' | 'linked' | 'edit' | 'settings';
+type SidePanelTab = 'add' | 'data' | 'linked' | 'edit' | 'grid' | 'settings';
 
 interface DashboardSettings {
   showGridDots: boolean;
@@ -140,6 +149,8 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
   private activePanel?: SidePanelTab;
   private renamingChartId?: string;
   private editingChart?: EditingChartContext;
+  // Item ID of the grid whose config panel is open (activePanel === 'grid').
+  private editingGridId?: string;
   private editPanelRenaming = false;
   private settings: DashboardSettings = {...DEFAULT_SETTINGS};
   // Incremented when filters are removed from the filter bar, so that
@@ -233,6 +244,9 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
       this.activePanel === 'edit' &&
         this.editingChart !== undefined &&
         m('.pf-dashboard__content-panel', this.renderEditPanel(attrs)),
+      this.activePanel === 'grid' &&
+        this.editingGridId !== undefined &&
+        m('.pf-dashboard__content-panel', this.renderGridPanel(attrs)),
       this.activePanel === 'settings' &&
         m('.pf-dashboard__content-panel', this.renderSettingsPanel()),
       m('.pf-dashboard__side-panel', [
@@ -280,6 +294,16 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
               this.editingChart = undefined;
             },
           }),
+        this.activePanel === 'grid' &&
+          m(Button, {
+            icon: 'settings',
+            title: 'Edit grid',
+            className: classNames('pf-active'),
+            onclick: () => {
+              this.activePanel = undefined;
+              this.editingGridId = undefined;
+            },
+          }),
       ]),
     ]);
   }
@@ -288,12 +312,14 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
 
   private renderAddPanel(attrs: DashboardAttrs): m.Children {
     const {sources, items} = attrs;
-    // Default to the source of the most recently added chart, or the first
-    // available source if there are no charts yet.
-    const lastChartItem = [...items].reverse().find((i) => i.kind === 'chart');
+    // Default to the source of the most recently added data-bound item, or the
+    // first available source if there are none yet.
+    const lastBoundItem = [...items]
+      .reverse()
+      .find((i) => i.kind === 'chart' || i.kind === 'grid');
     const lastSource =
-      (lastChartItem !== undefined
-        ? sources.find((s) => s.nodeId === lastChartItem.sourceNodeId)
+      (lastBoundItem !== undefined
+        ? sources.find((s) => s.nodeId === lastBoundItem.sourceNodeId)
         : undefined) ?? (sources.length > 0 ? sources[0] : undefined);
 
     return [
@@ -311,6 +337,16 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
         ]),
         m('.pf-dashboard__panel-section', [
           m('.pf-dashboard__panel-section-title', 'Other'),
+          lastSource !== undefined &&
+            m(
+              '.pf-dashboard__add-panel-item',
+              {
+                onclick: () => {
+                  this.addGridForSource(attrs, lastSource);
+                },
+              },
+              [m(Icon, {icon: 'table_chart'}), 'Grid'],
+            ),
           m(
             '.pf-dashboard__add-panel-item',
             {
@@ -456,6 +492,155 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
     ];
   }
 
+  // --- Grid config side panel ---
+
+  private renderGridPanel(attrs: DashboardAttrs): m.Children {
+    const itemId = this.editingGridId;
+    const item = attrs.items.find((i) => i.kind === 'grid' && i.id === itemId);
+    if (item === undefined || item.kind !== 'grid') {
+      // Grid was deleted — close the panel.
+      this.activePanel = undefined;
+      this.editingGridId = undefined;
+      return null;
+    }
+    const source = attrs.sources.find((s) => s.nodeId === item.sourceNodeId);
+    if (source === undefined) {
+      return m(
+        ResultsPanelEmptyState,
+        {icon: 'link_off', title: 'Data source removed'},
+        'The data source for this grid is no longer available.',
+      );
+    }
+
+    // Configured columns first (in their configured order), then the rest of
+    // the source's columns, unchecked.
+    const configured = item.columns ?? source.columns.map((c) => c.name);
+    const columnByName = new Map(source.columns.map((c) => [c.name, c]));
+    const selectable: ColumnInfo[] = [
+      ...configured
+        .filter((name) => columnByName.has(name))
+        .map((name) => ({
+          name,
+          type: columnByName.get(name)?.type,
+          checked: true,
+        })),
+      ...source.columns
+        .filter((c) => !configured.includes(c.name))
+        .map((c) => ({name: c.name, type: c.type, checked: false})),
+    ];
+
+    return [
+      m('.pf-dashboard__panel-section', [
+        m('.pf-dashboard__edit-panel-title', 'Grid'),
+        m('.pf-dashboard__panel-section-subtitle', 'Data Source'),
+        m(
+          '.pf-dashboard__edit-panel-row',
+          this.renderSourceChangePopup(attrs, item.id, source),
+        ),
+        m('.pf-dashboard__panel-section-subtitle', 'Columns'),
+        m(ColumnSelector, {
+          columns: selectable,
+          draggable: true,
+          onColumnsChange: (columns) => {
+            this.updateGrid(attrs, item.id, {
+              columns: columns.filter((c) => c.checked).map((c) => c.name),
+            });
+          },
+        }),
+        m('.pf-dashboard__panel-section-subtitle', 'Tree'),
+        ...this.renderGridTreeSettings(attrs, item, source),
+      ]),
+    ];
+  }
+
+  /**
+   * Tree controls for the grid config panel: a toggle, plus the id/parent/tree
+   * column pickers when it is on. The toggle is only offered when the source
+   * looks hierarchical (or the grid is already in tree mode).
+   */
+  private renderGridTreeSettings(
+    attrs: DashboardAttrs,
+    grid: DashboardItem & {kind: 'grid'},
+    source: DashboardDataSource,
+  ): m.Child[] {
+    const suggestion = suggestGridTree(source.columns);
+    const tree = grid.tree;
+    if (tree === undefined && suggestion === undefined) {
+      return [
+        m(
+          '.pf-dashboard__add-panel-empty',
+          'This data source has no id / parent id columns to build a tree from.',
+        ),
+      ];
+    }
+
+    const columnNames = source.columns.map((c) => c.name);
+    const picker = (
+      label: string,
+      value: string | undefined,
+      onchange: (value: string | undefined) => void,
+      allowNone?: boolean,
+    ): m.Child =>
+      m('.pf-dashboard__settings-row', [
+        m('label.pf-dashboard__settings-label', label),
+        m(
+          Select,
+          {
+            value: value ?? '',
+            onchange: (e: Event) => {
+              const val = (e.target as HTMLSelectElement).value;
+              onchange(val === '' ? undefined : val);
+            },
+          },
+          [
+            allowNone === true && m('option', {value: ''}, 'First column'),
+            ...columnNames.map((name) => m('option', {value: name}, name)),
+          ],
+        ),
+      ]);
+
+    const rows: m.Child[] = [
+      m(
+        '.pf-dashboard__settings-row',
+        m(Switch, {
+          label: 'Show as tree',
+          checked: tree !== undefined,
+          onchange: (e: Event) => {
+            const checked = (e.target as HTMLInputElement).checked;
+            this.updateGrid(attrs, grid.id, {
+              tree: checked ? (tree ?? suggestion) : undefined,
+            });
+          },
+        }),
+      ),
+    ];
+    if (tree !== undefined) {
+      rows.push(
+        picker('ID column', tree.idField, (value) => {
+          if (value === undefined) return;
+          this.updateGrid(attrs, grid.id, {tree: {...tree, idField: value}});
+        }),
+        picker('Parent ID column', tree.parentIdField, (value) => {
+          if (value === undefined) return;
+          this.updateGrid(attrs, grid.id, {
+            tree: {...tree, parentIdField: value},
+          });
+        }),
+        picker(
+          'Tree column',
+          tree.treeColumn,
+          (value) => {
+            this.updateGrid(attrs, grid.id, {
+              tree: {...tree, treeColumn: value},
+            });
+          },
+          true,
+        ),
+      );
+    }
+    return rows;
+  }
+
   // --- Settings panel ---
 
   private renderSettingsPanel(): m.Children {
@@ -517,10 +702,10 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
     });
   }
 
-  /** Reusable source-change popup menu for a chart. */
+  /** Reusable source-change popup menu for a chart or grid item. */
   private renderSourceChangePopup(
     attrs: DashboardAttrs,
-    chartId: string,
+    itemId: string,
     currentSource: DashboardDataSource,
     chipOpts?: {compact?: boolean; className?: string},
     onChanged?: (newSource: DashboardDataSource) => void,
@@ -541,7 +726,7 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
           icon: s.nodeId === currentSource.nodeId ? 'check' : undefined,
           onclick: () => {
             if (s.nodeId !== currentSource.nodeId) {
-              this.changeChartSource(attrs, chartId, s);
+              this.changeItemSource(attrs, itemId, s);
               onChanged?.(s);
             }
           },
@@ -564,8 +749,19 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
         return this.renderDivider(attrs, item);
       }
       const source = attrs.sources.find((s) => s.nodeId === item.sourceNodeId);
+      if (item.kind === 'grid') {
+        if (source === undefined) {
+          return this.renderOrphanedItem(attrs, item.id, item, 'Grid');
+        }
+        return this.renderGrid(attrs, source, item);
+      }
       if (source === undefined) {
-        return this.renderOrphanedChart(attrs, item);
+        return this.renderOrphanedItem(
+          attrs,
+          item.config.id,
+          item,
+          item.config.name ?? 'Chart',
+        );
       }
       return this.renderChart(attrs, source, item);
     });
@@ -686,14 +882,16 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
     ]);
   }
 
-  private renderOrphanedChart(
+  /** Card shown in place of a chart or grid whose data source is gone. */
+  private renderOrphanedItem(
     attrs: DashboardAttrs,
-    chart: DashboardItem & {kind: 'chart'},
+    itemId: string,
+    item: DashboardItem & {kind: 'chart' | 'grid'},
+    headerLabel: string,
   ): m.Child {
-    const itemId = chart.config.id;
-    return this.renderItemCard(attrs, itemId, chart, [
+    return this.renderItemCard(attrs, itemId, item, [
       m('.pf-dashboard__chart-header', [
-        m('.pf-dashboard__chart-header-text', chart.config.name ?? 'Chart'),
+        m('.pf-dashboard__chart-header-text', headerLabel),
         m('.pf-dashboard__chart-actions', [this.deleteButton(attrs, itemId)]),
       ]),
       m(
@@ -701,8 +899,55 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
         m(
           ResultsPanelEmptyState,
           {icon: 'link_off', title: 'Data source removed'},
-          'The data source for this chart is no longer available. Delete or re-assign it.',
+          'The data source for this item is no longer available. Delete or re-assign it.',
         ),
+      ),
+    ]);
+  }
+
+  private renderGrid(
+    attrs: DashboardAttrs,
+    source: DashboardDataSource,
+    grid: DashboardItem & {kind: 'grid'},
+  ): m.Child {
+    const itemId = grid.id;
+    const isEditingThis =
+      this.activePanel === 'grid' && this.editingGridId === itemId;
+
+    return this.renderItemCard(attrs, itemId, grid, [
+      m('.pf-dashboard__chart-header', [
+        m('.pf-dashboard__grid-header-text', source.name),
+        m('.pf-dashboard__chart-actions', [
+          m(Button, {
+            icon: 'settings',
+            title: 'Edit grid settings',
+            compact: true,
+            className: classNames(isEditingThis && 'pf-active'),
+            onclick: (e: MouseEvent) => {
+              e.stopPropagation();
+              if (isEditingThis) {
+                this.activePanel = undefined;
+                this.editingGridId = undefined;
+              } else {
+                this.editingGridId = itemId;
+                this.activePanel = 'grid';
+              }
+            },
+          }),
+          this.deleteButton(attrs, itemId),
+        ]),
+      ]),
+      m(
+        '.pf-dashboard__grid-content',
+        m(DashboardGridView, {
+          // The grid reads its columns and tree config once, on mount, so a
+          // config change has to re-create it.
+          key: gridViewKey(grid),
+          trace: attrs.trace,
+          source,
+          grid,
+          brushFilters: attrs.brushFilters,
+        }),
       ),
     ]);
   }
@@ -1076,15 +1321,27 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
     attrs.onItemsChange(attrs.items.map(fn));
   }
 
-  private changeChartSource(
+  /** Re-point a chart or grid item at a different data source. */
+  private changeItemSource(
     attrs: DashboardAttrs,
-    chartId: string,
+    itemId: string,
     newSource: DashboardDataSource,
   ): void {
     this.mapItems(attrs, (i) =>
-      i.kind === 'chart' && i.config.id === chartId
+      (i.kind === 'chart' || i.kind === 'grid') && getItemId(i) === itemId
         ? {...i, sourceNodeId: newSource.nodeId}
         : i,
+    );
+  }
+
+  /** Apply a partial update to a grid item. */
+  private updateGrid(
+    attrs: DashboardAttrs,
+    itemId: string,
+    updates: Partial<Omit<DashboardGrid, 'id'>>,
+  ): void {
+    this.mapItems(attrs, (i) =>
+      i.kind === 'grid' && i.id === itemId ? {...i, ...updates} : i,
     );
   }
 
@@ -1316,10 +1573,12 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
       );
     }
 
-    // Partition sources into used (has at least one chart) and unused.
+    // Partition sources into used (has at least one chart or grid) and unused.
     const items = attrs.items;
     const usedNodeIds = new Set(
-      items.filter((i) => i.kind === 'chart').map((i) => i.sourceNodeId),
+      items
+        .filter((i) => i.kind === 'chart' || i.kind === 'grid')
+        .map((i) => i.sourceNodeId),
     );
     const used = allExported.filter((s) => usedNodeIds.has(s.nodeId));
     const unused = allExported.filter((s) => !usedNodeIds.has(s.nodeId));
@@ -1490,6 +1749,15 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
           this.addChartForSource(attrs, source, chartType);
         }),
       ),
+      m(Button, {
+        label: 'Add Grid',
+        icon: 'table_chart',
+        compact: true,
+        className: classNames('pf-dashboard__add-chart-btn'),
+        onclick: () => {
+          this.addGridForSource(attrs, source);
+        },
+      }),
     ];
   }
 
@@ -1521,5 +1789,36 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
     // Automatically open the edit panel for the newly added chart.
     this.editingChart = {itemId: newConfig.id, source};
     this.activePanel = 'edit';
+  }
+
+  private addGridForSource(
+    attrs: DashboardAttrs,
+    source: DashboardDataSource,
+  ): void {
+    const items = [...attrs.items];
+    const id = shortUuid();
+    const candidate = getNextItemPosition(items);
+    const pos = findNonOverlappingPosition(
+      candidate.col,
+      candidate.row,
+      DEFAULT_COL_SPAN,
+      DEFAULT_ROW_SPAN,
+      items,
+      id,
+    );
+    // Columns and tree mode are left unset: the grid starts out flat and shows
+    // every column of the source, and the config panel narrows it down.
+    items.push({
+      kind: 'grid',
+      id,
+      sourceNodeId: source.nodeId,
+      col: pos.col,
+      row: pos.row,
+    });
+    attrs.onItemsChange(items);
+
+    // Automatically open the config panel for the newly added grid.
+    this.editingGridId = id;
+    this.activePanel = 'grid';
   }
 }

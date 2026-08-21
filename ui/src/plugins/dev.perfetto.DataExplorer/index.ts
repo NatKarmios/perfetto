@@ -48,7 +48,9 @@ import {
   createEmptyState,
   serializeAllDashboards,
   deserializeDashboardsForTab,
+  type SerializedDashboard,
 } from './data_explorer_tabs_storage';
+import {deserializeDashboardsFromExport} from './graph_io';
 import {dashboardRegistry} from './dashboard/dashboard_registry';
 import type {DashboardTabState} from './data_explorer';
 import type {
@@ -518,8 +520,19 @@ export default class implements PerfettoPlugin {
    *
    * Used by dependent plugins (e.g. the Intelletto assistant) to build a graph
    * on the user's behalf.
+   *
+   * `dashboards` optionally seeds the tab's dashboards, in the same serialized
+   * shape the tab export/import path uses ({id, items?, brushFilters?}). When
+   * given, they replace the tab's dashboards and the first one is shown, so a
+   * caller can hand the user a ready-made dashboard over the graph it just
+   * built instead of an empty one. Items that fail validation are dropped; if
+   * nothing survives, the tab keeps its existing dashboards.
    */
-  setActiveGraphJson(trace: Trace, json: string): void {
+  setActiveGraphJson(
+    trace: Trace,
+    json: string,
+    dashboards?: ReadonlyArray<SerializedDashboard>,
+  ): void {
     const sqlModulesPlugin = trace.plugins.getPlugin(SqlModulesPlugin);
     sqlModulesPlugin.ensureInitialized();
     const sqlModules = sqlModulesPlugin.getSqlModules();
@@ -547,6 +560,17 @@ export default class implements PerfettoPlugin {
     // makeOnStateUpdate handles persistence (localStorage + permalink) and
     // triggers a redraw.
     this.makeOnStateUpdate(this.activeTabId)(state);
+    if (dashboards !== undefined) {
+      const hydrated = deserializeDashboardsFromExport(dashboards);
+      const tab = this.getActiveTab();
+      if (hydrated !== undefined && tab !== undefined) {
+        tab.dashboards = hydrated;
+        // Land on the seeded dashboard rather than the graph.
+        tab.activeSubTab = hydrated[0].id;
+        this.debouncedSave();
+        this.debouncedPermalinkSave();
+      }
+    }
     trace.navigate('#!/explore');
   }
 

@@ -55,6 +55,47 @@ export interface DashboardChart {
   rowSpan?: number;
 }
 
+/**
+ * Tree configuration for a grid item: the JSON-serializable subset of the
+ * DataGrid's IdBasedTree.
+ *
+ * The expansion state (IdBasedTree's expandedIds/collapsedIds) is deliberately
+ * absent — it is a Set<bigint>, which does not survive JSON. Expansion stays
+ * local to the grid component and is not persisted.
+ */
+export interface DashboardGridTree {
+  /** Column holding each row's unique ID. */
+  readonly idField: string;
+  /** Column holding the parent row's ID (NULL for roots). */
+  readonly parentIdField: string;
+  /** Column that renders the chevrons and indentation. */
+  readonly treeColumn?: string;
+}
+
+/**
+ * A data grid (table) on the dashboard canvas, linked to its data source.
+ *
+ * Grids are brush *consumers* only: brush selections on their data source
+ * filter them, but interacting with a grid never drives anything. Unlike
+ * charts they have no driver exemption, so a grid is filtered wherever it sits
+ * relative to the segment dividers.
+ */
+export interface DashboardGrid {
+  readonly id: string;
+  readonly sourceNodeId: string;
+  /**
+   * Names of the columns to show, in display order. Undefined means every
+   * column of the data source.
+   */
+  readonly columns?: ReadonlyArray<string>;
+  /** When set, rows are displayed as a collapsible id/parent_id tree. */
+  readonly tree?: DashboardGridTree;
+  col?: number;
+  row?: number;
+  colSpan?: number;
+  rowSpan?: number;
+}
+
 /** An editable text label on the dashboard canvas. */
 export interface DashboardLabel {
   readonly id: string;
@@ -79,13 +120,17 @@ export interface DashboardDivider {
   label?: string;
 }
 
-/** A dashboard canvas item — a chart, label, or segment divider. */
+/** A dashboard canvas item — a chart, grid, label, or segment divider. */
 export type DashboardItem =
   | ({readonly kind: 'chart'} & DashboardChart)
+  | ({readonly kind: 'grid'} & DashboardGrid)
   | ({readonly kind: 'label'} & DashboardLabel)
   | ({readonly kind: 'divider'} & DashboardDivider);
 
-/** Get the unique ID for a dashboard item. */
+/**
+ * Get the unique ID for a dashboard item. Charts carry theirs on the chart
+ * config; every other kind has its own `id` field.
+ */
 export function getItemId(item: DashboardItem): string {
   if (item.kind === 'chart') return item.config.id;
   return item.id;
@@ -330,6 +375,22 @@ export function serializeDashboardItems(
     : undefined;
 }
 
+/** True if `value` is an array of strings (a grid's column list). */
+function isStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+/** True if `value` looks like a DashboardGridTree. */
+function isValidGridTree(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const tree = value as Record<string, unknown>;
+  return (
+    typeof tree.idField === 'string' &&
+    typeof tree.parentIdField === 'string' &&
+    (tree.treeColumn === undefined || typeof tree.treeColumn === 'string')
+  );
+}
+
 /**
  * Validate that an unknown value looks like a DashboardItem[].
  * Returns undefined if validation fails.
@@ -358,6 +419,16 @@ export function validateDashboardItems(
       ) {
         continue;
       }
+      validated.push(item as DashboardItem);
+    } else if (obj.kind === 'grid') {
+      if (typeof obj.id !== 'string' || typeof obj.sourceNodeId !== 'string') {
+        continue;
+      }
+      // The optional column list and tree config are dropped along with the
+      // item if malformed — a grid pointing at nonsense columns would render
+      // as an error, so it is better not to restore it at all.
+      if (obj.columns !== undefined && !isStringArray(obj.columns)) continue;
+      if (obj.tree !== undefined && !isValidGridTree(obj.tree)) continue;
       validated.push(item as DashboardItem);
     } else if (obj.kind === 'label') {
       if (typeof obj.id !== 'string' || typeof obj.text !== 'string') continue;
