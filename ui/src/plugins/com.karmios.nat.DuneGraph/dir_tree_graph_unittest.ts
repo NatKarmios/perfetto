@@ -39,11 +39,10 @@ import {
   DIR_TREE_GRID_COLUMNS,
   DIR_TREE_GRID_TREE,
   DIR_TREE_SQL,
-  dirTreeColumnType,
   dirTreeDashboards,
   dirTreeGraphJson,
 } from './dir_tree_graph';
-import {DUNE_NODE_JOINID} from './node_cell';
+import {exploreColumnType} from './explore_source';
 
 // The node registry is populated as a side effect of the Data Explorer's own
 // module load; a unit test importing only the loaders has to do it itself.
@@ -55,6 +54,23 @@ const trace = {} as Trace;
 const sqlModules = {} as SqlModules;
 
 const columnNames = DIR_TREE_COLUMNS.map((c) => c.name);
+
+// The generated graph, parsed. Node ids are allocated rather than written out
+// (see explore_source.ts), so every assertion below reads them off the payload
+// instead of naming them - the numbers are not the contract, the wiring is.
+function parsedGraph() {
+  return JSON.parse(dirTreeGraphJson()) as {
+    nodes: Array<{
+      nodeId: string;
+      type: string;
+      state: {selectedColumns?: Array<{name: string; checked: boolean}>};
+      primaryInputId?: string;
+      nextNodes: string[];
+    }>;
+    rootNodeIds: string[];
+    selectedNodeId?: string;
+  };
+}
 
 describe('DIR_TREE_SQL', () => {
   it('is one SELECT over dune_dir, as SqlSourceNode requires', () => {
@@ -89,38 +105,43 @@ describe('dirTreeGraphJson', () => {
   });
 
   it('wires source -> columns -> export, both ends of every edge', () => {
-    const graph = JSON.parse(dirTreeGraphJson());
-    expect(graph.rootNodeIds).toEqual(['0']);
-    expect(graph.nodes.map((n: {type: string}) => n.type)).toEqual([
+    const graph = parsedGraph();
+    expect(graph.nodes.map((n) => n.type)).toEqual([
       'sql_source',
       'modify_columns',
       'dashboard',
     ]);
     const [source, columns, exportNode] = graph.nodes;
+    // Exactly the input-less nodes are roots, and the source is the only one:
+    // anything else is unreachable on load, or a root that isn't one.
+    expect(graph.rootNodeIds).toEqual([source.nodeId]);
+    expect(source.primaryInputId).toBeUndefined();
     expect(source.nextNodes).toEqual([columns.nodeId]);
     expect(columns.primaryInputId).toBe(source.nodeId);
     expect(columns.nextNodes).toEqual([exportNode.nodeId]);
     expect(exportNode.primaryInputId).toBe(columns.nodeId);
     expect(exportNode.nextNodes).toEqual([]);
+    // The SQL is the node worth landing on in the graph tab.
+    expect(graph.selectedNodeId).toBe(source.nodeId);
   });
 
   it('checks every column it selects', () => {
-    const graph = JSON.parse(dirTreeGraphJson());
-    const selected = graph.nodes[1].state.selectedColumns;
-    expect(selected.map((c: {name: string}) => c.name)).toEqual(columnNames);
+    const selected = parsedGraph().nodes[1].state.selectedColumns!;
+    expect(selected.map((c) => c.name)).toEqual(columnNames);
     // An omitted or false `checked` exports nothing at all.
-    expect(selected.every((c: {checked: boolean}) => c.checked)).toBe(true);
+    expect(selected.every((c) => c.checked)).toBe(true);
   });
 
   it('builds a live graph whose export publishes the columns up front', () => {
     const state = deserializeState(dirTreeGraphJson(), trace, sqlModules);
     expect(state.rootNodes).toHaveLength(1);
 
-    // The dashboard item points at node '2'; this is the source it finds. That
-    // it already has columns - with no query having been run - is what makes
-    // the grid render (and then ask for execution) instead of reporting "No
-    // columns" and waiting for a manual run in the query builder.
-    const source = dashboardRegistry.getExportedSource('2');
+    // The dashboard item points at the export node; this is the source it
+    // finds. That it already has columns - with no query having been run - is
+    // what makes the grid render (and then ask for execution) instead of
+    // reporting "No columns" and waiting for a manual run in the query builder.
+    const exportNodeId = parsedGraph().nodes[2].nodeId;
+    const source = dashboardRegistry.getExportedSource(exportNodeId);
     expect(source).toBeDefined();
     expect(source!.name).toBe('Dune directories');
     expect(source!.columns.map((c) => c.name)).toEqual(columnNames);
@@ -133,60 +154,12 @@ describe('DIR_TREE_COLUMNS types', () => {
     // ids. Typing either as JOINID(dune_node.node_id) would render it as
     // whichever unrelated graph node happened to share the number, which is
     // worse than the plain integer it is. A directory is not a node.
+    // (node_source_unittest.ts is where a column that *is* one is checked.)
     for (const col of DIR_TREE_COLUMNS) {
-      const type = dirTreeColumnType(col);
+      const type = exploreColumnType(col);
       expect(type.kind).not.toBe('id');
       expect(type.kind).not.toBe('joinid');
     }
-  });
-
-  it('carries a full id type through to the serialized column', () => {
-    // Step 3 of the design: a builder can declare a node reference, and the
-    // Data Explorer's loader has to hand it back intact for the grid to render
-    // a chip from it (see node_cell.ts). Checked on a graph built here rather
-    // than on the dir tree's, which deliberately has no such column.
-    const json = JSON.stringify({
-      nodes: [
-        {
-          nodeId: '10',
-          type: 'sql_source',
-          state: {sql: 'SELECT node_id FROM dune_node'},
-          nextNodes: ['11'],
-        },
-        {
-          nodeId: '11',
-          type: 'modify_columns',
-          state: {
-            selectedColumns: [
-              {
-                name: 'node_id',
-                checked: true,
-                type: dirTreeColumnType({
-                  name: 'node_id',
-                  type: DUNE_NODE_JOINID,
-                }),
-              },
-            ],
-          },
-          primaryInputId: '10',
-          nextNodes: ['12'],
-        },
-        {
-          nodeId: '12',
-          type: 'dashboard',
-          state: {exportName: 'Dune nodes'},
-          primaryInputId: '11',
-          nextNodes: [],
-        },
-      ],
-      rootNodeIds: ['10'],
-    });
-
-    expect(validateSerializedGraph(json).errors).toEqual([]);
-    deserializeState(json, trace, sqlModules);
-    const source = dashboardRegistry.getExportedSource('12');
-    expect(source?.columns).toHaveLength(1);
-    expect(source?.columns[0].type).toEqual(DUNE_NODE_JOINID);
   });
 });
 
@@ -201,7 +174,11 @@ describe('dirTreeDashboards', () => {
     const item = hydrated![0].items[0];
     expect(item.kind).toBe('grid');
     if (item.kind !== 'grid') return;
-    expect(item.sourceNodeId).toBe('2');
+    // The item has to name the graph's export node: a dashboard pointing at a
+    // node that isn't there renders nothing and says nothing.
+    expect(item.sourceNodeId).toBe(
+      parsedGraph().nodes.find((n) => n.type === 'dashboard')!.nodeId,
+    );
     expect(item.tree).toEqual(DIR_TREE_GRID_TREE);
     expect(item.columns).toEqual(DIR_TREE_GRID_COLUMNS);
   });

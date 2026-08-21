@@ -18,10 +18,18 @@
   height: 100%;
   min-height: 0;
 
-  // Panel-level actions that aren't about the selection (currently just the
-  // Data Explorer directory-tree hand-off), above the stacked areas.
+  // Panel-level actions that aren't about the selection: the Data Explorer
+  // sources, above the stacked areas and only while that page is open (see
+  // panel.ts). Titled like an area, but a row of buttons rather than one.
   &__toolbar {
-    padding: 8px 8px 4px;
+    padding: 4px 0;
+  }
+
+  &__toolbar-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 8px;
   }
 
   &__source {

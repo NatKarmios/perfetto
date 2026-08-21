@@ -14,6 +14,7 @@
 
 import m from 'mithril';
 import {formatBytesSi} from '../../base/bytes_format';
+import {Router} from '../../core/router';
 import {Button} from '../../widgets/button';
 import {Callout} from '../../widgets/callout';
 import {Intent} from '../../widgets/common';
@@ -22,10 +23,14 @@ import {Icon} from '../../widgets/icon';
 import {Spinner} from '../../widgets/spinner';
 import type {Trace} from '../../public/trace';
 import type {DuneGraphController, LoadStep} from './controller';
-import {exploreDirTree} from './data_explorer_handoff';
+import {APPENDABLE_SOURCES, appendExploreSource} from './data_explorer_handoff';
 import {plural} from './graph';
 import {SelectionInfoPanel} from './selection_info_panel';
 import {GraphPanel} from './graph_panel';
+
+// The Data Explorer's route (`DataExplorerPlugin`'s registered page), which is
+// the only place the "add to the current graph" section makes sense.
+const EXPLORE_PAGE = '/explore';
 
 interface DuneGraphPanelAttrs {
   readonly controller: DuneGraphController;
@@ -76,29 +81,46 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   }
 
   /**
-   * The one action here that isn't about the selected nodes: the build seen as
-   * directories rather than as a graph, handed to the Data Explorer as a
-   * ready-made tree (see data_explorer_handoff.ts). It lives at the top of the
+   * The one area here that isn't about the selected nodes: the mirror's tables,
+   * offered to the Data Explorer as data sources to add to the graph the user is
+   * building there (see data_explorer_handoff.ts). It lives at the top of the
    * panel, above the two node-shaped areas, because it is about the whole build
    * and not about anything selected - and only once the graph is up, so the
    * pre-load screen keeps its single call to action.
    *
+   * Only while the Data Explorer is the open page, though: "add to the current
+   * graph" means nothing anywhere else, and the buttons would be an invitation
+   * to a page the user isn't on. The way *in* is the omnibox command, which
+   * opens the directory tree by replacing the graph and navigating. So: command
+   * = open, these = add in place.
+   *
+   * The route is read straight off the URL rather than watched, which is all
+   * that's needed - the shell redraws on `hashchange`, so the section appears
+   * and disappears with the navigation that caused it.
+   *
    * No `onLoadNeeded` callback: this panel *is* where a load reports itself, and
-   * clicking this button means it is already on screen.
+   * clicking one of these means it is already on screen.
    */
   private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
+    if (Router.parseUrl(window.location.href).page !== EXPLORE_PAGE) {
+      return undefined;
+    }
     const {controller, trace} = attrs;
     return m(
       '.pf-dune-graph__toolbar',
-      m(Button, {
-        label: 'Directory tree',
-        icon: 'account_tree',
-        title:
-          "Open the build's directories as a tree in the Data Explorer, with " +
-          'per-directory rule, dependency, failure and duration rollups',
-        disabled: controller.busy,
-        onclick: () => void exploreDirTree(trace, controller),
-      }),
+      m('.pf-dune-graph__area-title', 'Data Explorer'),
+      m(
+        '.pf-dune-graph__toolbar-buttons',
+        APPENDABLE_SOURCES.map((source) =>
+          m(Button, {
+            label: source.label,
+            icon: source.icon,
+            title: source.title,
+            disabled: controller.busy,
+            onclick: () => void appendExploreSource(trace, controller, source),
+          }),
+        ),
+      ),
     );
   }
 
