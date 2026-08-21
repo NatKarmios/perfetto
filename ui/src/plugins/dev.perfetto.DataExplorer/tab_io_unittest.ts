@@ -301,6 +301,48 @@ describe('deserializeDashboardsFromExport', () => {
     expect(result?.[0].brushFilters).toEqual(new Map());
   });
 
+  test('hydrates dashboards with valid grid items', () => {
+    const serialized: SerializedDashboard[] = [
+      {
+        id: 'db1',
+        items: [
+          {
+            kind: 'grid',
+            id: 'grid1',
+            sourceNodeId: 'node1',
+            columns: ['path', 'size'],
+            col: 0,
+            row: 0,
+          },
+        ],
+      },
+    ];
+    const result = deserializeDashboardsFromExport(serialized);
+    expect(result?.[0].items).toEqual(serialized[0].items);
+  });
+
+  test('strips the tree config off a grid saved with one', () => {
+    // Grids had an id/parent_id tree mode once; a dashboard saved then still
+    // carries its config, and comes back as the flat grid it now is.
+    const serialized: SerializedDashboard[] = [
+      {
+        id: 'db1',
+        items: [
+          {
+            kind: 'grid',
+            id: 'grid1',
+            sourceNodeId: 'node1',
+            tree: {idField: 'id', parentIdField: 'parent_id'},
+          },
+        ] as unknown[],
+      },
+    ];
+    const result = deserializeDashboardsFromExport(serialized);
+    expect(result?.[0].items).toEqual([
+      {kind: 'grid', id: 'grid1', sourceNodeId: 'node1'},
+    ]);
+  });
+
   test('handles dashboards with no items field', () => {
     const serialized: SerializedDashboard[] = [{id: 'db1'}];
     const result = deserializeDashboardsFromExport(serialized);
@@ -373,6 +415,27 @@ describe('serializeDashboardsForTab', () => {
     expect(result?.[0].id).toBe('db1');
     expect(result?.[0].items?.length).toBe(1);
     expect(result?.[0].brushFilters).toBeUndefined();
+  });
+
+  test('round-trips a dashboard holding a grid item', () => {
+    const grid = {
+      kind: 'grid' as const,
+      id: 'grid1',
+      sourceNodeId: 'node1',
+      columns: ['path', 'size'],
+      col: 2,
+      row: 3,
+      colSpan: 12,
+      rowSpan: 8,
+    };
+    const tab = makeTab([{id: 'db1', items: [grid], brushFilters: new Map()}]);
+    const serialized = serializeDashboardsForTab(tab);
+    // Go through JSON, as localStorage and permalinks do.
+    const reparsed = JSON.parse(
+      JSON.stringify(serialized),
+    ) as SerializedDashboard[];
+    const result = deserializeDashboardsFromExport(reparsed);
+    expect(result?.[0].items).toEqual([grid]);
   });
 
   test('serializes brush filters with BigInt conversion', () => {

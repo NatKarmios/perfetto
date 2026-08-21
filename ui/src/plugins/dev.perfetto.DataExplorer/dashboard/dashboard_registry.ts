@@ -55,6 +55,28 @@ export interface DashboardChart {
   rowSpan?: number;
 }
 
+/**
+ * A data grid (table) on the dashboard canvas, linked to its data source.
+ *
+ * Grids are brush *consumers* only: brush selections on their data source
+ * filter them, but interacting with a grid never drives anything. Unlike
+ * charts they have no driver exemption, so a grid is filtered wherever it sits
+ * relative to the segment dividers.
+ */
+export interface DashboardGrid {
+  readonly id: string;
+  readonly sourceNodeId: string;
+  /**
+   * Names of the columns to show, in display order. Undefined means every
+   * column of the data source.
+   */
+  readonly columns?: ReadonlyArray<string>;
+  col?: number;
+  row?: number;
+  colSpan?: number;
+  rowSpan?: number;
+}
+
 /** An editable text label on the dashboard canvas. */
 export interface DashboardLabel {
   readonly id: string;
@@ -79,13 +101,17 @@ export interface DashboardDivider {
   label?: string;
 }
 
-/** A dashboard canvas item — a chart, label, or segment divider. */
+/** A dashboard canvas item — a chart, grid, label, or segment divider. */
 export type DashboardItem =
   | ({readonly kind: 'chart'} & DashboardChart)
+  | ({readonly kind: 'grid'} & DashboardGrid)
   | ({readonly kind: 'label'} & DashboardLabel)
   | ({readonly kind: 'divider'} & DashboardDivider);
 
-/** Get the unique ID for a dashboard item. */
+/**
+ * Get the unique ID for a dashboard item. Charts carry theirs on the chart
+ * config; every other kind has its own `id` field.
+ */
 export function getItemId(item: DashboardItem): string {
   if (item.kind === 'chart') return item.config.id;
   return item.id;
@@ -330,6 +356,11 @@ export function serializeDashboardItems(
     : undefined;
 }
 
+/** True if `value` is an array of strings (a grid's column list). */
+function isStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
 /**
  * Validate that an unknown value looks like a DashboardItem[].
  * Returns undefined if validation fails.
@@ -356,6 +387,24 @@ export function validateDashboardItems(
         typeof cfg.column !== 'string' ||
         typeof cfg.chartType !== 'string'
       ) {
+        continue;
+      }
+      validated.push(item as DashboardItem);
+    } else if (obj.kind === 'grid') {
+      if (typeof obj.id !== 'string' || typeof obj.sourceNodeId !== 'string') {
+        continue;
+      }
+      // The optional column list is dropped along with the item if malformed —
+      // a grid pointing at nonsense columns would render as an error, so it is
+      // better not to restore it at all.
+      if (obj.columns !== undefined && !isStringArray(obj.columns)) continue;
+      // Grids used to have an id/parent_id tree mode; dashboards saved then
+      // still carry its config. Drop the field rather than keeping a dead one
+      // alive through every subsequent save — whatever it says, the grid is
+      // flat now.
+      if (obj.tree !== undefined) {
+        const {tree: _tree, ...rest} = obj;
+        validated.push(rest as unknown as DashboardItem);
         continue;
       }
       validated.push(item as DashboardItem);
