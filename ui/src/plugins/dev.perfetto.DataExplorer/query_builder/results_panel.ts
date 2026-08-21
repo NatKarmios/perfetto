@@ -16,10 +16,8 @@ import m from 'mithril';
 import type {QueryResponse} from '../../../components/query_table/queries';
 import {DataGrid} from '../../../components/widgets/datagrid/datagrid';
 import {escapePath} from '../../../components/widgets/datagrid/datagrid_schema';
-import type {
-  CellRenderer,
-  ColumnSchema,
-} from '../../../components/widgets/datagrid/datagrid_schema';
+import type {ColumnSchema} from '../../../components/widgets/datagrid/datagrid_schema';
+import {resolveColumnRenderers} from '../../../components/widgets/datagrid/column_renderers';
 import type {Column} from '../../../components/widgets/datagrid/model';
 import {Button, ButtonVariant} from '../../../widgets/button';
 import {Spinner} from '../../../widgets/spinner';
@@ -33,42 +31,13 @@ import {findErrors, isAQuery} from './query_builder_utils';
 import {type UIFilter, normalizeDataGridFilter} from './operations/filter';
 import {ResultsPanelEmptyState} from './widgets';
 import type {Trace} from '../../../public/trace';
-import {Timestamp} from '../../../components/widgets/timestamp';
 import type {SqlModules} from '../../dev.perfetto.SqlModules/sql_modules';
-import {DurationWidget} from '../../../components/widgets/duration';
-import {Time, Duration} from '../../../base/time';
 import type {ColumnInfo} from './column_info';
-import {Anchor} from '../../../widgets/anchor';
 import {DetailsShell} from '../../../widgets/details_shell';
 import type {DataSource} from '../../../components/widgets/datagrid/data_source';
-import {
-  type PerfettoSqlType,
-  isIdType,
-} from '../../../trace_processor/perfetto_sql_type';
-import type {ColumnType} from '../../../components/widgets/datagrid/datagrid_schema';
-import {renderCell} from '../../../components/widgets/datagrid/datagrid';
 import type {QueryExecutionService} from './query_execution_service';
 import {VisualisationNode} from './nodes/visualisation_node';
 import {ChartView} from './charts/chart_view';
-
-// Map PerfettoSqlType to DataGrid ColumnType.
-// Exported so that other DataGrid hosts (e.g. dashboard grid items) classify
-// columns the same way the results panel does.
-export function getColumnType(type: PerfettoSqlType): ColumnType {
-  // ID types (id, joinid, arg_set_id) should be treated as identifiers
-  // They're numeric but we want distinct value pickers
-  if (isIdType(type) || type.kind === 'arg_set_id' || type.kind === 'boolean') {
-    return 'identifier';
-  }
-
-  // String and bytes are text types
-  if (type.kind === 'string' || type.kind === 'bytes') {
-    return 'text';
-  }
-
-  // All other numeric types (int, double, timestamp, duration) are quantitative
-  return 'quantitative';
-}
 
 export interface ResultsPanelAttrs {
   readonly trace: Trace;
@@ -92,79 +61,6 @@ export interface ResultsPanelAttrs {
     filterOperator?: 'AND' | 'OR',
   ) => void;
   readonly onColumnAdd?: (column: Column) => void;
-}
-
-// Create cell renderer for timestamp columns. Exported because the dashboard
-// grid renders the same column types and must format them the same way.
-export function createTimestampCellRenderer(trace: Trace): CellRenderer {
-  return (value) => {
-    if (typeof value === 'number') {
-      value = BigInt(Math.round(value));
-    }
-    if (typeof value !== 'bigint') {
-      return String(value);
-    }
-    return m(Timestamp, {
-      trace,
-      ts: Time.fromRaw(value),
-    });
-  };
-}
-
-// Create cell renderer for duration columns. Exported alongside
-// createTimestampCellRenderer, for the same reason.
-export function createDurationCellRenderer(trace: Trace): CellRenderer {
-  return (value) => {
-    if (typeof value === 'number') {
-      value = BigInt(Math.round(value));
-    }
-    if (typeof value !== 'bigint') {
-      return String(value);
-    }
-    return m(DurationWidget, {
-      trace,
-      dur: Duration.fromRaw(value),
-    });
-  };
-}
-
-// Tables that support timeline navigation via selectSqlEvent.
-// These are tables with track renderers that set rootTableName.
-const NAVIGABLE_TABLES = new Set([
-  'slice',
-  'sched_slice',
-  'thread_state',
-  'android_logs',
-]);
-
-// Create cell renderer for ID columns that link to timeline slices
-function createIdCellRenderer(
-  trace: Trace,
-  tableName: string,
-  columnName: string,
-): CellRenderer {
-  return (value) => {
-    const cell = renderCell(value, columnName);
-    if (typeof value !== 'bigint' && typeof value !== 'number') {
-      return cell;
-    }
-    const id = typeof value === 'bigint' ? Number(value) : value;
-    return m(
-      Anchor,
-      {
-        title: `Go to ${tableName} on the timeline`,
-        icon: Icons.UpdateSelection,
-        onclick: () => {
-          trace.navigate('#!/viewer');
-          trace.selection.selectSqlEvent(tableName, id, {
-            switchToCurrentSelectionTab: false,
-            scrollToSelection: true,
-          });
-        },
-      },
-      cell,
-    );
-  };
 }
 
 // Get column info by name from the node's finalCols
@@ -446,40 +342,14 @@ export class ResultsPanel implements m.ClassComponent<ResultsPanelAttrs> {
       const responseColumns = attrs.response.columns;
 
       for (const c of responseColumns) {
-        let cellRenderer: CellRenderer | undefined;
-        let columnType: ColumnType | undefined;
-
-        // Get column type information from the node
+        // How a column renders is decided by its type, in the widget layer, so
+        // that all DataGrid hosts agree (and so plugins can extend it).
         const columnInfo = getColumnInfo(attrs.node, c);
-        if (columnInfo) {
-          // Set columnType based on the SQL type
-          if (columnInfo.type) {
-            columnType = getColumnType(columnInfo.type);
-          }
-
-          // Check if this is a timestamp column
-          if (columnInfo.type?.kind === 'timestamp') {
-            cellRenderer = createTimestampCellRenderer(attrs.trace);
-          }
-          // Check if this is a duration column
-          else if (columnInfo.type?.kind === 'duration') {
-            cellRenderer = createDurationCellRenderer(attrs.trace);
-          }
-          // Check if this is an ID column that links to a navigable table
-          else if (
-            columnInfo.type !== undefined &&
-            isIdType(columnInfo.type) &&
-            NAVIGABLE_TABLES.has(columnInfo.type.source.table)
-          ) {
-            cellRenderer = createIdCellRenderer(
-              attrs.trace,
-              columnInfo.type.source.table,
-              c,
-            );
-          }
-        }
-
-        schema[escapePath(c)] = {cellRenderer, columnType};
+        schema[escapePath(c)] = resolveColumnRenderers(
+          attrs.trace,
+          columnInfo?.type,
+          c,
+        );
       }
 
       // Build menu items for joinid columns (add columns from related tables)
