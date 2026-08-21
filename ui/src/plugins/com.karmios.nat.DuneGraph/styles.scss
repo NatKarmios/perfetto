@@ -495,6 +495,16 @@
     }
   }
 
+  // A node cell in any DataGrid (see node_cell.ts): the kind chip alongside the
+  // node's label link. Lives in this block rather than the query tab's, since
+  // the cell now renders wherever a `JOINID(dune_node.node_id)` column does.
+  &__node-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
   &__chip {
     flex-shrink: 0;
     padding: 0 6px;
@@ -628,15 +638,6 @@
     white-space: nowrap;
     font-size: 11px;
     color: var(--pf-color-text-muted);
-  }
-
-  // A src/dst chip cell: the kind chip (reusing the graph panel's `__chip`
-  // classes) alongside the node's label link.
-  &__node {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
   }
 
   // Tree-mode body: a scrollable `.pf-dune-tree` under the toolbar.

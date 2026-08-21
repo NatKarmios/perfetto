@@ -18,6 +18,7 @@ import type {Trace} from '../../public/trace';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import {DuneGraphController} from './controller';
 import {exploreDirTree} from './data_explorer_handoff';
+import {registerNodeColumnRenderer} from './node_cell';
 import {DuneGraphPanel} from './panel';
 import {DuneQueryTab} from './query_tab';
 import {dumpPerfRuns} from './perf';
@@ -44,6 +45,13 @@ export default class implements PerfettoPlugin {
     // Registers the "Dune graph" timeline track + workspace once, so the
     // graph pane's "Timeline" button is just a switchWorkspace() away.
     controller.installTimeline();
+
+    // Teaches every DataGrid in the UI how to render a reference to one of our
+    // nodes: a column typed `JOINID(dune_node.node_id)` shows the same chip
+    // (+ ＋/－ toggle) the query tab shows, wherever the grid lives. The
+    // registration is global, so it is scoped to this trace's lifetime - see
+    // node_cell.ts.
+    registerNodeColumnRenderer(trace, controller);
 
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,

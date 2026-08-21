@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import m from 'mithril';
-import {classNames} from '../../base/classnames';
 import {Icons} from '../../base/semantic_icons';
 import {shortUuid} from '../../base/uuid';
 import type {Tab} from '../../public/tab';
@@ -30,7 +29,6 @@ import {escapePath} from '../../components/widgets/datagrid/datagrid_schema';
 import type {Column} from '../../components/widgets/datagrid/model';
 import {InMemoryDataSource} from '../../components/widgets/datagrid/in_memory_data_source';
 import {DataGridToolbar} from '../../components/widgets/datagrid/datagrid_toolbar';
-import {Anchor} from '../../widgets/anchor';
 import {Button, ButtonGroup} from '../../widgets/button';
 import {MenuItem, PopupMenu} from '../../widgets/menu';
 import {Callout} from '../../widgets/callout';
@@ -40,9 +38,15 @@ import {StackAuto} from '../../widgets/stack';
 import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
 import {
-  decorateNode,
+  nodeAnchor,
+  nodeCellLabel,
+  renderNodeCell,
+  renderNodeCellActions,
+} from './node_cell';
+import {
   forcedByText,
   formatDurNs,
+  kindChip,
   nodePathParts,
 } from './node_display';
 import {
@@ -462,11 +466,11 @@ export class DuneQueryTab implements Tab {
     const {node, value} = entry;
     return m(
       '.pf-dune-query__tree-row',
-      node !== undefined && this.renderKindChip(node),
+      node !== undefined && kindChip(this.controller.graph.kindOf(node)),
       m(
         'span.pf-dune-graph__ref-label',
         prefix !== '' && m('span.pf-dune-graph__ref-prefix', prefix),
-        node !== undefined ? this.nodeAnchor(node, label) : label,
+        node !== undefined ? nodeAnchor(this.controller, node, label) : label,
       ),
       this.renderTreeExtras(response, entry),
       this.renderNodeToggle(col, value),
@@ -732,13 +736,14 @@ export class DuneQueryTab implements Tab {
 
   // A `node_id` / `src` / `dst` column: the node as a coloured kind chip + label,
   // linking to its slice (+ toggle). The value is the node id (exported as the
-  // node's label).
+  // node's label), so this is exactly the shared node-id cell (node_cell.ts) -
+  // the same rendering any DataGrid gives a `JOINID(dune_node.node_id)` column.
   private chipDef(col: string): ColumnDef {
     return {
       title: col,
-      cellRenderer: (value) => this.renderNodeChip(col, value),
-      cellFormatter: (value) => this.nodeLabelFor(col, value) ?? String(value),
-      actions: (value) => this.renderNodeToggle(col, value),
+      cellRenderer: (value) => renderNodeCell(this.controller, value),
+      cellFormatter: (value) => nodeCellLabel(this.controller, value),
+      actions: (value) => renderNodeCellActions(this.controller, value),
     };
   }
 
@@ -789,51 +794,7 @@ export class DuneQueryTab implements Tab {
     const node = this.nodeForValue(SLICE_ID_COL, value);
     const text = value === null ? '' : String(value);
     if (node === undefined) return text;
-    return this.nodeAnchor(node, text);
-  }
-
-  // A node as a coloured kind chip plus its label, linking to its slice. A dep's
-  // path additionally gets a leading build/code icon (its `_build/<dir>/` prefix
-  // folded into the icon tooltip); a rule shows its bare id. Falls back to the
-  // raw value when it isn't a node of the current graph.
-  private renderNodeChip(col: string, value: SqlValue): m.Children {
-    const node = this.nodeForValue(col, value);
-    if (node === undefined) return value === null ? '' : String(value);
-    const {icon, text} = decorateNode(this.controller.graph, node);
-    return m(
-      'span.pf-dune-query__node',
-      this.renderKindChip(node),
-      icon,
-      this.nodeAnchor(node, text),
-    );
-  }
-
-  // The node's kind as a coloured chip, reusing the graph panel's styling (a
-  // global class).
-  private renderKindChip(node: NodeId): m.Children {
-    const kind = this.controller.graph.kindOf(node);
-    return m(
-      'span',
-      {
-        class: classNames(
-          'pf-dune-graph__chip',
-          `pf-dune-graph__chip--${kind}`,
-        ),
-      },
-      kind,
-    );
-  }
-
-  private nodeAnchor(node: NodeId, label: string): m.Children {
-    return m(
-      Anchor,
-      {
-        icon: Icons.UpdateSelection,
-        title: 'Go to slice on the timeline',
-        onclick: () => void this.controller.goToNode(node),
-      },
-      label,
-    );
+    return nodeAnchor(this.controller, node, text);
   }
 
   // ＋/－ toggle for a node cell: adds or removes that node, reflecting current

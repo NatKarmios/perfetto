@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import m from 'mithril';
-import {classNames} from '../../base/classnames';
 import {Icons} from '../../base/semantic_icons';
 import {Anchor} from '../../widgets/anchor';
 import {Button} from '../../widgets/button';
@@ -37,6 +36,7 @@ import {
   depStatusLabel,
   forcedByText,
   formatDurNs,
+  kindChip,
   nodePathParts,
   outcomeLabel,
 } from './node_display';
@@ -170,16 +170,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       '.pf-dune-graph__info-header',
       m(
         'span.pf-dune-graph__info-main',
-        m(
-          'span',
-          {
-            class: classNames(
-              'pf-dune-graph__chip',
-              `pf-dune-graph__chip--${node.kind}`,
-            ),
-          },
-          node.kind,
-        ),
+        kindChip(node.kind),
         icon,
         m(
           'span.pf-dune-graph__info-title',
@@ -435,16 +426,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           title: 'Forced edge',
           className: 'pf-dune-graph__forced-icon',
         }),
-      m(
-        'span',
-        {
-          class: classNames(
-            'pf-dune-graph__chip',
-            `pf-dune-graph__chip--${ref.kind}`,
-          ),
-        },
-        ref.kind,
-      ),
+      kindChip(ref.kind),
       ref.chip !== undefined &&
         m(
           'span.pf-dune-graph__ref-chip',

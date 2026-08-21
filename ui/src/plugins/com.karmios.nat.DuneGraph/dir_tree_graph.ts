@@ -54,7 +54,10 @@
 import {GRID_COLUMNS} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import type {DashboardItem} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import type {SerializedDashboard} from '../dev.perfetto.DataExplorer/data_explorer_tabs_storage';
-import type {SimpleTypeKind} from '../../trace_processor/perfetto_sql_type';
+import type {
+  PerfettoSqlType,
+  SimpleTypeKind,
+} from '../../trace_processor/perfetto_sql_type';
 
 // Node ids. Numeric strings, like the Data Explorer's own: the loader bumps its
 // node counter above every numeric id it sees, so these can never collide with
@@ -83,11 +86,34 @@ const GRID_ROW_SPAN = 18;
 // no such row; small traces do.)
 const TOP_LEVEL_LABEL = '(top level)';
 
-interface DirTreeColumn {
+export interface DirTreeColumn {
   readonly name: string;
-  readonly type: SimpleTypeKind;
+  /**
+   * The column's PerfettoSQL type, which is what decides how the grid renders
+   * it (see `resolveColumnRenderers`): a bare {@link SimpleTypeKind} for the
+   * simple cases, or a full {@link PerfettoSqlType} where the type carries
+   * more than a kind - notably an id reference such as
+   * `JOINID(dune_node.node_id)` (`DUNE_NODE_JOINID` in node_cell.ts), which
+   * renders as a node chip.
+   *
+   * Nothing here is such a reference, and must not become one by accident:
+   * `dune_dir`'s `id` / `parent_id` are *directory* ids, from a table that
+   * numbers directories, not graph nodes. Typing them as node joinids would
+   * chip them as whatever unrelated node happened to share the number.
+   */
+  readonly type: SimpleTypeKind | PerfettoSqlType;
   // The SELECT expression, when the column is not simply passed through.
   readonly expr?: string;
+}
+
+/**
+ * A column's type in the object form the serialized graph carries. The Data
+ * Explorer's loader takes a `PerfettoSqlType` object as-is (a string goes
+ * through `parsePerfettoSqlTypeFromString`, which is the legacy path), so an
+ * id type survives the round-trip into the exported source's columns.
+ */
+export function dirTreeColumnType(col: DirTreeColumn): PerfettoSqlType {
+  return typeof col.type === 'string' ? {kind: col.type} : col.type;
 }
 
 /**
@@ -195,7 +221,7 @@ export function dirTreeGraphJson(): string {
               // Explicit: the loader defaults an omitted `checked` to false,
               // which would export no columns at all.
               checked: true,
-              type: {kind: c.type},
+              type: dirTreeColumnType(c),
             })),
           },
           primaryInputId: SOURCE_NODE_ID,

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import m from 'mithril';
+import {classNames} from '../../base/classnames';
 import {Duration} from '../../base/time';
 import {Icon} from '../../widgets/icon';
 import type {PathSeg} from './path_tree';
@@ -170,6 +171,25 @@ export function depStatusLabel(status: DepStatus): string | undefined {
 // node model's `SpanTiming`) as a human-readable duration, e.g. "88ms".
 export function formatDurNs(durNs: number): string {
   return Duration.humanise(BigInt(Math.round(durNs)));
+}
+
+/**
+ * A node's kind as a small coloured chip - the one visual marker that says
+ * "dep" or "rule" wherever a node is listed: the current-selection panel's
+ * header and dependency lists, the query tab's cells and tree leaves, and any
+ * DataGrid showing a node-id column (see node_cell.ts).
+ *
+ * Takes the kind rather than a node, since a dependency *reference* has a kind
+ * even when the graph never recorded a node for it.
+ */
+export function kindChip(kind: NodeKind): m.Children {
+  return m(
+    'span',
+    {
+      class: classNames('pf-dune-graph__chip', `pf-dune-graph__chip--${kind}`),
+    },
+    kind,
+  );
 }
 
 /**

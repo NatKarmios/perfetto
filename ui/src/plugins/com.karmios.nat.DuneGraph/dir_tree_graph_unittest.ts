@@ -39,9 +39,11 @@ import {
   DIR_TREE_GRID_COLUMNS,
   DIR_TREE_GRID_TREE,
   DIR_TREE_SQL,
+  dirTreeColumnType,
   dirTreeDashboards,
   dirTreeGraphJson,
 } from './dir_tree_graph';
+import {DUNE_NODE_JOINID} from './node_cell';
 
 // The node registry is populated as a side effect of the Data Explorer's own
 // module load; a unit test importing only the loaders has to do it itself.
@@ -122,6 +124,69 @@ describe('dirTreeGraphJson', () => {
     expect(source).toBeDefined();
     expect(source!.name).toBe('Dune directories');
     expect(source!.columns.map((c) => c.name)).toEqual(columnNames);
+  });
+});
+
+describe('DIR_TREE_COLUMNS types', () => {
+  it('declares no column as a reference to a graph node', () => {
+    // `dune_dir` numbers *directories*, so its `id` / `parent_id` are directory
+    // ids. Typing either as JOINID(dune_node.node_id) would render it as
+    // whichever unrelated graph node happened to share the number, which is
+    // worse than the plain integer it is. A directory is not a node.
+    for (const col of DIR_TREE_COLUMNS) {
+      const type = dirTreeColumnType(col);
+      expect(type.kind).not.toBe('id');
+      expect(type.kind).not.toBe('joinid');
+    }
+  });
+
+  it('carries a full id type through to the serialized column', () => {
+    // Step 3 of the design: a builder can declare a node reference, and the
+    // Data Explorer's loader has to hand it back intact for the grid to render
+    // a chip from it (see node_cell.ts). Checked on a graph built here rather
+    // than on the dir tree's, which deliberately has no such column.
+    const json = JSON.stringify({
+      nodes: [
+        {
+          nodeId: '10',
+          type: 'sql_source',
+          state: {sql: 'SELECT node_id FROM dune_node'},
+          nextNodes: ['11'],
+        },
+        {
+          nodeId: '11',
+          type: 'modify_columns',
+          state: {
+            selectedColumns: [
+              {
+                name: 'node_id',
+                checked: true,
+                type: dirTreeColumnType({
+                  name: 'node_id',
+                  type: DUNE_NODE_JOINID,
+                }),
+              },
+            ],
+          },
+          primaryInputId: '10',
+          nextNodes: ['12'],
+        },
+        {
+          nodeId: '12',
+          type: 'dashboard',
+          state: {exportName: 'Dune nodes'},
+          primaryInputId: '11',
+          nextNodes: [],
+        },
+      ],
+      rootNodeIds: ['10'],
+    });
+
+    expect(validateSerializedGraph(json).errors).toEqual([]);
+    deserializeState(json, trace, sqlModules);
+    const source = dashboardRegistry.getExportedSource('12');
+    expect(source?.columns).toHaveLength(1);
+    expect(source?.columns[0].type).toEqual(DUNE_NODE_JOINID);
   });
 });
 
