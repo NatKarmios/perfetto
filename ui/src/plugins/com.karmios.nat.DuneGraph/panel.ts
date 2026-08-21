@@ -20,13 +20,18 @@ import {Intent} from '../../widgets/common';
 import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
 import {Spinner} from '../../widgets/spinner';
+import type {Trace} from '../../public/trace';
 import type {DuneGraphController, LoadStep} from './controller';
+import {exploreDirTree} from './data_explorer_handoff';
 import {plural} from './graph';
 import {SelectionInfoPanel} from './selection_info_panel';
 import {GraphPanel} from './graph_panel';
 
 interface DuneGraphPanelAttrs {
   readonly controller: DuneGraphController;
+  // Only needed for the Data Explorer hand-off, which is a plugin-level action
+  // rather than a graph one - everything else here goes through the controller.
+  readonly trace: Trace;
 }
 
 /**
@@ -47,13 +52,15 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     return m(
       '.pf-dune-graph',
       m('.pf-dune-graph__source', `Source: ${controller.sourceDescription}`),
-      this.renderAreas(controller),
+      this.renderAreas(attrs),
     );
   }
 
-  private renderAreas(controller: DuneGraphController): m.Children {
+  private renderAreas(attrs: DuneGraphPanelAttrs): m.Children {
+    const {controller} = attrs;
     if (!controller.graphStep.ready) return this.renderUnloaded(controller);
     return [
+      this.renderExplore(attrs),
       this.renderMirrorWarnings(controller),
       m(
         '.pf-dune-graph__area.pf-dune-graph__area--info',
@@ -66,6 +73,33 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
         m(GraphPanel, {controller}),
       ),
     ];
+  }
+
+  /**
+   * The one action here that isn't about the selected nodes: the build seen as
+   * directories rather than as a graph, handed to the Data Explorer as a
+   * ready-made tree (see data_explorer_handoff.ts). It lives at the top of the
+   * panel, above the two node-shaped areas, because it is about the whole build
+   * and not about anything selected - and only once the graph is up, so the
+   * pre-load screen keeps its single call to action.
+   *
+   * No `onLoadNeeded` callback: this panel *is* where a load reports itself, and
+   * clicking this button means it is already on screen.
+   */
+  private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
+    const {controller, trace} = attrs;
+    return m(
+      '.pf-dune-graph__toolbar',
+      m(Button, {
+        label: 'Directory tree',
+        icon: 'account_tree',
+        title:
+          "Open the build's directories as a tree in the Data Explorer, with " +
+          'per-directory rule, dependency, failure and duration rollups',
+        disabled: controller.busy,
+        onclick: () => void exploreDirTree(trace, controller),
+      }),
+    );
   }
 
   // What the panel shows before the graph is up. Reading the trace's headline

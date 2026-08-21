@@ -15,7 +15,9 @@
 import m from 'mithril';
 import type {PerfettoPlugin} from '../../public/plugin';
 import type {Trace} from '../../public/trace';
+import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import {DuneGraphController} from './controller';
+import {exploreDirTree} from './data_explorer_handoff';
 import {DuneGraphPanel} from './panel';
 import {DuneQueryTab} from './query_tab';
 import {dumpPerfRuns} from './perf';
@@ -31,6 +33,11 @@ export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
   static readonly description =
     'Explore the Dune build graph extracted from the trace.';
+  // For the directory-tree hand-off (data_explorer_handoff.ts), which calls
+  // into the Data Explorer's public API. Declaring it orders the two plugins'
+  // onTraceLoad but does *not* enable the dependency, so the hand-off still
+  // checks that it is enabled before reaching for it.
+  static readonly dependencies = [DataExplorerPlugin];
 
   async onTraceLoad(trace: Trace): Promise<void> {
     const controller = new DuneGraphController(trace);
@@ -42,7 +49,7 @@ export default class implements PerfettoPlugin {
       uri: SIDE_PANEL_URI,
       title: 'Dune',
       icon: 'landscape',
-      render: () => m(DuneGraphPanel, {controller}),
+      render: () => m(DuneGraphPanel, {controller, trace}),
     });
     // Reveal the graph side panel on load rather than making the user open it.
     trace.sidePanel.showTab(SIDE_PANEL_URI);
@@ -72,6 +79,21 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#MaterialiseEdges`,
       name: 'Dune: materialise edge table',
       callback: () => controller.buildEdgeMirror(),
+    });
+
+    // The build seen as directories rather than as nodes: hands `dune_dir`
+    // (see sql_graph.ts) to the Data Explorer as a ready-made dashboard whose
+    // one item is a collapsible tree of the build's directories. Loads the
+    // graph first if it isn't loaded, reporting that in the side panel - hence
+    // revealing it before the wait. See data_explorer_handoff.ts.
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#ExploreDirTree`,
+      name: 'Dune: explore directory tree in Data Explorer',
+      callback: () => {
+        void exploreDirTree(trace, controller, () =>
+          trace.sidePanel.showTab(SIDE_PANEL_URI),
+        );
+      },
     });
 
     // Re-prints the per-phase timing/heap breakdown of the last few loads to
