@@ -32,11 +32,17 @@ import {
   spanSliceId,
 } from './graph';
 import {lifecycleKeysForSliceIds} from './lifecycle_sql';
+import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
+import {RelatedEventsOverlay} from '../../components/related_events/related_events_overlay';
+import type {GraphTrackKind} from './graph_track';
 import {
   createGraphTrackRenderer,
-  GRAPH_TRACK_NAME,
-  GRAPH_TRACK_URI,
+  GRAPH_TRACKS,
+  graphTrackKind,
+  graphTrackUri,
 } from './graph_track';
+import type {ArrowIndex} from './arrows';
+import {arrowsForSelection, buildArrowIndex, emptyArrowIndex} from './arrows';
 import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
 import type {Distances, SqlEdgeMirror, SqlNodeMirror} from './sql_graph';
@@ -182,13 +188,24 @@ export class DuneGraphController {
   private hideRulesFlag = false;
 
   // Bumped by every mutation that can change `visibleNodes`: the single
-  // invalidation key shared by the graph pane's layout cache and the
-  // timeline track's dataset (see graph_track.ts).
+  // invalidation key shared by the graph pane's layout cache, the four timeline
+  // tracks' datasets (see graph_track.ts) and the arrows between them (see
+  // syncTimeline()).
   private version = 0;
 
-  // The dedicated workspace + track projecting the graph selection onto the
-  // timeline, installed once via installTimeline().
+  // The dedicated workspace projecting the graph selection onto the timeline,
+  // installed once via installTimeline().
   private timelineWorkspace?: Workspace;
+  // The four track nodes, by kind. The `rule` and `rule-action` ones are taken
+  // out of the tree while rules are hidden, rather than left as empty rows.
+  private readonly trackNodes = new Map<GraphTrackKind, TrackNode>();
+  // Where every projected row was laid out, rebuilt off `version`. The arrows
+  // themselves are derived from it per frame, for whatever is selected right
+  // now (see arrows.ts).
+  private arrowIndex: ArrowIndex = emptyArrowIndex();
+  // `version` as of the last sync, so the tree and the arrows are only rebuilt
+  // when the selection actually changed (see onFrame()).
+  private syncedVersion = -1;
   // The workspace as of the last onFrame() poll, so a change can be detected
   // (see installTimeline()/onFrame()). There is no workspace-change event in
   // Perfetto - not even switchWorkspace() itself is the only way the current
@@ -226,22 +243,36 @@ export class DuneGraphController {
       : nodes;
   }
 
-  // Registers the "Dune graph" timeline track and creates the dedicated
-  // workspace it lives in. Called once from index.ts's onTraceLoad(); the
-  // workspace + track stay live for the lifetime of the trace, so showing the
-  // timeline is just a switchWorkspace() away (see showTimeline()).
+  /**
+   * Registers the four timeline tracks (see graph_track.ts), the overlay that
+   * draws the arrows between them (see arrows.ts) and the dedicated workspace
+   * they live in.
+   *
+   * Called once from index.ts's onTraceLoad(). Everything here lives for the
+   * trace: the tracks are fixed containers whose *contents* follow the
+   * selection, so showing the timeline is just a switchWorkspace() away (see
+   * showTimeline()) and nothing has to be registered or torn down as the
+   * selection changes.
+   */
   installTimeline(): void {
-    this.trace.tracks.registerTrack({
-      uri: GRAPH_TRACK_URI,
-      renderer: createGraphTrackRenderer(this.trace, this),
-    });
     const ws = this.trace.workspaces.createEmptyWorkspace(
       TIMELINE_WORKSPACE_NAME,
     );
-    ws.addChildLast(
-      new TrackNode({uri: GRAPH_TRACK_URI, name: GRAPH_TRACK_NAME}),
-    );
+    for (const spec of GRAPH_TRACKS) {
+      this.trace.tracks.registerTrack({
+        uri: spec.uri,
+        renderer: createGraphTrackRenderer(this.trace, this, spec.kind),
+      });
+      this.trackNodes.set(
+        spec.kind,
+        new TrackNode({uri: spec.uri, name: spec.name}),
+      );
+    }
     this.timelineWorkspace = ws;
+    this.seatTracks();
+    this.trace.tracks.registerOverlay(
+      new RelatedEventsOverlay(this.trace, () => this.currentArrows()),
+    );
 
     // Poll for workspace switches (there's no event for it - see
     // lastWorkspace's comment) so the selection can follow across them. Any
@@ -257,6 +288,7 @@ export class DuneGraphController {
   }
 
   private onFrame(): void {
+    this.syncTimeline();
     const current = this.trace.currentWorkspace;
     if (current === this.lastWorkspace) return;
     const previous = this.lastWorkspace;
@@ -264,36 +296,118 @@ export class DuneGraphController {
     if (previous !== undefined) void this.onWorkspaceChanged(previous);
   }
 
+  /**
+   * Brings the workspace and the arrows up to date with the selection.
+   *
+   * Polled from onFrame() rather than pushed from every mutation: `version` is
+   * bumped in a dozen places and every one of them already schedules a redraw,
+   * so this runs within a frame of any change and needs no extra plumbing (the
+   * same reasoning as lastWorkspace's poll above).
+   */
+  private syncTimeline(): void {
+    if (this.syncedVersion === this.version) return;
+    this.syncedVersion = this.version;
+    this.seatTracks();
+    void this.rebuildArrowIndex(this.version);
+  }
+
+  // The arrows to draw right now: the ones touching the selected row, and only
+  // while that row is on one of our tracks. Called every frame by the overlay,
+  // so it does no work beyond a couple of map lookups (see arrows.ts).
+  private currentArrows(): ArrowConnection[] {
+    const selection = this.trace.selection.selection;
+    if (selection.kind !== 'track_event') return [];
+    const kind = graphTrackKind(selection.trackUri);
+    if (kind === undefined) return [];
+    return arrowsForSelection(this.arrowIndex, kind, selection.eventId);
+  }
+
+  // Puts the track nodes in the workspace, leaving out the two rule tracks
+  // while rules are hidden - an empty track is a row of nothing, and the arrows
+  // route around them (see arrows.ts).
+  private seatTracks(): void {
+    const ws = this.timelineWorkspace;
+    if (ws === undefined) return;
+    for (const child of [...ws.children]) ws.removeChild(child);
+    for (const spec of GRAPH_TRACKS) {
+      if (
+        this.hideRulesFlag &&
+        (spec.kind === 'rule' || spec.kind === 'action')
+      ) {
+        continue;
+      }
+      const node = this.trackNodes.get(spec.kind);
+      if (node !== undefined) ws.addChildLast(node);
+    }
+  }
+
+  // The index needs the rows' laid-out depths, which only SQL can answer, so
+  // this is async and lands a frame or two later. `generation` guards against a
+  // slower earlier build overwriting a newer one.
+  private async rebuildArrowIndex(generation: number): Promise<void> {
+    const index = await buildArrowIndex(this.trace.engine, this);
+    if (this.version !== generation) return; // superseded meanwhile
+    this.arrowIndex = index;
+    this.changed();
+  }
+
+  // Which of the four tracks a node's own span is drawn on.
+  private trackUriForNode(node: NodeId): string {
+    return graphTrackUri(this.graph.isRule(node) ? 'rule' : 'dep');
+  }
+
   // Keeps a "build-dep"/"exec-rule" selection visible across a workspace
   // switch, mirroring goToNode()'s two branches: entering the Dune workspace
-  // re-points the selection at the derived track (only if the node is
-  // actually rendered there - see visibleNodes()); leaving it resolves back
+  // re-points the selection at whichever of our tracks projects the node (only
+  // if it is actually rendered - see visibleNodes()); leaving it resolves back
   // to the node's real originating track. A selection that isn't currently on
-  // the relevant track is left untouched - it needs no fixing.
+  // a relevant track is left untouched - it needs no fixing.
   private async onWorkspaceChanged(previous: Workspace): Promise<void> {
     const selection = this.trace.selection.selection;
     if (selection.kind !== 'track_event') return;
 
     if (this.showingTimeline) {
-      const node = await this.nodeForSliceId(selection.eventId);
       // The derived track has no rows at all until the node mirror is built, so
       // there'd be nothing to select on it.
-      if (
-        node !== undefined &&
-        this.nodeMirrorReady &&
-        this.visibleNodes.includes(node)
-      ) {
-        this.selectOnGraphTrack(node);
+      if (!this.nodeMirrorReady) return;
+      const node = await this.nodeForSliceId(selection.eventId);
+      if (node !== undefined) {
+        if (this.visibleNodes.includes(node)) {
+          this.selectOnGraphTrack(this.trackUriForNode(node), node);
+        }
+        return;
+      }
+      // Not a lifecycle instant - but it may still be a process slice, which
+      // the process track projects verbatim, keyed by its own slice id.
+      const rule = await this.ruleNodeForProcessSlice(selection.eventId);
+      if (rule !== undefined && this.selection.has(rule)) {
+        this.selectOnGraphTrack(graphTrackUri('process'), selection.eventId);
       }
     } else if (previous === this.timelineWorkspace) {
-      if (selection.trackUri === GRAPH_TRACK_URI) {
-        // The derived track's event id is a `node_id`, not a slice id.
-        const node = this.nodeForNodeId(selection.eventId);
+      const kind = graphTrackKind(selection.trackUri);
+      if (kind !== undefined) {
+        // Our tracks key their rows by `node_id` (a rule's action under the
+        // rule's own id), except the process track, whose rows already *are*
+        // real slices.
         const sliceId =
-          node === undefined ? undefined : await this.sliceIdOf(node);
+          kind === 'process'
+            ? selection.eventId
+            : await this.originSliceIdOf(kind, selection.eventId);
         if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
       }
     }
+  }
+
+  // The real slice one of the node-backed tracks' rows came from: the node's
+  // own span, or for the `rule-action` track the rule's action span.
+  private async originSliceIdOf(
+    kind: GraphTrackKind,
+    nodeId: number,
+  ): Promise<number | undefined> {
+    const node = this.nodeForNodeId(nodeId);
+    if (node === undefined) return undefined;
+    if (kind !== 'action') return this.sliceIdOf(node);
+    return spanSliceId((await this.timingFor(node)).actionTiming);
   }
 
   // Switch the timeline to the dedicated "Dune graph" workspace. Getting back
@@ -306,7 +420,7 @@ export class DuneGraphController {
 
   // Whether the timeline is currently showing the "Dune graph" workspace. Not
   // used for button state (showTimeline() is a plain action) - only so
-  // goToNode() knows whether to select on the derived track or resolve the
+  // goToNode() knows whether to select on one of our tracks or resolve the
   // node's original track.
   private get showingTimeline(): boolean {
     return this.trace.currentWorkspace === this.timelineWorkspace;
@@ -318,10 +432,10 @@ export class DuneGraphController {
 
   /**
    * The node corresponding to the current timeline selection, if a "build-dep"
-   * or "exec-rule" slice is selected - or, on the derived "Dune graph" track, if
-   * a node's projected interval is selected. The two tracks key their events
-   * differently (a real slice id vs. the SQL mirror's `node_id`), so this
-   * branches on which track the selection is on.
+   * or "exec-rule" slice is selected - or, on one of the Dune workspace's own
+   * tracks, if a projected row is selected. The two key their events
+   * differently (a real slice id vs. an encoded row id - see graph_track.ts's
+   * decodeGraphRowId), so this branches on which track the selection is on.
    *
    * Stays synchronous - it's read from a mithril view on every frame - but a
    * real slice id now resolves through SQL (see `nodesForSliceIds`), so the
@@ -336,22 +450,41 @@ export class DuneGraphController {
       this.selectionNode = undefined;
       return undefined;
     }
-    if (selection.trackUri === GRAPH_TRACK_URI) {
-      return this.nodeForNodeId(selection.eventId);
+    const eventId = selection.eventId;
+    const key = `${selection.trackUri}#${eventId}`;
+    const kind = graphTrackKind(selection.trackUri);
+    if (kind !== undefined) {
+      // The three node-backed tracks name their node in the row id itself, so
+      // they stay a pure range check (a rule's action is filed under the rule);
+      // a process row names only a `rule_id`, and only through a query - so it
+      // takes the same resolve-and-cache path a real slice id does.
+      if (kind !== 'process') return this.nodeForNodeId(eventId);
+      return this.cachedSelectionNode(key, () =>
+        this.ruleNodeForProcessSlice(eventId),
+      );
     }
-    const key = `${selection.trackUri}#${selection.eventId}`;
+    return this.cachedSelectionNode(key, () => this.nodeForSliceId(eventId));
+  }
+
+  // The cached node for the current selection, kicking `lookup` off on the
+  // first frame that asks for it - see nodeForSelection()'s doc comment for
+  // why the answer is allowed to arrive a redraw late.
+  private cachedSelectionNode(
+    key: string,
+    lookup: () => Promise<NodeId | undefined>,
+  ): NodeId | undefined {
     if (this.selectionNode?.key === key) return this.selectionNode.node;
     // Recorded before the lookup starts, so a second frame doesn't re-issue it.
     this.selectionNode = {key};
-    void this.resolveSelectionNode(key, selection.eventId);
+    void this.resolveSelectionNode(key, lookup);
     return undefined;
   }
 
   private async resolveSelectionNode(
     key: string,
-    sliceId: number,
+    lookup: () => Promise<NodeId | undefined>,
   ): Promise<void> {
-    const node = await this.nodeForSliceId(sliceId);
+    const node = await lookup();
     if (this.selectionNode?.key !== key) return; // superseded meanwhile
     this.selectionNode = {key, node};
     this.changed();
@@ -383,6 +516,13 @@ export class DuneGraphController {
   // Whether a node is currently in the graph selection.
   isInGraph(node: NodeId): boolean {
     return this.selection.has(node);
+  }
+
+  // The rule node whose action spawned a process slice, if `sliceId` is one
+  // (see process_sql.ts). Empty until the node mirror is built, which owns the
+  // table this reads.
+  async ruleNodeForProcessSlice(sliceId: number): Promise<NodeId | undefined> {
+    return this.nodeMirror?.ruleNodeForProcessSlice(sliceId);
   }
 
   // The graph node a "build-dep"/"exec-rule" slice id maps to, if any.
@@ -549,28 +689,30 @@ export class DuneGraphController {
     // While the timeline is showing the "Dune graph" workspace, the node's
     // original track isn't present there - resolveSqlEvents would resolve it
     // anyway (it isn't scoped to the current workspace) and both reveal() and
-    // the scroll would silently no-op. Select directly on the derived track
-    // instead, as long as the node is actually rendered on it.
+    // the scroll would silently no-op. Select directly on whichever of our
+    // tracks projects it instead, as long as it is actually rendered.
     if (
       this.showingTimeline &&
       this.nodeMirrorReady &&
       this.visibleNodes.includes(node)
     ) {
-      this.selectOnGraphTrack(node);
+      this.selectOnGraphTrack(this.trackUriForNode(node), node);
       return;
     }
     const sliceId = await this.sliceIdOf(node);
     if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
   }
 
-  // Select `nodeId` on the derived "Dune graph" track - the half of
-  // goToNode()/onWorkspaceChanged() used while that workspace is current. The
-  // track's rows are keyed by the SQL mirror's `node_id` (see graph_track.ts),
-  // not a slice id. Callers must ensure the id is actually rendered there (see
+  // Select a row of one of the Dune workspace's tracks - the half of
+  // goToNode()/onWorkspaceChanged() used while that workspace is current. Rows
+  // are keyed neither by slice id nor plainly by `node_id`: a node's own span
+  // keeps its bare node id, everything else is encoded (see graph_track.ts's
+  // decodeGraphRowId), and which track a node lands on is trackUriForNode()'s
+  // answer. Callers must ensure the row is actually rendered (see
   // visibleNodes()).
-  private selectOnGraphTrack(nodeId: number): void {
-    this.trace.currentWorkspace.getTrackByUri(GRAPH_TRACK_URI)?.reveal();
-    this.trace.selection.selectTrackEvent(GRAPH_TRACK_URI, nodeId, {
+  private selectOnGraphTrack(uri: string, rowId: number): void {
+    this.trace.currentWorkspace.getTrackByUri(uri)?.reveal();
+    this.trace.selection.selectTrackEvent(uri, rowId, {
       scrollToSelection: true,
     });
   }
