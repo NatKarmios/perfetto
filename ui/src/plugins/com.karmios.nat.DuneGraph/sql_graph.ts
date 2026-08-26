@@ -72,7 +72,7 @@
  *   spans were seen (>1 under watch mode, or for a dep built repeatedly).
  *   `forced_by_kind` / `forced_by_target` mirror the node's `forcedBy` (the
  *   target is the forcing rule id / dep path / dune-file path, or NULL).
- * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id,
+ * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id, action_ts,
  *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages, deps_unknown)` — one
  *   row per rule node, a view over `_dune_rule`. `outcome`: `executed` |
  *   `local-cache-hit` | `shared-cache-hit` | `failed-deps` | `failed-action` |
@@ -166,6 +166,9 @@
  * - `_dune_edge_all(src, dst)` — the whole edge relation, factored arms and flat
  *   ones alike, as a plain view. For the callers that scan the edge set in full
  *   (`graph_reachable_bfs!`, the distance query) and nothing else.
+ * - `_dune_process(slice_id, rule_id)` — the trace's process slices, indexed by
+ *   the rule that forced them. Not derived from the graph at all; owned by the
+ *   node tier only so it shares its lifetime. See process_sql.ts.
  *
  * The two header tables (`_dune_core`, `_dune_depset`) and the member tables
  * they address are the mirror's one departure from "every table is keyed by
@@ -214,6 +217,8 @@ import {
 } from './lifecycle_sql';
 import type {PerfRun} from './perf';
 import {measure, measureSync} from './perf';
+import type {SqlProcessSlices} from './process_sql';
+import {buildProcessSlices} from './process_sql';
 
 // `dune_node` / `dune_rule` / `dune_dep` / `dune_edge` are typed PERFETTO VIEWS
 // (so slice-id columns are real SliceTable::Ids, and the stored integer codes
@@ -389,6 +394,15 @@ export interface SqlNodeMirror extends AsyncDisposable {
   // How many (kind, key) rows the timing table behind the mirror's `ts` /
   // `dur_ns` / `action_*` columns holds (see lifecycle_sql.ts).
   readonly timingRowCount: number;
+
+  // How many process slices `_dune_process` indexes (see process_sql.ts).
+  readonly processRowCount: number;
+
+  // The rule node that forced a process slice, or undefined if the slice isn't
+  // one, or names a rule the blob never recorded. The timeline's process track
+  // keys its rows by slice id, so this is how one resolves back to a node (see
+  // graph_track.ts, controller.ts).
+  ruleNodeForProcessSlice(sliceId: number): Promise<NodeId | undefined>;
 
   // The node's lifecycle timing, read on demand - timing is no longer carried
   // on the node (see lifecycle_sql.ts). One query per call, so this is for the
@@ -946,6 +960,10 @@ export async function buildNodeMirror(
   // Timing comes from SQL now, and the views join it, so it has to exist before
   // they're created (and be dropped after them - see the dispose below).
   const lifecycle = await buildLifecycleTiming(engine, perf);
+  // Nothing in the mirror joins this one - the timeline's process track reads
+  // it straight by name - but it is built and dropped with the tier so that
+  // `nodeMirrorReady` gates it too (see controller.ts).
+  const processes: SqlProcessSlices = await buildProcessSlices(engine, perf);
 
   // The raw/plain tables (chunked inserts; pre-dropped for idempotent reload).
   // `node_id` / `id` are declared INTEGER PRIMARY KEY, i.e. they *are* the
@@ -1100,6 +1118,7 @@ export async function buildNodeMirror(
         dir STRING,
         outcome STRING,
         action_slice_id JOINID(slice.id),
+        action_ts LONG,
         action_dur_ns LONG,
         n_targets LONG,
         n_static_deps LONG,
@@ -1108,7 +1127,7 @@ export async function buildNodeMirror(
       ) AS
       SELECT r.node_id, n.orig_id AS rule_id, ds.str AS dir,
         ${codeCase('r.outcome', RULE_OUTCOMES)} AS outcome,
-        s.id AS action_slice_id, t.dur_ns AS action_dur_ns,
+        s.id AS action_slice_id, s.ts AS action_ts, t.dur_ns AS action_dur_ns,
         r.n_targets, r.n_static_deps, r.n_dyn_stages, r.deps_unknown
       FROM ${RAW_RULE_TABLE} r
       JOIN ${RAW_NODE_TABLE} n ON n.node_id = r.node_id
@@ -1144,6 +1163,14 @@ export async function buildNodeMirror(
   return {
     nodeCount: graph.nodeCount,
     timingRowCount: lifecycle.rowCount,
+    processRowCount: processes.rowCount,
+
+    async ruleNodeForProcessSlice(
+      sliceId: number,
+    ): Promise<NodeId | undefined> {
+      const ruleId = await processes.ruleIdForSliceId(sliceId);
+      return ruleId === undefined ? undefined : graph.nodeForRuleId(ruleId);
+    },
 
     async timingFor(id: NodeId): Promise<NodeTiming> {
       if (!graph.has(id)) return {};
@@ -1169,6 +1196,7 @@ export async function buildNodeMirror(
       await stringTable[Symbol.asyncDispose]();
       // Last: the views above join it.
       await lifecycle[Symbol.asyncDispose]();
+      await processes[Symbol.asyncDispose]();
     },
   };
 }
