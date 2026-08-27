@@ -64,14 +64,21 @@ import {Spinner} from '../../widgets/spinner';
 import type {Trace} from '../../public/trace';
 import type {DuneGraphController} from './controller';
 import type {DirEntry, MemberEntry} from './dir_explorer';
+import type {PathFilter} from './dir_explorer';
 import {
   INLINE_MEMBER_LIMIT,
   MEMBER_PAGE,
+  allDirs,
   childDirs,
+  compileFilter,
   dirMemberIds,
   dirMembers,
+  matchingDepCounts,
+  matchingRuleDirs,
   rootDirs,
 } from './dir_explorer';
+import {FilteredTree} from './dir_filter';
+import {TextInput} from '../../widgets/text_input';
 import type {NodeKind} from './graph';
 import {plural} from './graph';
 import {formatDurNs} from './node_display';
@@ -86,6 +93,22 @@ import {bulkNodeActions} from './node_tree_actions';
  * generated SQL (see dir_tree_graph.ts).
  */
 const TOP_LEVEL_LABEL = '(top level)';
+
+/**
+ * How many directories a filter may auto-expand before the tree is left
+ * collapsed instead.
+ *
+ * A filter that narrows to a handful of places should show them without further
+ * clicking; one that still matches half the build should not dump half the
+ * hierarchy on screen. The budget counts *directories to expand* rather than
+ * matches, because expanding is per-directory: a pattern hitting 50,000 deps in
+ * three directories is worth expanding and one hitting 200 deps across 200
+ * directories is not.
+ *
+ * The value is a guess, not a measurement - it wants trying against a real
+ * monorepo trace and moving.
+ */
+const AUTO_EXPAND_LIMIT = 50;
 
 /** The two kinds, in the order the pane lists them. */
 const KINDS: readonly NodeKind[] = ['rule', 'dep'];
@@ -130,9 +153,7 @@ interface MemberState {
  * cheap to rebuild, and a graph *reload* replaces the mirror underneath it -
  * which `view` notices through `controller.mirrorVersion` and clears.
  */
-export class DirExplorerPanel
-  implements m.ClassComponent<DirExplorerPanelAttrs>
-{
+export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs> {
   // Which kinds of member are shown. Pane-local rather than
   // `controller.hideRules`: that flag also empties the timeline's rule and
   // rule-action tracks (see graph_track.ts), so filtering this tree through it
@@ -151,6 +172,16 @@ export class DirExplorerPanel
   private roots?: DirEntry[];
   private rootsLoading = false;
   private rootsError?: string;
+
+  // The submitted path filter and the tree it produced, or undefined for the
+  // unfiltered pane. `draft` is what is in the text box, which only becomes
+  // `filter` on Enter: applying it costs a scan of every dep in the build (see
+  // `matchingDepCounts`), so it is not something to do per keystroke.
+  private draft = '';
+  private filter?: PathFilter;
+  private tree?: FilteredTree;
+  private filterLoading = false;
+  private filterError?: string;
 
   // The mirror the caches above were read out of. A reload renumbers every node
   // and rebuilds `dune_dir` from scratch, so everything held here is stale.
@@ -175,18 +206,28 @@ export class DirExplorerPanel
     this.children.clear();
     this.members.clear();
     this.expanded.clear();
+    // The tree is rebuilt from the new mirror; what the user typed survives,
+    // since it is their input rather than derived state.
+    this.tree = undefined;
+    this.filterLoading = false;
+    this.filterError = undefined;
     this.roots = undefined;
     this.rootsLoading = false;
     this.rootsError = undefined;
   }
 
-  // The kind toggles. Both can be off at once - the pane then degenerates to a
-  // plain directory tree, which is a legitimate way to look at a build's shape
-  // and is why `visibleSubtree` special-cases it rather than blanking the pane.
+  /**
+   * The path filter box and the kind toggles.
+   *
+   * The kind toggles can both be off at once - the pane then degenerates to a
+   * plain directory tree, which is a legitimate way to look at a build's shape
+   * and is why `visibleSubtree` special-cases it rather than blanking the pane.
+   */
   private renderToolbar(attrs: DirExplorerPanelAttrs): m.Children {
     if (!attrs.controller.nodeMirrorReady) return undefined;
     return m(
       '.pf-dune-graph__toolbar',
+      this.renderFilterBar(attrs),
       m(
         '.pf-dune-graph__toolbar-buttons',
         KINDS.map((kind) =>
@@ -213,6 +254,115 @@ export class DirExplorerPanel
     );
   }
 
+  /**
+   * The filter input, and the active filter as a dismissible chip.
+   *
+   * Submitted on Enter only. Applying a filter costs a scan of every dep in the
+   * build (see `matchingDepCounts`), which is fine once but is not something to
+   * do while someone is still typing - so there is deliberately no debounce and
+   * no filter-as-you-type.
+   */
+  private renderFilterBar(attrs: DirExplorerPanelAttrs): m.Children {
+    return m(
+      '.pf-dune-explorer__filter',
+      m(TextInput, {
+        placeholder: 'Filter by path, e.g. lib or _build/**.cmi …',
+        title:
+          'A plain string matches anywhere in a path, case-insensitively. A ' +
+          'string containing * ? or [ is used as a glob verbatim. Press Enter ' +
+          'to apply.',
+        value: this.draft,
+        oninput: (e: Event) => {
+          this.draft = (e.target as HTMLInputElement).value;
+        },
+        onkeydown: (e: KeyboardEvent) => {
+          if (e.key === 'Enter') this.applyFilter(attrs);
+        },
+      }),
+      this.filterLoading && m(Spinner),
+      this.filter !== undefined &&
+        !this.filterLoading &&
+        m(
+          'span.pf-dune-explorer__filter-chip',
+          // Deliberately not the pattern itself: it is in the input box
+          // immediately to the left, and repeating it costs the width the count
+          // needs in a narrow panel.
+          m('span.pf-dune-explorer__filter-count', this.filterSummary()),
+          m(Button, {
+            icon: 'close',
+            compact: true,
+            title: `Clear the filter (${this.filter.text})`,
+            onclick: () => this.clearFilter(),
+          }),
+        ),
+    );
+  }
+
+  // What the chip says about the filter's reach. Exact rather than approximate:
+  // the counts come from the same rollup the tree itself is drawn from.
+  private filterSummary(): string {
+    const tree = this.tree;
+    if (tree === undefined) return '';
+    return `${tree.matchCount.toLocaleString()} matching`;
+  }
+
+  /**
+   * Applies whatever is in the box: three queries, then the tree.
+   *
+   * Auto-expansion is all-or-nothing (see `FilteredTree.autoExpand`). When the
+   * filter narrows to few enough places, every ancestor chain is opened so the
+   * matches are simply on screen; when it does not, the tree is left as the user
+   * had it and the per-directory match counts are what guide the next click.
+   */
+  private applyFilter(attrs: DirExplorerPanelAttrs): void {
+    const filter = compileFilter(this.draft);
+    if (filter === undefined) {
+      this.clearFilter();
+      return;
+    }
+    if (this.filterLoading) return;
+    this.filterLoading = true;
+    this.filterError = undefined;
+    const {engine} = attrs.trace;
+    void (async () => {
+      const [dirs, ruleDirs, depCounts] = await Promise.all([
+        allDirs(engine),
+        matchingRuleDirs(engine, filter),
+        matchingDepCounts(engine, filter),
+      ]);
+      const tree = new FilteredTree(dirs, ruleDirs, depCounts);
+      this.filter = filter;
+      this.tree = tree;
+      // A filter changes which rows exist, so nothing cached under the previous
+      // one (or under no filter) describes this view.
+      this.children.clear();
+      this.members.clear();
+      const expand = tree.autoExpand(AUTO_EXPAND_LIMIT);
+      if (expand !== undefined) {
+        this.expanded.clear();
+        for (const id of expand) this.expanded.add(`dir:${id}`);
+      }
+    })()
+      .catch((e) => {
+        this.filterError = `Could not apply the filter: ${errorText(e)}`;
+        this.filter = undefined;
+        this.tree = undefined;
+      })
+      .finally(() => {
+        this.filterLoading = false;
+        attrs.controller.requestRedraw();
+      });
+  }
+
+  private clearFilter(): void {
+    this.draft = '';
+    this.filter = undefined;
+    this.tree = undefined;
+    this.filterError = undefined;
+    this.children.clear();
+    this.members.clear();
+  }
+
   private renderBody(attrs: DirExplorerPanelAttrs): m.Children {
     const {controller} = attrs;
     // `dune_dir` is built as part of the node tier, so there is nothing to show
@@ -237,28 +387,47 @@ export class DirExplorerPanel
         }),
       );
     }
+    if (this.filterError !== undefined) {
+      return m(Callout, {icon: 'error'}, this.filterError);
+    }
     if (this.rootsError !== undefined) {
       return m(Callout, {icon: 'error'}, this.rootsError);
     }
-    const roots = this.roots;
-    if (roots === undefined) {
-      this.loadRoots(attrs);
-      return this.spinnerRow('Reading directories…');
+    // Filtered: the roots come from the client-side tree, which already knows
+    // which subtrees hold a match (see dir_filter.ts). Unfiltered: the lazy
+    // query, as before.
+    const tree = this.tree;
+    let visible: {dir: DirEntry; from: string}[];
+    if (tree !== undefined) {
+      visible = tree
+        .roots()
+        .map((row) => ({dir: row.dir, from: row.pathFrom}))
+        .filter(({dir}) => this.visibleSubtree(dir));
+    } else {
+      const roots = this.roots;
+      if (roots === undefined) {
+        this.loadRoots(attrs);
+        return this.spinnerRow('Reading directories…');
+      }
+      visible = roots
+        .filter((d) => this.visibleSubtree(d))
+        .map((dir) => ({dir, from: ''}));
     }
-    const visible = roots.filter((d) => this.visibleSubtree(d));
     if (visible.length === 0) {
       return m(
         EmptyState,
         {icon: 'filter_alt', title: 'Nothing to show'},
         m(
           '.pf-dune-graph__load-note',
-          'No directory holds anything of the kinds currently shown.',
+          this.filter !== undefined
+            ? `Nothing matches ${this.filter.text} in the kinds currently shown.`
+            : 'No directory holds anything of the kinds currently shown.',
         ),
       );
     }
     return m(
       '.pf-dune-tree',
-      visible.map((dir) => this.renderDir(attrs, dir, '')),
+      visible.map(({dir, from}) => this.renderDir(attrs, dir, from)),
     );
   }
 
@@ -277,22 +446,53 @@ export class DirExplorerPanel
    */
   private visibleSubtree(dir: DirEntry): boolean {
     if (!this.show.rule && !this.show.dep) return true;
-    return (
-      (this.show.rule && dir.tRules > 0) || (this.show.dep && dir.tDeps > 0)
+    return KINDS.some(
+      (k) => this.show[k] && this.shownSubtreeCount(dir, k) > 0,
     );
+  }
+
+  /**
+   * How many members of `kind` this directory has that the pane would show -
+   * matching ones while a filter is active, all of them otherwise.
+   *
+   * Everything downstream counts through here: which buckets exist, whether the
+   * members go inline, what the bulk buttons act on. That is what makes a filter
+   * narrow the pane rather than merely annotate it.
+   */
+  private shownCount(dir: DirEntry, kind: NodeKind): number {
+    if (this.tree !== undefined) return this.tree.directMatches(dir.id, kind);
+    return kind === 'rule' ? dir.nRules : dir.nDeps;
+  }
+
+  // The same over the whole subtree, for a collapsed row's summary.
+  private shownSubtreeCount(dir: DirEntry, kind: NodeKind): number {
+    if (this.tree !== undefined) return this.tree.subtreeMatches(dir.id, kind);
+    return kind === 'rule' ? dir.tRules : dir.tDeps;
   }
 
   // The kinds currently shown that this directory directly holds any of.
   private memberKinds(dir: DirEntry): NodeKind[] {
-    return KINDS.filter(
-      (k) => this.show[k] && (k === 'rule' ? dir.nRules : dir.nDeps) > 0,
-    );
+    return KINDS.filter((k) => this.show[k] && this.shownCount(dir, k) > 0);
   }
 
   // How many of this directory's direct members are currently shown.
   private visibleMemberCount(dir: DirEntry): number {
+    return KINDS.reduce(
+      (n, k) => n + (this.show[k] ? this.shownCount(dir, k) : 0),
+      0,
+    );
+  }
+
+  /**
+   * Whether *rules* in this directory match the filter.
+   *
+   * A rule is matched on the directory it is filed under (see dir_filter.ts), so
+   * this is constant across a directory's rules - which is exactly why the member
+   * queries can take it as a flag rather than testing each row.
+   */
+  private rulesMatch(dir: DirEntry): boolean {
     return (
-      (this.show.rule ? dir.nRules : 0) + (this.show.dep ? dir.nDeps : 0)
+      this.tree === undefined || this.tree.directMatches(dir.id, 'rule') > 0
     );
   }
 
@@ -324,16 +524,8 @@ export class DirExplorerPanel
           className: 'pf-dune-tree__group-caret',
         }),
         m('span.pf-dune-explorer__dir-name', dirLabel(dir, parentPath)),
-        m(
-          'span.pf-dune-tree__group-count',
-          this.renderCounts(dir, open),
-        ),
-        this.renderBulk(
-          attrs,
-          dir,
-          kinds,
-          memberCount,
-        ),
+        m('span.pf-dune-tree__group-count', this.renderCounts(dir, open)),
+        this.renderBulk(attrs, dir, kinds, memberCount),
       ),
       open &&
         m(
@@ -370,7 +562,14 @@ export class DirExplorerPanel
       bulkNodeActions(
         attrs.controller,
         count,
-        () => dirMemberIds(attrs.trace.engine, dir.id, kinds),
+        () =>
+          dirMemberIds(
+            attrs.trace.engine,
+            dir.id,
+            kinds,
+            this.filter,
+            this.rulesMatch(dir),
+          ),
         `directly in ${where}`,
       ),
     );
@@ -386,20 +585,46 @@ export class DirExplorerPanel
    * which are what the rows immediately below add up to.
    */
   private renderCounts(dir: DirEntry, open: boolean): m.Children {
-    const rules = open ? dir.nRules : dir.tRules;
-    const deps = open ? dir.nDeps : dir.tDeps;
+    const total = (k: NodeKind) =>
+      open
+        ? k === 'rule'
+          ? dir.nRules
+          : dir.nDeps
+        : k === 'rule'
+          ? dir.tRules
+          : dir.tDeps;
+    const shown = (k: NodeKind) =>
+      open ? this.shownCount(dir, k) : this.shownSubtreeCount(dir, k);
+    // While filtering, "3 of 1,204 rules" - the bare total would claim rows this
+    // row is not showing. Both numbers are exact: they come from the same rollup
+    // the tree itself is drawn from.
+    const count = (k: NodeKind, noun: string) => {
+      const n = shown(k);
+      const of = total(k);
+      return this.filter !== undefined && n !== of
+        ? `${n.toLocaleString()} of ${plural(of, noun)}`
+        : plural(n, noun);
+    };
+    const rules = shown('rule');
+    const deps = shown('dep');
     const failed = open ? dir.nFailed : dir.tFailed;
     const parts: m.Children[] = [];
-    if (this.show.rule && rules > 0) parts.push(`${plural(rules, 'rule')}`);
-    if (this.show.dep && deps > 0) parts.push(`${plural(deps, 'dep')}`);
-    if (this.show.rule && failed > 0) {
-      parts.push(
-        m('span.pf-dune-explorer__failed', `${failed} failed`),
-      );
+    if (this.show.rule && rules > 0) parts.push(count('rule', 'rule'));
+    if (this.show.dep && deps > 0) parts.push(count('dep', 'dep'));
+    // The failure count and the duration are stored rollups over *all* members,
+    // so neither can be narrowed to the matches. Dropped while filtering rather
+    // than shown as an unqualified number next to qualified ones.
+    if (this.filter === undefined && this.show.rule && failed > 0) {
+      parts.push(m('span.pf-dune-explorer__failed', `${failed} failed`));
     }
     // Timing is rule spans only (see sql_graph.ts), so it belongs to the rules
     // and goes when they do.
-    if (!open && this.show.rule && dir.totalDurNs > 0n) {
+    if (
+      this.filter === undefined &&
+      !open &&
+      this.show.rule &&
+      dir.totalDurNs > 0n
+    ) {
       parts.push(formatDurNs(Number(dir.totalDurNs)));
     }
     if (parts.length === 0) return undefined;
@@ -411,6 +636,17 @@ export class DirExplorerPanel
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
   ): m.Children {
+    // Filtered: no query at all. The whole hierarchy is already in memory (it
+    // has to be, to know which subtrees hold a match), so a level is a lookup -
+    // and it is compressed against the *filtered* tree, which is what stops a
+    // narrow filter from leaving a ladder of one-child rows.
+    const tree = this.tree;
+    if (tree !== undefined) {
+      return tree
+        .childRows(dir.id, dir.path)
+        .filter((row) => this.visibleSubtree(row.dir))
+        .map((row) => this.renderDir(attrs, row.dir, row.pathFrom));
+    }
     const state = this.children.get(dir.id);
     if (state === undefined) {
       this.loadChildren(attrs, dir.id);
@@ -455,7 +691,7 @@ export class DirExplorerPanel
   ): m.Children {
     const key = `bucket:${dir.id}:${kind}`;
     const open = this.expanded.has(key);
-    const count = kind === 'rule' ? dir.nRules : dir.nDeps;
+    const count = this.shownCount(dir, kind);
     return m(
       '.pf-dune-tree__group.pf-dune-explorer__bucket',
       m(
@@ -489,7 +725,7 @@ export class DirExplorerPanel
     kinds: readonly NodeKind[],
     paged: boolean,
   ): m.Children {
-    const key = memberKey(dir.id, kinds);
+    const key = this.memberKey(dir.id, kinds);
     let state = this.members.get(key);
     if (state === undefined) {
       // Serve from a superset already in hand rather than querying again: with
@@ -499,7 +735,7 @@ export class DirExplorerPanel
       if (filtered !== undefined) {
         state = filtered;
       } else {
-        this.loadMembers(attrs, dir.id, kinds, 0);
+        this.loadMembers(attrs, dir.id, kinds, 0, this.rulesMatch(dir));
         return this.spinnerRow('Reading…');
       }
     }
@@ -511,10 +747,7 @@ export class DirExplorerPanel
     );
     if (state.loading) rows.push(this.spinnerRow('Reading…'));
     if (paged && !state.atEnd && !state.loading) {
-      const total = kinds.reduce(
-        (n, k) => n + (k === 'rule' ? dir.nRules : dir.nDeps),
-        0,
-      );
+      const total = kinds.reduce((n, k) => n + this.shownCount(dir, k), 0);
       const remaining = Math.max(0, total - state.rows.length);
       rows.push(
         m(
@@ -523,7 +756,13 @@ export class DirExplorerPanel
             label: `Show ${Math.min(remaining, MEMBER_PAGE).toLocaleString()} more of ${remaining.toLocaleString()}`,
             icon: 'expand_more',
             onclick: () =>
-              this.loadMembers(attrs, dir.id, kinds, state.rows.length),
+              this.loadMembers(
+                attrs,
+                dir.id,
+                kinds,
+                state.rows.length,
+                this.rulesMatch(dir),
+              ),
           }),
         ),
       );
@@ -582,7 +821,7 @@ export class DirExplorerPanel
     kinds: readonly NodeKind[],
   ): MemberState | undefined {
     if (kinds.length !== 1) return undefined;
-    const all = this.members.get(memberKey(dir.id, KINDS));
+    const all = this.members.get(this.memberKey(dir.id, KINDS));
     if (all === undefined || !all.atEnd || all.loading) return undefined;
     return {
       rows: all.rows.filter((r) => r.kind === kinds[0]),
@@ -613,6 +852,22 @@ export class DirExplorerPanel
         this.members.delete(memberId);
       }
     }
+  }
+
+  /**
+   * The cache key for one member list: a directory, which kinds, and which
+   * filter.
+   *
+   * Both kinds is its own key rather than the union of the two single-kind ones,
+   * because it is a different query and a differently paged one. The filter is in
+   * the key because it changes *which rows* independently of which kinds - the
+   * caches are also cleared when a filter is applied, so this is belt and braces,
+   * but a member list keyed only by kind would be a silently wrong cache hit if
+   * that ever stopped being true.
+   */
+  private memberKey(id: number, kinds: readonly NodeKind[]): string {
+    const f = this.filter?.pattern ?? '';
+    return `${id}:${[...kinds].sort().join('+')}:${f}`;
   }
 
   private spinnerRow(label: string): m.Children {
@@ -669,8 +924,9 @@ export class DirExplorerPanel
     id: number,
     kinds: readonly NodeKind[],
     offset: number,
+    rulesMatch: boolean,
   ): void {
-    const key = memberKey(id, kinds);
+    const key = this.memberKey(id, kinds);
     const state: MemberState = this.members.get(key) ?? {
       rows: [],
       atEnd: false,
@@ -682,7 +938,15 @@ export class DirExplorerPanel
     // Both kinds wanted means no kind filter at all, which is one query rather
     // than two and is what `dirMembers` takes `undefined` for.
     const kind = kinds.length === 1 ? kinds[0] : undefined;
-    void dirMembers(attrs.trace.engine, id, kind, MEMBER_PAGE, offset)
+    void dirMembers(
+      attrs.trace.engine,
+      id,
+      kind,
+      MEMBER_PAGE,
+      offset,
+      this.filter,
+      rulesMatch,
+    )
       .then((rows) => {
         state.rows = offset === 0 ? rows : [...state.rows, ...rows];
         // A short page is the last page. Asking for the count separately would
@@ -762,13 +1026,6 @@ export function strippedDepLabel(
   // dir_tree.ts's `segName` and path_tree.ts's leaves follow.
   const stripped = sep === '@' ? `@${rest}` : rest;
   return stripped === '' ? undefined : stripped;
-}
-
-// The cache key for one member list: a directory plus which kinds it holds.
-// Both kinds is its own key rather than the union of the two single-kind ones,
-// because it is a different query (and a differently paged one).
-function memberKey(id: number, kinds: readonly NodeKind[]): string {
-  return `${id}:${[...kinds].sort().join('+')}`;
 }
 
 function errorText(e: unknown): string {

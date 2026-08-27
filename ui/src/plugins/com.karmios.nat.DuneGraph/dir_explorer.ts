@@ -36,8 +36,15 @@
  * per level of the tree and never fans out.
  */
 
+import {toCaseInsensitiveGlob} from '../../components/widgets/datagrid/column_filter_menu';
+import {sqlValue} from '../../components/widgets/datagrid/sql_utils';
 import type {Engine} from '../../trace_processor/engine';
-import {LONG_NULL, NUM, STR} from '../../trace_processor/query_result';
+import {
+  LONG_NULL,
+  NUM,
+  NUM_NULL,
+  STR,
+} from '../../trace_processor/query_result';
 import type {NodeKind} from './graph';
 
 /**
@@ -64,6 +71,74 @@ export const MEMBER_PAGE = 500;
 export const INLINE_MEMBER_LIMIT = 20;
 
 /**
+ * A compiled path filter: what the user typed, plus the GLOB it became.
+ *
+ * Both are kept - `pattern` is what the SQL uses, `text` is what the filter chip
+ * shows and what a cache key is fingerprinted on. A compiled filter is immutable
+ * and is the identity of "which rows are we showing"; changing the text makes a
+ * new one rather than mutating this.
+ */
+export interface PathFilter {
+  readonly text: string;
+  readonly pattern: string;
+}
+
+// Characters that make a typed string a glob rather than a substring. `[` counts
+// because a character class is how you write a case-insensitive letter by hand,
+// which is exactly what `toCaseInsensitiveGlob` generates.
+const GLOB_CHARS = /[*?[]/;
+
+/**
+ * Turns typed text into a {@link PathFilter}.
+ *
+ * Wildcards are detected rather than assumed either way, because the two things
+ * people type want opposite treatment. `lib` means "anything with lib in it", so
+ * it becomes a case-insensitive `*[lL][iI][bB]*` via the same helper the
+ * DataGrid's column search uses. `lib/*.cmi` is a pattern the user wrote
+ * deliberately: wrapping it in further stars would be harmless, but silently
+ * case-folding it would not be, and either way it is theirs to write. So a
+ * string containing a glob metacharacter is passed through verbatim.
+ *
+ * Returns undefined for blank text, which is "no filter" rather than "match
+ * everything" - the caller uses it to clear.
+ */
+export function compileFilter(text: string): PathFilter | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') return undefined;
+  return {
+    text: trimmed,
+    pattern: GLOB_CHARS.test(trimmed)
+      ? trimmed
+      : toCaseInsensitiveGlob(trimmed),
+  };
+}
+
+/**
+ * The extra `AND` clause a filter contributes to a *member* query, or `''`.
+ *
+ * Two kinds, two rules, from what the filter is defined to match (see
+ * dir_filter.ts): a dep is matched on its own full path, a rule on the directory
+ * it is filed under. Within one directory query every rule shares that
+ * directory, so a rule either always matches here or never does - which the
+ * caller has already decided, and passes as `rulesMatch`. That is why this is a
+ * predicate on deps only, and why the expensive column (`label`, which resolves
+ * through a join to `dune_string`) is never the clause that *selects* rows: it is
+ * always ANDed onto `dir_id = ?`, so it is tested against the handful of rows
+ * that probe already found rather than against all 818k nodes.
+ */
+function memberFilterClause(
+  filter: PathFilter | undefined,
+  rulesMatch: boolean,
+): string {
+  if (filter === undefined) return '';
+  const dep = `label GLOB ${sqlValue(filter.pattern)}`;
+  // Rules are in or out wholesale; deps are tested individually.
+  return rulesMatch
+    ? ` AND (kind = 'rule' OR ${dep})`
+    : ` AND (kind != 'rule' AND ${dep})`;
+}
+
+/**
  * One row of `dune_dir` (see sql_graph.ts), as the pane needs it.
  *
  * Both count triples are carried because both are used and neither costs a
@@ -75,6 +150,17 @@ export const INLINE_MEMBER_LIMIT = 20;
  */
 export interface DirEntry {
   readonly id: number;
+  /**
+   * This directory's parent, absent for a root.
+   *
+   * Careful: on a *compressed* row (see {@link compressedDirs}) this is the
+   * parent of the deep directory the row settled on, which is not the row above
+   * it in the tree. It is here for {@link allDirs}, whose rows are uncompressed
+   * and where it is the tree's actual shape. Everything that needs "the row
+   * above" is passed that path explicitly instead - `dirLabel`'s `parentPath`,
+   * `FilteredRow.pathFrom` - precisely so this field is never mistaken for it.
+   */
+  readonly parentId?: number;
   readonly name: string;
   readonly path: string;
   readonly depth: number;
@@ -104,7 +190,7 @@ export interface MemberEntry {
 // Every column a DirEntry needs. Selected off `d`, the compressed row the chain
 // below settles on.
 const DIR_COLUMNS = `
-  d.id, d.name, d.path, d.depth,
+  d.id, d.parent_id, d.name, d.path, d.depth,
   d.n_rules, d.n_deps, d.n_failed,
   d.t_rules, d.t_deps, d.t_failed,
   d.total_dur_ns
@@ -230,12 +316,14 @@ export async function dirMembers(
   kind: NodeKind | undefined,
   limit: number = MEMBER_PAGE,
   offset: number = 0,
+  filter?: PathFilter,
+  rulesMatch: boolean = true,
 ): Promise<MemberEntry[]> {
   const kindFilter = kind === undefined ? '' : ` AND kind = '${kind}'`;
   const result = await engine.query(`
     SELECT node_id, kind, label
     FROM dune_node
-    WHERE dir_id = ${id}${kindFilter}
+    WHERE dir_id = ${id}${kindFilter}${memberFilterClause(filter, rulesMatch)}
     ORDER BY kind DESC, label
     LIMIT ${limit} OFFSET ${offset}
   `);
@@ -261,6 +349,10 @@ export async function dirMembers(
  * dot per node; "add all" should mean the rows this directory is showing, which
  * is what a bounded, non-recursive query returns.
  *
+ * Takes the same filter as {@link dirMembers}, so while a filter is active "add
+ * all" means "add all *matching*". Ignoring it would make the button quietly
+ * disregard the thing the user just asked to narrow by.
+ *
  * Unbounded in row count, unlike {@link dirMembers}, because a node id is 8
  * bytes and the caller is about to put every one of them into a Set - there is
  * no rendering involved, so the number that matters is `n_rules + n_deps` and
@@ -270,13 +362,15 @@ export async function dirMemberIds(
   engine: Engine,
   id: number,
   kinds: readonly NodeKind[],
+  filter?: PathFilter,
+  rulesMatch: boolean = true,
 ): Promise<number[]> {
   if (kinds.length === 0) return [];
   const list = kinds.map((k) => `'${k}'`).join(', ');
   const result = await engine.query(`
     SELECT node_id
     FROM dune_node
-    WHERE dir_id = ${id} AND kind IN (${list})
+    WHERE dir_id = ${id} AND kind IN (${list})${memberFilterClause(filter, rulesMatch)}
   `);
   const ids: number[] = [];
   const it = result.iter({node_id: NUM});
@@ -284,11 +378,89 @@ export async function dirMemberIds(
   return ids;
 }
 
+/**
+ * Every directory in the build, in id order - the whole of `dune_dir`.
+ *
+ * Read in one go, and only when a filter is applied. Hard-filtering the tree
+ * means deciding whether a *subtree* holds a match, which no per-level query can
+ * answer, so the filtered view is computed client-side over the whole hierarchy
+ * (see dir_filter.ts) rather than descended a level at a time. At 19k rows on the
+ * monorepo trace that is a few MB and one query - cheaper than the per-level
+ * queries it replaces, and paid once per filter rather than once per click.
+ *
+ * `dune_dir`'s ids are dense from zero and a parent's id is always lower than its
+ * children's (see dir_tree.ts), so id order is also topological order, which is
+ * what lets the rollup be one descending pass.
+ */
+export async function allDirs(engine: Engine): Promise<DirEntry[]> {
+  return readDirs(
+    engine,
+    `SELECT ${DIR_COLUMNS} FROM dune_dir d ORDER BY d.id`,
+  );
+}
+
+/**
+ * The directories whose own path matches `filter` - i.e. the directories in
+ * which *rules* match.
+ *
+ * A rule's label is its bare dune id, which contains no path, so a rule is
+ * matched on the directory it is filed under instead. That makes this a scan of
+ * `dune_dir`'s unindexed `path` column - but of 19k rows, not 818k, so matching
+ * rules by directory turned the expensive half of this filter into the cheap
+ * half. Every rule in a returned directory matches, which is why only ids come
+ * back: the count is the directory's own `n_rules`.
+ */
+export async function matchingRuleDirs(
+  engine: Engine,
+  filter: PathFilter,
+): Promise<Set<number>> {
+  const result = await engine.query(`
+    SELECT id FROM dune_dir WHERE path GLOB ${sqlValue(filter.pattern)}
+  `);
+  const ids = new Set<number>();
+  const it = result.iter({id: NUM});
+  for (; it.valid(); it.next()) ids.add(it.id);
+  return ids;
+}
+
+/**
+ * How many *deps* match `filter` in each directory, keyed by directory id.
+ *
+ * This is the pane's one real scan: a dep is matched on its own full path, which
+ * lives in `dune_node.label` - a column computed by the view through a join to
+ * `dune_string`, with no index on the string. So there is no phrasing of this
+ * that avoids visiting every dep in the build (818k nodes on the monorepo trace,
+ * most of them deps).
+ *
+ * That is accepted here and nowhere else in this file, for one reason: it is paid
+ * once, when the user presses Enter, rather than once per directory expanded. The
+ * per-expansion member query keeps this same predicate ANDed onto its `dir_id`
+ * probe (see {@link memberFilterClause}), so it never becomes the clause that
+ * selects rows. Aggregating by `dir_id` here rather than returning the matches
+ * themselves is what keeps the result small - one row per directory that has any.
+ */
+export async function matchingDepCounts(
+  engine: Engine,
+  filter: PathFilter,
+): Promise<Map<number, number>> {
+  const result = await engine.query(`
+    SELECT dir_id, count(*) AS n
+    FROM dune_node
+    WHERE kind = 'dep' AND label GLOB ${sqlValue(filter.pattern)}
+    GROUP BY dir_id
+  `);
+  const counts = new Map<number, number>();
+  const it = result.iter({dir_id: NUM, n: NUM});
+  for (; it.valid(); it.next()) counts.set(it.dir_id, it.n);
+  return counts;
+}
+
 async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
   const result = await engine.query(query);
   const dirs: DirEntry[] = [];
   const it = result.iter({
     id: NUM,
+    parent_id: NUM_NULL,
     name: STR,
     path: STR,
     depth: NUM,
@@ -303,6 +475,7 @@ async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
   for (; it.valid(); it.next()) {
     dirs.push({
       id: it.id,
+      parentId: it.parent_id ?? undefined,
       name: it.name,
       path: it.path,
       depth: it.depth,

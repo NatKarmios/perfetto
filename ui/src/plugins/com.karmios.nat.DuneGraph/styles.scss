@@ -618,6 +618,39 @@
     padding: 0 8px 8px;
   }
 
+  // The path filter: an input that fills the row, with the active filter shown
+  // as a dismissible chip below it.
+  &__filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px 4px;
+
+    input {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  &__filter-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 1px 2px 1px 6px;
+    border-radius: 10px;
+    background: var(--pf-color-surface-alt, rgba(128, 128, 128, 0.15));
+    font-size: 11px;
+  }
+
+  // The chip's whole content now: how far the active filter reaches.
+  &__filter-count {
+    flex-shrink: 0;
+    white-space: nowrap;
+    color: var(--pf-color-text-muted);
+  }
+
   // A directory's own name. Takes the slack in the header row so the counts
   // stay right-aligned, and wraps rather than ellipsising - a long directory
   // name is worth two lines in a narrow panel.

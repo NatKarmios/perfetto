@@ -38,6 +38,10 @@ import {
   dirMemberIds,
   dirMembers,
   rootDirs,
+  allDirs,
+  compileFilter,
+  matchingDepCounts,
+  matchingRuleDirs,
 } from './dir_explorer';
 import {dirLabel, strippedDepLabel} from './dir_explorer_panel';
 
@@ -369,9 +373,9 @@ describe('strippedDepLabel', () => {
 
   it('keeps an @ alias marker, which is name rather than hierarchy', () => {
     // Same rule dir_tree.ts's `segName` and path_tree.ts's leaves follow.
-    expect(strippedDepLabel(dep('_build/default@alias'), '_build/default')).toBe(
-      '@alias',
-    );
+    expect(
+      strippedDepLabel(dep('_build/default@alias'), '_build/default'),
+    ).toBe('@alias');
   });
 
   it('leaves rules alone', () => {
@@ -405,5 +409,128 @@ describe('strippedDepLabel', () => {
     // A dep whose path *is* the directory has no remainder; an empty label
     // would render as a blank row.
     expect(strippedDepLabel(dep('a/b/'), 'a/b')).toBeUndefined();
+  });
+});
+
+describe('compileFilter', () => {
+  it('treats plain text as a case-insensitive substring', () => {
+    // What someone typing `lib` means, and the same conversion the DataGrid's
+    // own column search uses.
+    expect(compileFilter('lib')?.pattern).toBe('*[lL][iI][bB]*');
+  });
+
+  it('passes a glob through verbatim', () => {
+    // A pattern with wildcards was written deliberately. Case-folding it would
+    // silently change what the user asked for.
+    for (const text of ['lib/*.cmi', 'a?c', '[abc]x']) {
+      expect(compileFilter(text)?.pattern).toBe(text);
+    }
+  });
+
+  it('keeps the typed text alongside the pattern', () => {
+    // The chip shows what was typed, not the glob it became.
+    expect(compileFilter('lib')?.text).toBe('lib');
+  });
+
+  it('trims, and reads blank as no filter', () => {
+    expect(compileFilter('  lib  ')?.text).toBe('lib');
+    expect(compileFilter('')).toBeUndefined();
+    expect(compileFilter('   ')).toBeUndefined();
+  });
+});
+
+describe('filtered member queries', () => {
+  const filter = {text: 'x', pattern: '*x*'};
+
+  it('tests deps on their path and lets matching rules through wholesale', async () => {
+    // A rule is matched on its directory, which is constant within one directory
+    // query - so rules are in or out as a group and only deps get a per-row test.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, filter, true);
+    expect(has(sql[0], "AND (kind = 'rule' OR label GLOB '*x*')")).toBe(true);
+  });
+
+  it('excludes rules entirely when their directory did not match', async () => {
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, filter, false);
+    expect(has(sql[0], "AND (kind != 'rule' AND label GLOB '*x*')")).toBe(true);
+  });
+
+  it('keeps the filter off the driving clause', async () => {
+    // The whole affordability argument: `dir_id` selects the rows and the
+    // expensive `label` predicate is only ever ANDed onto it, so an expansion
+    // tests a handful of rows rather than all 818k.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, 'dep', 500, 0, filter, false);
+    const flat = sql[0].replace(/\s+/g, ' ');
+    expect(flat.indexOf('dir_id = 9')).toBeLessThan(flat.indexOf('label GLOB'));
+    expect(has(sql[0], 'LIMIT 500 OFFSET 0')).toBe(true);
+  });
+
+  it('applies the filter to bulk add/remove too', async () => {
+    // Otherwise "add all" silently ignores the thing the user narrowed by.
+    const {engine, sql} = stubEngine([]);
+    await dirMemberIds(engine, 3, ['rule', 'dep'], filter, false);
+    expect(has(sql[0], "AND (kind != 'rule' AND label GLOB '*x*')")).toBe(true);
+  });
+
+  it('adds nothing when there is no filter', async () => {
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined);
+    await dirMemberIds(engine, 9, ['dep']);
+    expect(sql.some((q) => q.includes('GLOB'))).toBe(false);
+  });
+
+  it('escapes a quote in the pattern', async () => {
+    // Reused from the DataGrid's `sqlValue` rather than hand-rolled.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, 'dep', 500, 0, {text: "a'b", pattern: "a'b"});
+    expect(has(sql[0], "label GLOB 'a''b'")).toBe(true);
+  });
+});
+
+describe("the filter's global match queries", () => {
+  const filter = {text: 'x', pattern: '*x*'};
+
+  it('matches rules by directory, over 19k rows rather than 818k', async () => {
+    // A rule's label is its bare dune id, so it is matched on the directory it
+    // is filed under - which is what turns the expensive half of this filter
+    // into the cheap half.
+    const {engine, sql} = stubEngine([]);
+    await matchingRuleDirs(engine, filter);
+    expect(has(sql[0], "SELECT id FROM dune_dir WHERE path GLOB '*x*'")).toBe(
+      true,
+    );
+  });
+
+  it('aggregates dep matches per directory rather than returning them', async () => {
+    // This is the pane's one real scan; returning one row per directory instead
+    // of one per match is what keeps the result small.
+    const {engine, sql} = stubEngine([]);
+    await matchingDepCounts(engine, filter);
+    expect(has(sql[0], "WHERE kind = 'dep' AND label GLOB '*x*'")).toBe(true);
+    expect(has(sql[0], 'GROUP BY dir_id')).toBe(true);
+  });
+
+  it('reads the whole hierarchy in one query, in id order', async () => {
+    // Id order is topological order (see dir_tree.ts), which is what lets the
+    // rollup be a single descending pass.
+    const {engine, sql} = stubEngine([]);
+    await allDirs(engine);
+    expect(sql).toHaveLength(1);
+    expect(has(sql[0], 'FROM dune_dir d ORDER BY d.id')).toBe(true);
+    expect(sql[0].toUpperCase()).not.toContain('RECURSIVE');
+  });
+
+  it('selects parent_id, which the client-side tree is built from', async () => {
+    const {engine} = stubEngine([dirRow({parent_id: 4})]);
+    const [dir] = await allDirs(engine);
+    expect(dir.parentId).toBe(4);
+  });
+
+  it('reads a root parent_id as absent', async () => {
+    const {engine} = stubEngine([dirRow({parent_id: null})]);
+    const [dir] = await allDirs(engine);
+    expect(dir.parentId).toBeUndefined();
   });
 });
