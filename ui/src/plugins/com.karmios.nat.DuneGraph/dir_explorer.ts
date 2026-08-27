@@ -45,7 +45,12 @@ import {
   NUM_NULL,
   STR,
 } from '../../trace_processor/query_result';
-import type {NodeKind} from './graph';
+import type {
+  DepResolutionKind,
+  DepStatus,
+  NodeKind,
+  RuleOutcome,
+} from './graph';
 
 /**
  * How many members one page of a bucket holds.
@@ -114,28 +119,148 @@ export function compileFilter(text: string): PathFilter | undefined {
 }
 
 /**
- * The extra `AND` clause a filter contributes to a *member* query, or `''`.
+ * Everything the pane can narrow its members by.
  *
- * Two kinds, two rules, from what the filter is defined to match (see
- * dir_filter.ts): a dep is matched on its own full path, a rule on the directory
- * it is filed under. Within one directory query every rule shares that
- * directory, so a rule either always matches here or never does - which the
- * caller has already decided, and passes as `rulesMatch`. That is why this is a
- * predicate on deps only, and why the expensive column (`label`, which resolves
- * through a join to `dune_string`) is never the clause that *selects* rows: it is
- * always ANDed onto `dir_id = ?`, so it is tested against the handful of rows
- * that probe already found rather than against all 818k nodes.
+ * All of it is per-kind, and the two kinds are narrowed independently: a rule
+ * has an outcome and a dep has a resolution, and neither has the other. The
+ * combining rule is deliberately simple - **a kind whose attributes nothing
+ * selects matches all of its members** - because the pane already has a better
+ * answer to "which kinds am I looking at" in its Rules/Dependencies toggles.
+ * "Show me the failed rules" is an outcome filter plus hiding dependencies, not
+ * an outcome filter that silently also means "and no deps". The alternative -
+ * a rule-only filter implying deps match nothing - reads as a filter on one kind
+ * quietly emptying the other.
+ *
+ * The path applies to both kinds, on different columns (see dir_filter.ts): a
+ * dep's own full path, a rule's containing directory.
  */
-function memberFilterClause(
-  filter: PathFilter | undefined,
-  rulesMatch: boolean,
+export interface MemberFilter {
+  readonly path?: PathFilter;
+  // Rules.
+  readonly outcomes?: ReadonlySet<RuleOutcome>;
+  readonly depsUnknown?: true;
+  // Deps.
+  readonly resolutions?: ReadonlySet<DepResolutionKind>;
+  readonly statuses?: ReadonlySet<DepStatus>;
+  // Both kinds, against `dune_node.dur_ns`. A node whose span never resolved has
+  // no duration and so does not pass a threshold - "took at least 10ms" is a
+  // claim about a measured span, and an unmeasured one has not made it.
+  readonly minDurNs?: bigint;
+}
+
+/** Whether anything at all is selected. */
+export function filterActive(filter: MemberFilter): boolean {
+  return fingerprint(filter) !== '';
+}
+
+/**
+ * A stable string identifying this filter, for a cache key.
+ *
+ * Every field in a fixed order, so two filters that select the same things get
+ * the same key however they were built up.
+ */
+export function fingerprint(filter: MemberFilter): string {
+  const set = (s?: ReadonlySet<string>) =>
+    s === undefined || s.size === 0 ? '' : [...s].sort().join(',');
+  const parts = [
+    filter.path?.pattern ?? '',
+    set(filter.outcomes),
+    set(filter.resolutions),
+    set(filter.statuses),
+    filter.depsUnknown === true ? 'du' : '',
+    filter.minDurNs === undefined ? '' : String(filter.minDurNs),
+  ];
+  // Empty when nothing is selected, so `filterActive` is a comparison against
+  // '' rather than a second walk over the same fields.
+  return parts.every((p) => p === '') ? '' : parts.join('|');
+}
+
+// A `col IN (...)` over a selection, or undefined when nothing is selected -
+// which means "no opinion", not "nothing matches".
+function inList(col: string, values?: ReadonlySet<string>): string | undefined {
+  if (values === undefined || values.size === 0) return undefined;
+  // Sorted, so the same selection always generates the same SQL however it was
+  // clicked together - which keeps the statements readable in a log and makes
+  // them testable without depending on Set insertion order.
+  const list = [...values].sort().map(sqlValue).join(', ');
+  return `${col} IN (${list})`;
+}
+
+// The predicates that apply to a *rule*, other than the path.
+function ruleAttrs(filter: MemberFilter): string[] {
+  const preds = [inList('r.outcome', filter.outcomes)];
+  if (filter.depsUnknown === true) preds.push('r.deps_unknown = 1');
+  if (filter.minDurNs !== undefined) {
+    preds.push(`n.dur_ns >= ${filter.minDurNs}`);
+  }
+  return preds.filter((p): p is string => p !== undefined);
+}
+
+// The predicates that apply to a *dep*, other than the path.
+function depAttrs(filter: MemberFilter): string[] {
+  const preds = [
+    inList('d.resolution', filter.resolutions),
+    inList('d.status', filter.statuses),
+  ];
+  if (filter.minDurNs !== undefined) {
+    preds.push(`n.dur_ns >= ${filter.minDurNs}`);
+  }
+  return preds.filter((p): p is string => p !== undefined);
+}
+
+// `preds` ANDed, or `1` (match everything of this kind) when there are none.
+function conjunction(preds: readonly string[]): string {
+  return preds.length === 0 ? '1' : preds.join(' AND ');
+}
+
+/**
+ * The per-kind arms of a *member* query's filter, for a directory whose path is
+ * already known to match or not.
+ *
+ * The path part for rules is that boolean rather than a predicate: a rule is
+ * matched on its directory, which is constant inside a query keyed on `dir_id`.
+ * The path part for deps stays a predicate on `label` - the expensive column,
+ * which resolves through a join to `dune_string` - but only ever ANDed onto the
+ * `dir_id` probe, so it is tested against the handful of rows that probe already
+ * found rather than against all 818k nodes.
+ */
+function memberArms(
+  filter: MemberFilter,
+  dirPathMatches: boolean,
+): {rule: string; dep: string} {
+  const rulePreds = ruleAttrs(filter);
+  const depPreds = depAttrs(filter);
+  if (filter.path !== undefined) {
+    if (!dirPathMatches) rulePreds.unshift('0');
+    depPreds.unshift(`n.label GLOB ${sqlValue(filter.path.pattern)}`);
+  }
+  return {rule: conjunction(rulePreds), dep: conjunction(depPreds)};
+}
+
+// The `FROM`/`JOIN` a member query needs. The detail tables are keyed on
+// `node_id`, which is their rowid, so each join is a primary-key probe of the
+// rows `dir_id` already selected - not a scan.
+const MEMBER_FROM = `
+  FROM dune_node n
+  LEFT JOIN dune_rule r USING (node_id)
+  LEFT JOIN dune_dep d USING (node_id)
+`;
+
+// The `WHERE` body for a member query: the directory, the kinds asked for, and
+// each kind's filter arm.
+function memberWhere(
+  id: number,
+  kinds: readonly NodeKind[],
+  filter: MemberFilter,
+  dirPathMatches: boolean,
 ): string {
-  if (filter === undefined) return '';
-  const dep = `label GLOB ${sqlValue(filter.pattern)}`;
-  // Rules are in or out wholesale; deps are tested individually.
-  return rulesMatch
-    ? ` AND (kind = 'rule' OR ${dep})`
-    : ` AND (kind != 'rule' AND ${dep})`;
+  const arms = memberArms(filter, dirPathMatches);
+  const parts = kinds.map((k) =>
+    k === 'rule'
+      ? `(n.kind = 'rule' AND (${arms.rule}))`
+      : `(n.kind = 'dep' AND (${arms.dep}))`,
+  );
+  return `n.dir_id = ${id} AND (${parts.join(' OR ')})`;
 }
 
 /**
@@ -316,15 +441,15 @@ export async function dirMembers(
   kind: NodeKind | undefined,
   limit: number = MEMBER_PAGE,
   offset: number = 0,
-  filter?: PathFilter,
-  rulesMatch: boolean = true,
+  filter: MemberFilter = {},
+  dirPathMatches: boolean = true,
 ): Promise<MemberEntry[]> {
-  const kindFilter = kind === undefined ? '' : ` AND kind = '${kind}'`;
+  const kinds: NodeKind[] = kind === undefined ? ['rule', 'dep'] : [kind];
   const result = await engine.query(`
-    SELECT node_id, kind, label
-    FROM dune_node
-    WHERE dir_id = ${id}${kindFilter}${memberFilterClause(filter, rulesMatch)}
-    ORDER BY kind DESC, label
+    SELECT n.node_id AS node_id, n.kind AS kind, n.label AS label
+    ${MEMBER_FROM}
+    WHERE ${memberWhere(id, kinds, filter, dirPathMatches)}
+    ORDER BY n.kind DESC, n.label
     LIMIT ${limit} OFFSET ${offset}
   `);
   const members: MemberEntry[] = [];
@@ -362,15 +487,14 @@ export async function dirMemberIds(
   engine: Engine,
   id: number,
   kinds: readonly NodeKind[],
-  filter?: PathFilter,
-  rulesMatch: boolean = true,
+  filter: MemberFilter = {},
+  dirPathMatches: boolean = true,
 ): Promise<number[]> {
   if (kinds.length === 0) return [];
-  const list = kinds.map((k) => `'${k}'`).join(', ');
   const result = await engine.query(`
-    SELECT node_id
-    FROM dune_node
-    WHERE dir_id = ${id} AND kind IN (${list})${memberFilterClause(filter, rulesMatch)}
+    SELECT n.node_id AS node_id
+    ${MEMBER_FROM}
+    WHERE ${memberWhere(id, kinds, filter, dirPathMatches)}
   `);
   const ids: number[] = [];
   const it = result.iter({node_id: NUM});
@@ -400,15 +524,15 @@ export async function allDirs(engine: Engine): Promise<DirEntry[]> {
 }
 
 /**
- * The directories whose own path matches `filter` - i.e. the directories in
- * which *rules* match.
+ * The directories whose own path matches, i.e. where *rules* can match at all.
  *
  * A rule's label is its bare dune id, which contains no path, so a rule is
- * matched on the directory it is filed under instead. That makes this a scan of
- * `dune_dir`'s unindexed `path` column - but of 19k rows, not 818k, so matching
- * rules by directory turned the expensive half of this filter into the cheap
- * half. Every rule in a returned directory matches, which is why only ids come
- * back: the count is the directory's own `n_rules`.
+ * matched on the directory it is filed under. That makes this a scan of
+ * `dune_dir`'s unindexed `path` column - 19k rows, not 818k - which is what
+ * makes the rule half of a path filter the cheap half.
+ *
+ * Read by the panel to answer "do rules match *here*" for one directory's member
+ * query, where it is a constant rather than a predicate.
  */
 export async function matchingRuleDirs(
   engine: Engine,
@@ -424,30 +548,58 @@ export async function matchingRuleDirs(
 }
 
 /**
- * How many *deps* match `filter` in each directory, keyed by directory id.
+ * How many members of `kind` match `filter` in each directory, keyed by
+ * directory id - or undefined when nothing in the filter narrows that kind, in
+ * which case the caller uses the stored `n_rules` / `n_deps` and no query runs
+ * at all.
  *
- * This is the pane's one real scan: a dep is matched on its own full path, which
- * lives in `dune_node.label` - a column computed by the view through a join to
- * `dune_string`, with no index on the string. So there is no phrasing of this
- * that avoids visiting every dep in the build (818k nodes on the monorepo trace,
- * most of them deps).
+ * This is the pane's one scan, and it is per kind:
  *
- * That is accepted here and nowhere else in this file, for one reason: it is paid
- * once, when the user presses Enter, rather than once per directory expanded. The
- * per-expansion member query keeps this same predicate ANDed onto its `dir_id`
- * probe (see {@link memberFilterClause}), so it never becomes the clause that
- * selects rows. Aggregating by `dir_id` here rather than returning the matches
- * themselves is what keeps the result small - one row per directory that has any.
+ * - **Deps** are the expensive one. A dep's path lives in `dune_node.label`, a
+ *   column the view computes through a join to `dune_string` with no index on the
+ *   string, so a path filter has to visit every dep in the build. Its attributes
+ *   (`resolution`, `status`) are real columns on `dune_dep`, reached by a
+ *   primary-key join, so adding them costs nothing on top.
+ * - **Rules** are cheaper - there are far fewer of them - and their path test is
+ *   a set membership on `dir_id` against the directories {@link matchingRuleDirs}
+ *   found, rather than a string comparison per rule.
+ *
+ * Either way it is paid once, when the filter is applied, rather than once per
+ * directory expanded. The per-expansion member query ANDs the same predicates
+ * onto its `dir_id` probe (see {@link memberWhere}), so they never become the
+ * clause that selects rows. Aggregating by `dir_id` here rather than returning
+ * the matches is what keeps the result to one row per directory.
  */
-export async function matchingDepCounts(
+export async function matchingCounts(
   engine: Engine,
-  filter: PathFilter,
-): Promise<Map<number, number>> {
+  kind: NodeKind,
+  filter: MemberFilter,
+  ruleDirs?: ReadonlySet<number>,
+): Promise<Map<number, number> | undefined> {
+  const attrs = kind === 'rule' ? ruleAttrs(filter) : depAttrs(filter);
+  const preds = [...attrs];
+  if (filter.path !== undefined) {
+    if (kind === 'dep') {
+      preds.push(`n.label GLOB ${sqlValue(filter.path.pattern)}`);
+    } else {
+      // The directories the path matched, as a literal set: a rule's own columns
+      // hold no path to compare against.
+      const ids = [...(ruleDirs ?? [])];
+      if (ids.length === 0) return new Map();
+      preds.push(`n.dir_id IN (${ids.join(', ')})`);
+    }
+  }
+  // Nothing narrows this kind, so every member of it matches and the stored
+  // per-directory counts already say how many. Skipping the query is not just an
+  // optimisation: it is what keeps a deps-only filter from scanning the rules.
+  if (preds.length === 0) return undefined;
+  const detail = kind === 'rule' ? 'dune_rule r' : 'dune_dep d';
   const result = await engine.query(`
-    SELECT dir_id, count(*) AS n
-    FROM dune_node
-    WHERE kind = 'dep' AND label GLOB ${sqlValue(filter.pattern)}
-    GROUP BY dir_id
+    SELECT n.dir_id AS dir_id, count(*) AS n
+    FROM dune_node n
+    JOIN ${detail} USING (node_id)
+    WHERE ${preds.join(' AND ')}
+    GROUP BY 1
   `);
   const counts = new Map<number, number>();
   const it = result.iter({dir_id: NUM, n: NUM});

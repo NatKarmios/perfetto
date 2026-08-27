@@ -64,7 +64,7 @@ import {Spinner} from '../../widgets/spinner';
 import type {Trace} from '../../public/trace';
 import type {DuneGraphController} from './controller';
 import type {DirEntry, MemberEntry} from './dir_explorer';
-import type {PathFilter} from './dir_explorer';
+import type {MemberFilter} from './dir_explorer';
 import {
   INLINE_MEMBER_LIMIT,
   MEMBER_PAGE,
@@ -73,12 +73,16 @@ import {
   compileFilter,
   dirMemberIds,
   dirMembers,
-  matchingDepCounts,
+  filterActive,
+  fingerprint,
+  matchingCounts,
   matchingRuleDirs,
   rootDirs,
 } from './dir_explorer';
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../widgets/text_input';
+import {MenuDivider, MenuItem, PopupMenu} from '../../widgets/menu';
+import {DEP_RESOLUTIONS, DEP_STATUSES, RULE_OUTCOMES} from './graph';
 import type {NodeKind} from './graph';
 import {plural} from './graph';
 import {formatDurNs} from './node_display';
@@ -109,6 +113,30 @@ const TOP_LEVEL_LABEL = '(top level)';
  * monorepo trace and moving.
  */
 const AUTO_EXPAND_LIMIT = 50;
+
+/**
+ * The "at least this long" thresholds offered, in nanoseconds.
+ *
+ * Presets rather than a number box: the useful question is an order of magnitude
+ * ("which of these took more than a moment"), a second input in a narrow side
+ * panel is a real cost, and a typed duration needs a unit parser nothing else
+ * here wants.
+ */
+const DURATION_THRESHOLDS: ReadonlyArray<readonly [label: string, ns: bigint]> =
+  [
+    ['≥ 1ms', 1_000_000n],
+    ['≥ 10ms', 10_000_000n],
+    ['≥ 100ms', 100_000_000n],
+    ['≥ 1s', 1_000_000_000n],
+    ['≥ 10s', 10_000_000_000n],
+  ];
+
+// What "failed" selects, across both kinds: dune's two real rule failures and a
+// dep whose own build failed. A cancelled or unfinished node is not a failure
+// (an interrupted or truncated build is not a broken one), matching
+// `FAILED_OUTCOME_CODES` in sql_graph.ts.
+const FAILED_OUTCOMES = ['failed-deps', 'failed-action'] as const;
+const FAILED_STATUSES = ['failed'] as const;
 
 /** The two kinds, in the order the pane lists them. */
 const KINDS: readonly NodeKind[] = ['rule', 'dep'];
@@ -178,8 +206,14 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // `filter` on Enter: applying it costs a scan of every dep in the build (see
   // `matchingDepCounts`), so it is not something to do per keystroke.
   private draft = '';
-  private filter?: PathFilter;
+  // The submitted filter. Attribute selections (outcome, resolution, …) apply on
+  // click; only the path waits for Enter, since only the path costs a scan.
+  private filter: MemberFilter = {};
   private tree?: FilteredTree;
+  // The directories whose path matched, so a member query can be told whether
+  // rules match *here* rather than testing each rule's directory (see
+  // `matchingRuleDirs`).
+  private ruleDirs?: ReadonlySet<number>;
   private filterLoading = false;
   private filterError?: string;
 
@@ -209,6 +243,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // The tree is rebuilt from the new mirror; what the user typed survives,
     // since it is their input rather than derived state.
     this.tree = undefined;
+    this.ruleDirs = undefined;
     this.filterLoading = false;
     this.filterError = undefined;
     this.roots = undefined;
@@ -250,6 +285,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           disabled: this.expanded.size === 0,
           onclick: () => this.expanded.clear(),
         }),
+        this.renderFilterMenu(attrs),
       ),
     );
   }
@@ -276,11 +312,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           this.draft = (e.target as HTMLInputElement).value;
         },
         onkeydown: (e: KeyboardEvent) => {
-          if (e.key === 'Enter') this.applyFilter(attrs);
+          if (e.key === 'Enter') this.applyPath(attrs);
         },
       }),
       this.filterLoading && m(Spinner),
-      this.filter !== undefined &&
+      filterActive(this.filter) &&
         !this.filterLoading &&
         m(
           'span.pf-dune-explorer__filter-chip',
@@ -291,7 +327,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           m(Button, {
             icon: 'close',
             compact: true,
-            title: `Clear the filter (${this.filter.text})`,
+            title: this.clearTitle(),
             onclick: () => this.clearFilter(),
           }),
         ),
@@ -314,10 +350,198 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * matches are simply on screen; when it does not, the tree is left as the user
    * had it and the per-directory match counts are what guide the next click.
    */
-  private applyFilter(attrs: DirExplorerPanelAttrs): void {
-    const filter = compileFilter(this.draft);
-    if (filter === undefined) {
+  /**
+   * The attribute filters, as a popup menu.
+   *
+   * These apply on click rather than waiting for Enter: unlike the path, none of
+   * them touches an unindexed text column, so the queries behind them are a
+   * primary-key join onto columns the mirror already stores.
+   *
+   * A kind whose attributes nothing selects matches all of its members - see
+   * `MemberFilter`. "Show me the failed rules" is therefore this menu plus the
+   * Dependencies toggle, which is the pane's existing answer to "which kinds am I
+   * looking at" and a better one than a filter on one kind silently emptying the
+   * other.
+   */
+  private renderFilterMenu(attrs: DirExplorerPanelAttrs): m.Children {
+    const n = this.selectionCount();
+    return m(
+      PopupMenu,
+      {
+        trigger: m(Button, {
+          label: n === 0 ? 'Filters' : `Filters (${n})`,
+          icon: 'filter_alt',
+          active: n > 0,
+          title: 'Narrow the tree by rule outcome, dep resolution, or duration',
+        }),
+      },
+      m(MenuItem, {
+        label: 'Failed only',
+        icon: this.isFailedOnly() ? 'check_box' : 'check_box_outline_blank',
+        title:
+          'Rules that failed, and deps whose own build failed. Cancelled and ' +
+          'unfinished are not failures.',
+        closePopupOnClick: false,
+        onclick: () => this.toggleFailedOnly(attrs),
+      }),
+      m(MenuDivider),
+      this.renderSetSubmenu(attrs, 'Rule outcome', RULE_OUTCOMES, 'outcomes'),
+      m(MenuItem, {
+        label: 'Rule deps unknown',
+        icon:
+          this.filter.depsUnknown === true
+            ? 'check_box'
+            : 'check_box_outline_blank',
+        title:
+          "Rules whose deps dune couldn't determine - n_static_deps reads 0 " +
+          'either way, so this is how to tell the two apart',
+        closePopupOnClick: false,
+        onclick: () =>
+          this.apply(attrs, {
+            ...this.filter,
+            depsUnknown: this.filter.depsUnknown === true ? undefined : true,
+          }),
+      }),
+      m(MenuDivider),
+      this.renderSetSubmenu(
+        attrs,
+        'Dep resolution',
+        DEP_RESOLUTIONS,
+        'resolutions',
+      ),
+      this.renderSetSubmenu(attrs, 'Dep status', DEP_STATUSES, 'statuses'),
+      m(MenuDivider),
+      m(
+        MenuItem,
+        {label: 'Duration', icon: 'timer'},
+        DURATION_THRESHOLDS.map(([label, ns]) =>
+          m(MenuItem, {
+            label,
+            icon: this.filter.minDurNs === ns ? 'check' : undefined,
+            closePopupOnClick: false,
+            onclick: () =>
+              this.apply(attrs, {
+                ...this.filter,
+                // Clicking the active threshold clears it, so the submenu is its
+                // own off switch.
+                minDurNs: this.filter.minDurNs === ns ? undefined : ns,
+              }),
+          }),
+        ),
+      ),
+      m(MenuDivider),
+      m(MenuItem, {
+        label: 'Clear all filters',
+        icon: 'clear',
+        disabled: !filterActive(this.filter),
+        onclick: () => {
+          this.clearFilter();
+          attrs.controller.requestRedraw();
+        },
+      }),
+    );
+  }
+
+  // One multi-select group: a submenu of values, each a checkable item. Nothing
+  // selected means "no opinion" rather than "nothing matches", so the submenu
+  // needs no explicit "any" entry - unchecking everything is that.
+  private renderSetSubmenu<K extends 'outcomes' | 'resolutions' | 'statuses'>(
+    attrs: DirExplorerPanelAttrs,
+    label: string,
+    values: readonly string[],
+    key: K,
+  ): m.Children {
+    const selected: ReadonlySet<string> = this.filter[key] ?? new Set();
+    const suffix = selected.size === 0 ? '' : ` (${selected.size})`;
+    return m(
+      MenuItem,
+      {label: `${label}${suffix}`, icon: 'checklist'},
+      values.map((value) =>
+        m(MenuItem, {
+          label: value,
+          icon: selected.has(value) ? 'check' : undefined,
+          closePopupOnClick: false,
+          onclick: () => {
+            const next = new Set(selected);
+            if (next.has(value)) next.delete(value);
+            else next.add(value);
+            this.apply(attrs, {
+              ...this.filter,
+              [key]: next.size === 0 ? undefined : next,
+            } as MemberFilter);
+          },
+        }),
+      ),
+    );
+  }
+
+  // How many attribute groups are narrowing anything, for the button's badge.
+  // Groups rather than values: "Filters (2)" should mean two things are being
+  // asked, not that one of them names two outcomes.
+  private selectionCount(): number {
+    const {path, outcomes, resolutions, statuses, depsUnknown, minDurNs} =
+      this.filter;
+    return [
+      path !== undefined,
+      outcomes !== undefined,
+      resolutions !== undefined,
+      statuses !== undefined,
+      depsUnknown === true,
+      minDurNs !== undefined,
+    ].filter(Boolean).length;
+  }
+
+  // Whether the selections are exactly the failed-only shortcut's.
+  private isFailedOnly(): boolean {
+    const sameAs = (a: ReadonlySet<string> | undefined, b: readonly string[]) =>
+      a !== undefined && a.size === b.length && b.every((v) => a.has(v));
+    return (
+      sameAs(this.filter.outcomes, FAILED_OUTCOMES) &&
+      sameAs(this.filter.statuses, FAILED_STATUSES)
+    );
+  }
+
+  // The shortcut sets the two real selections rather than being a filter of its
+  // own, so what it did is visible in the submenus and can be adjusted there.
+  private toggleFailedOnly(attrs: DirExplorerPanelAttrs): void {
+    const on = this.isFailedOnly();
+    this.apply(attrs, {
+      ...this.filter,
+      outcomes: on ? undefined : new Set(FAILED_OUTCOMES),
+      statuses: on ? undefined : new Set(FAILED_STATUSES),
+    });
+  }
+
+  // The clear button's tooltip: what is currently being asked.
+  private clearTitle(): string {
+    const parts: string[] = [];
+    if (this.filter.path !== undefined) parts.push(this.filter.path.text);
+    if (this.selectionCount() > (this.filter.path === undefined ? 0 : 1)) {
+      parts.push('attribute filters');
+    }
+    return parts.length === 0
+      ? 'Clear the filter'
+      : `Clear the filter (${parts.join(' + ')})`;
+  }
+
+  // Applies the path box's contents on top of the current attribute selections.
+  private applyPath(attrs: DirExplorerPanelAttrs): void {
+    this.apply(attrs, {...this.filter, path: compileFilter(this.draft)});
+  }
+
+  /**
+   * Replaces the active filter and rebuilds the tree: up to three queries, then
+   * the rollup.
+   *
+   * Auto-expansion is all-or-nothing (see `FilteredTree.autoExpand`). When the
+   * filter narrows to few enough places, every ancestor chain is opened so the
+   * matches are simply on screen; when it does not, the tree is left as the user
+   * had it and the per-directory match counts are what guide the next click.
+   */
+  private apply(attrs: DirExplorerPanelAttrs, filter: MemberFilter): void {
+    if (!filterActive(filter)) {
       this.clearFilter();
+      attrs.controller.requestRedraw();
       return;
     }
     if (this.filterLoading) return;
@@ -325,13 +549,21 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.filterError = undefined;
     const {engine} = attrs.trace;
     void (async () => {
-      const [dirs, ruleDirs, depCounts] = await Promise.all([
-        allDirs(engine),
-        matchingRuleDirs(engine, filter),
-        matchingDepCounts(engine, filter),
+      // The directories the path matched come first: the rule counts are keyed
+      // off them, since a rule carries no path of its own to test.
+      const dirsP = allDirs(engine);
+      const ruleDirs =
+        filter.path === undefined
+          ? undefined
+          : await matchingRuleDirs(engine, filter.path);
+      const [dirs, ruleCounts, depCounts] = await Promise.all([
+        dirsP,
+        matchingCounts(engine, 'rule', filter, ruleDirs),
+        matchingCounts(engine, 'dep', filter),
       ]);
-      const tree = new FilteredTree(dirs, ruleDirs, depCounts);
+      const tree = new FilteredTree(dirs, ruleCounts, depCounts);
       this.filter = filter;
+      this.ruleDirs = ruleDirs;
       this.tree = tree;
       // A filter changes which rows exist, so nothing cached under the previous
       // one (or under no filter) describes this view.
@@ -345,8 +577,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     })()
       .catch((e) => {
         this.filterError = `Could not apply the filter: ${errorText(e)}`;
-        this.filter = undefined;
+        this.filter = {};
         this.tree = undefined;
+        this.ruleDirs = undefined;
       })
       .finally(() => {
         this.filterLoading = false;
@@ -356,8 +589,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
 
   private clearFilter(): void {
     this.draft = '';
-    this.filter = undefined;
+    this.filter = {};
     this.tree = undefined;
+    this.ruleDirs = undefined;
     this.filterError = undefined;
     this.children.clear();
     this.members.clear();
@@ -419,8 +653,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         {icon: 'filter_alt', title: 'Nothing to show'},
         m(
           '.pf-dune-graph__load-note',
-          this.filter !== undefined
-            ? `Nothing matches ${this.filter.text} in the kinds currently shown.`
+          filterActive(this.filter)
+            ? 'Nothing matches the current filter in the kinds currently shown.'
             : 'No directory holds anything of the kinds currently shown.',
         ),
       );
@@ -484,16 +718,15 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   }
 
   /**
-   * Whether *rules* in this directory match the filter.
+   * Whether this directory's *path* satisfies the path filter.
    *
-   * A rule is matched on the directory it is filed under (see dir_filter.ts), so
-   * this is constant across a directory's rules - which is exactly why the member
-   * queries can take it as a flag rather than testing each row.
+   * A rule is matched on the directory it is filed under, so the path half of a
+   * rule's test is constant across a directory - which is why the member queries
+   * take it as a flag rather than testing each row. True when there is no path
+   * filter, since then nothing about the path excludes anything.
    */
-  private rulesMatch(dir: DirEntry): boolean {
-    return (
-      this.tree === undefined || this.tree.directMatches(dir.id, 'rule') > 0
-    );
+  private dirPathMatches(dir: DirEntry): boolean {
+    return this.ruleDirs === undefined || this.ruleDirs.has(dir.id);
   }
 
   /**
@@ -568,7 +801,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
             dir.id,
             kinds,
             this.filter,
-            this.rulesMatch(dir),
+            this.dirPathMatches(dir),
           ),
         `directly in ${where}`,
       ),
@@ -601,7 +834,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     const count = (k: NodeKind, noun: string) => {
       const n = shown(k);
       const of = total(k);
-      return this.filter !== undefined && n !== of
+      return filterActive(this.filter) && n !== of
         ? `${n.toLocaleString()} of ${plural(of, noun)}`
         : plural(n, noun);
     };
@@ -614,13 +847,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // The failure count and the duration are stored rollups over *all* members,
     // so neither can be narrowed to the matches. Dropped while filtering rather
     // than shown as an unqualified number next to qualified ones.
-    if (this.filter === undefined && this.show.rule && failed > 0) {
+    if (!filterActive(this.filter) && this.show.rule && failed > 0) {
       parts.push(m('span.pf-dune-explorer__failed', `${failed} failed`));
     }
     // Timing is rule spans only (see sql_graph.ts), so it belongs to the rules
     // and goes when they do.
     if (
-      this.filter === undefined &&
+      !filterActive(this.filter) &&
       !open &&
       this.show.rule &&
       dir.totalDurNs > 0n
@@ -735,7 +968,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       if (filtered !== undefined) {
         state = filtered;
       } else {
-        this.loadMembers(attrs, dir.id, kinds, 0, this.rulesMatch(dir));
+        this.loadMembers(attrs, dir.id, kinds, 0, this.dirPathMatches(dir));
         return this.spinnerRow('Reading…');
       }
     }
@@ -761,7 +994,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
                 dir.id,
                 kinds,
                 state.rows.length,
-                this.rulesMatch(dir),
+                this.dirPathMatches(dir),
               ),
           }),
         ),
@@ -866,7 +1099,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * that ever stopped being true.
    */
   private memberKey(id: number, kinds: readonly NodeKind[]): string {
-    const f = this.filter?.pattern ?? '';
+    const f = fingerprint(this.filter);
     return `${id}:${[...kinds].sort().join('+')}:${f}`;
   }
 
@@ -924,7 +1157,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     id: number,
     kinds: readonly NodeKind[],
     offset: number,
-    rulesMatch: boolean,
+    dirPathMatches: boolean,
   ): void {
     const key = this.memberKey(id, kinds);
     const state: MemberState = this.members.get(key) ?? {
@@ -945,7 +1178,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       MEMBER_PAGE,
       offset,
       this.filter,
-      rulesMatch,
+      dirPathMatches,
     )
       .then((rows) => {
         state.rows = offset === 0 ? rows : [...state.rows, ...rows];

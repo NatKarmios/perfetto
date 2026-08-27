@@ -38,11 +38,15 @@
  *
  * ## What "matches" means
  *
- * - A **dep** matches on its own full path. Counted per directory by SQL (see
- *   `matchingDepCounts`), because it is a per-node test.
- * - A **rule** matches on the directory it is filed under, since a rule's label
- *   is its bare dune id and contains no path at all. So rules are in or out a
- *   whole directory at a time, and the count is that directory's own `nRules`.
+ * Both kinds arrive here as per-directory counts from SQL (see
+ * `matchingCounts`), so this class does not care *what* matched - only how much
+ * did, and where. The two kinds are narrowed on different columns: a dep on its
+ * own full path plus its `resolution`/`status`, a rule on the directory it is
+ * filed under plus its `outcome`, since a rule's label is its bare dune id and
+ * contains no path at all.
+ *
+ * A count of `undefined` for a kind means the filter says nothing about it, so
+ * all of its members match and the stored `n_rules` / `n_deps` stand in.
  *
  * ## Compression
  *
@@ -99,14 +103,17 @@ export class FilteredTree {
   private readonly rootIds: number[];
 
   /**
+   * `ruleMatches` / `depMatches` are per-directory counts of matching members of
+   * that kind, or **undefined meaning "all of them"** - which is what a filter
+   * that says nothing about a kind means, and what lets the stored `n_rules` /
+   * `n_deps` stand in with no query run (see `matchingCounts`).
+   *
    * @param dirs Every directory, in id order (see `allDirs`).
-   * @param ruleMatchDirs Directories whose path matched: all their rules match.
-   * @param depMatches Per-directory count of matching deps.
    */
   constructor(
     dirs: readonly DirEntry[],
-    ruleMatchDirs: ReadonlySet<number>,
-    depMatches: ReadonlyMap<number, number>,
+    ruleMatches: ReadonlyMap<number, number> | undefined,
+    depMatches: ReadonlyMap<number, number> | undefined,
   ) {
     // Sized by the highest id rather than by `dirs.length`, so a gap in the ids
     // (which the invariant does not actually promise absent) cannot index out of
@@ -120,10 +127,12 @@ export class FilteredTree {
 
     for (const dir of dirs) {
       this.byId[dir.id] = dir;
-      // A matched directory contributes every rule it holds; an unmatched one
-      // contributes none, whatever its deps do.
-      this.matchedRules[dir.id] = ruleMatchDirs.has(dir.id) ? dir.nRules : 0;
-      this.matchedDeps[dir.id] = depMatches.get(dir.id) ?? 0;
+      // Undefined counts mean the filter says nothing about that kind, so every
+      // member of it matches and the directory's own stored total is the count.
+      this.matchedRules[dir.id] =
+        ruleMatches === undefined ? dir.nRules : (ruleMatches.get(dir.id) ?? 0);
+      this.matchedDeps[dir.id] =
+        depMatches === undefined ? dir.nDeps : (depMatches.get(dir.id) ?? 0);
     }
     // Child lists and parent links, from the entries' own parentId.
     for (const dir of dirs) {

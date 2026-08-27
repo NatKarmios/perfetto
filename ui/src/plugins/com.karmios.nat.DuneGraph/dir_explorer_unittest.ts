@@ -40,7 +40,9 @@ import {
   rootDirs,
   allDirs,
   compileFilter,
-  matchingDepCounts,
+  filterActive,
+  fingerprint,
+  matchingCounts,
   matchingRuleDirs,
 } from './dir_explorer';
 import {dirLabel, strippedDepLabel} from './dir_explorer_panel';
@@ -246,16 +248,20 @@ describe('dirMembers', () => {
     // paging coherent - see this file's header.
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, undefined);
-    expect(has(sql[0], 'ORDER BY kind DESC, label')).toBe(true);
+    expect(has(sql[0], 'ORDER BY n.kind DESC, n.label')).toBe(true);
   });
 
   it('filters by kind only when asked, probing dir_id either way', async () => {
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, undefined);
     await dirMembers(engine, 9, 'dep');
-    expect(has(sql[0], 'WHERE dir_id = 9')).toBe(true);
-    expect(sql[0]).not.toContain('kind =');
-    expect(has(sql[1], "WHERE dir_id = 9 AND kind = 'dep'")).toBe(true);
+    // The kinds asked for are arms of the WHERE, one per kind, always ANDed onto
+    // the `dir_id` probe that selects the rows.
+    expect(has(sql[0], 'WHERE n.dir_id = 9')).toBe(true);
+    expect(has(sql[0], "n.kind = 'rule'")).toBe(true);
+    expect(has(sql[0], "n.kind = 'dep'")).toBe(true);
+    expect(has(sql[1], 'WHERE n.dir_id = 9')).toBe(true);
+    expect(sql[1]).not.toContain("n.kind = 'rule'");
   });
 
   it('honours an explicit page', async () => {
@@ -283,10 +289,10 @@ describe('dirMemberIds', () => {
     const {engine, sql} = stubEngine([]);
     await dirMemberIds(engine, 3, ['rule']);
     await dirMemberIds(engine, 3, ['rule', 'dep']);
-    expect(has(sql[0], "WHERE dir_id = 3 AND kind IN ('rule')")).toBe(true);
-    expect(has(sql[1], "WHERE dir_id = 3 AND kind IN ('rule', 'dep')")).toBe(
-      true,
-    );
+    expect(has(sql[0], "WHERE n.dir_id = 3 AND ((n.kind = 'rule'")).toBe(true);
+    expect(sql[0]).not.toContain("n.kind = 'dep'");
+    expect(has(sql[1], "n.kind = 'rule'")).toBe(true);
+    expect(has(sql[1], "n.kind = 'dep'")).toBe(true);
     expect(sql.some((q) => q.includes('LIMIT'))).toBe(false);
   });
 
@@ -440,20 +446,21 @@ describe('compileFilter', () => {
 });
 
 describe('filtered member queries', () => {
-  const filter = {text: 'x', pattern: '*x*'};
+  const filter = {path: {text: 'x', pattern: '*x*'}};
 
-  it('tests deps on their path and lets matching rules through wholesale', async () => {
-    // A rule is matched on its directory, which is constant within one directory
-    // query - so rules are in or out as a group and only deps get a per-row test.
+  it('tests deps on their path and rules on their directory', async () => {
+    // A rule carries no path, so its path test is the directory's - constant
+    // inside a query keyed on `dir_id`, hence a literal rather than a predicate.
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, undefined, 500, 0, filter, true);
-    expect(has(sql[0], "AND (kind = 'rule' OR label GLOB '*x*')")).toBe(true);
+    expect(has(sql[0], "(n.kind = 'rule' AND (1))")).toBe(true);
+    expect(has(sql[0], "(n.kind = 'dep' AND (n.label GLOB '*x*'))")).toBe(true);
   });
 
   it('excludes rules entirely when their directory did not match', async () => {
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, undefined, 500, 0, filter, false);
-    expect(has(sql[0], "AND (kind != 'rule' AND label GLOB '*x*')")).toBe(true);
+    expect(has(sql[0], "(n.kind = 'rule' AND (0))")).toBe(true);
   });
 
   it('keeps the filter off the driving clause', async () => {
@@ -463,41 +470,129 @@ describe('filtered member queries', () => {
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, 'dep', 500, 0, filter, false);
     const flat = sql[0].replace(/\s+/g, ' ');
-    expect(flat.indexOf('dir_id = 9')).toBeLessThan(flat.indexOf('label GLOB'));
+    expect(flat.indexOf('n.dir_id = 9')).toBeLessThan(
+      flat.indexOf('n.label GLOB'),
+    );
     expect(has(sql[0], 'LIMIT 500 OFFSET 0')).toBe(true);
+  });
+
+  it('joins the detail tables by primary key, not by scan', async () => {
+    // `dune_rule` / `dune_dep` are keyed on `node_id`, which is their rowid, so
+    // each join is a probe of the rows `dir_id` already found.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined);
+    expect(has(sql[0], 'LEFT JOIN dune_rule r USING (node_id)')).toBe(true);
+    expect(has(sql[0], 'LEFT JOIN dune_dep d USING (node_id)')).toBe(true);
+  });
+
+  it('narrows rules by outcome and deps by resolution and status', async () => {
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, {
+      outcomes: new Set(['failed-action' as const]),
+      resolutions: new Set(['source' as const]),
+      statuses: new Set(['failed' as const, 'cancelled' as const]),
+    });
+    expect(has(sql[0], "r.outcome IN ('failed-action')")).toBe(true);
+    expect(has(sql[0], "d.resolution IN ('source')")).toBe(true);
+    expect(has(sql[0], "d.status IN ('cancelled', 'failed')")).toBe(true);
+  });
+
+  it("leaves a kind alone when nothing selects that kind's attributes", async () => {
+    // The combining rule: a kind nothing narrows matches all of its members, and
+    // the user hides the other kind with the visibility toggles if they want it
+    // gone. A rule-only filter must not quietly empty the deps.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, {
+      outcomes: new Set(['executed' as const]),
+    });
+    expect(has(sql[0], "(n.kind = 'dep' AND (1))")).toBe(true);
+  });
+
+  it('applies a duration threshold to both kinds', async () => {
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, {minDurNs: 10_000_000n});
+    expect(has(sql[0], "(n.kind = 'rule' AND (n.dur_ns >= 10000000))")).toBe(
+      true,
+    );
+    expect(has(sql[0], "(n.kind = 'dep' AND (n.dur_ns >= 10000000))")).toBe(
+      true,
+    );
+  });
+
+  it('narrows rules whose deps dune could not determine', async () => {
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, 'rule', 500, 0, {depsUnknown: true});
+    expect(has(sql[0], 'r.deps_unknown = 1')).toBe(true);
   });
 
   it('applies the filter to bulk add/remove too', async () => {
     // Otherwise "add all" silently ignores the thing the user narrowed by.
     const {engine, sql} = stubEngine([]);
     await dirMemberIds(engine, 3, ['rule', 'dep'], filter, false);
-    expect(has(sql[0], "AND (kind != 'rule' AND label GLOB '*x*')")).toBe(true);
+    expect(has(sql[0], "(n.kind = 'rule' AND (0))")).toBe(true);
+    expect(has(sql[0], "(n.kind = 'dep' AND (n.label GLOB '*x*'))")).toBe(true);
+    expect(sql[0]).not.toContain('LIMIT');
   });
 
-  it('adds nothing when there is no filter', async () => {
+  it('adds no predicate when there is no filter', async () => {
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, undefined);
     await dirMemberIds(engine, 9, ['dep']);
     expect(sql.some((q) => q.includes('GLOB'))).toBe(false);
+    expect(has(sql[0], "(n.kind = 'rule' AND (1))")).toBe(true);
   });
 
   it('escapes a quote in the pattern', async () => {
     // Reused from the DataGrid's `sqlValue` rather than hand-rolled.
     const {engine, sql} = stubEngine([]);
-    await dirMembers(engine, 9, 'dep', 500, 0, {text: "a'b", pattern: "a'b"});
-    expect(has(sql[0], "label GLOB 'a''b'")).toBe(true);
+    await dirMembers(engine, 9, 'dep', 500, 0, {
+      path: {text: "a'b", pattern: "a'b"},
+    });
+    expect(has(sql[0], "n.label GLOB 'a''b'")).toBe(true);
+  });
+});
+
+describe('fingerprint', () => {
+  it('is empty exactly when nothing is selected', () => {
+    expect(fingerprint({})).toBe('');
+    expect(filterActive({})).toBe(false);
+    expect(filterActive({depsUnknown: true})).toBe(true);
+  });
+
+  it('does not depend on the order a selection was built in', () => {
+    const a = {statuses: new Set(['failed' as const, 'ok' as const])};
+    const b = {statuses: new Set(['ok' as const, 'failed' as const])};
+    expect(fingerprint(a)).toBe(fingerprint(b));
+  });
+
+  it('separates filters that select different things', () => {
+    // It is a cache key, so a collision would serve one filter's rows for
+    // another's.
+    const seen = new Set(
+      [
+        {},
+        {path: {text: 'a', pattern: '*a*'}},
+        {outcomes: new Set(['executed' as const])},
+        {resolutions: new Set(['source' as const])},
+        {statuses: new Set(['ok' as const])},
+        {depsUnknown: true as const},
+        {minDurNs: 5n},
+        {minDurNs: 6n},
+      ].map(fingerprint),
+    );
+    expect(seen.size).toBe(8);
   });
 });
 
 describe("the filter's global match queries", () => {
-  const filter = {text: 'x', pattern: '*x*'};
+  const filter = {path: {text: 'x', pattern: '*x*'}};
 
   it('matches rules by directory, over 19k rows rather than 818k', async () => {
-    // A rule's label is its bare dune id, so it is matched on the directory it
-    // is filed under - which is what turns the expensive half of this filter
-    // into the cheap half.
+    // A rule's label is its bare dune id, so its path test is a set membership
+    // on the directories this query found - which is what turns the rule half of
+    // a path filter into the cheap half.
     const {engine, sql} = stubEngine([]);
-    await matchingRuleDirs(engine, filter);
+    await matchingRuleDirs(engine, filter.path);
     expect(has(sql[0], "SELECT id FROM dune_dir WHERE path GLOB '*x*'")).toBe(
       true,
     );
@@ -507,9 +602,36 @@ describe("the filter's global match queries", () => {
     // This is the pane's one real scan; returning one row per directory instead
     // of one per match is what keeps the result small.
     const {engine, sql} = stubEngine([]);
-    await matchingDepCounts(engine, filter);
-    expect(has(sql[0], "WHERE kind = 'dep' AND label GLOB '*x*'")).toBe(true);
-    expect(has(sql[0], 'GROUP BY dir_id')).toBe(true);
+    await matchingCounts(engine, 'dep', filter);
+    expect(has(sql[0], "n.label GLOB '*x*'")).toBe(true);
+    expect(has(sql[0], 'JOIN dune_dep d USING (node_id)')).toBe(true);
+    expect(has(sql[0], 'GROUP BY 1')).toBe(true);
+  });
+
+  it('tests a rule path against the directory set, not a string per rule', async () => {
+    const {engine, sql} = stubEngine([]);
+    await matchingCounts(engine, 'rule', filter, new Set([4, 9]));
+    expect(has(sql[0], 'n.dir_id IN (4, 9)')).toBe(true);
+    expect(has(sql[0], 'JOIN dune_rule r USING (node_id)')).toBe(true);
+    expect(sql[0]).not.toContain('GLOB');
+  });
+
+  it('runs no query for a kind the filter says nothing about', async () => {
+    // A deps-only filter must not scan the rules: undefined means "all of them",
+    // and the stored n_rules already says how many.
+    const {engine, sql} = stubEngine([]);
+    const depsOnly = {statuses: new Set(['failed' as const])};
+    expect(await matchingCounts(engine, 'rule', depsOnly)).toBeUndefined();
+    expect(sql).toHaveLength(0);
+  });
+
+  it('short-circuits to no matches when no directory path matched', async () => {
+    // An empty `IN ()` is a syntax error, and the answer is known already.
+    const {engine, sql} = stubEngine([]);
+    expect(await matchingCounts(engine, 'rule', filter, new Set())).toEqual(
+      new Map(),
+    );
+    expect(sql).toHaveLength(0);
   });
 
   it('reads the whole hierarchy in one query, in id order', async () => {

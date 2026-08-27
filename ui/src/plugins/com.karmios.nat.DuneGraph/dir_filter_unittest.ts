@@ -84,13 +84,15 @@ function dirs(
   return rows.map((r, i) => ({...r, tRules: tRules[i], tDeps: tDeps[i]}));
 }
 
-// The ids of the directories whose paths are listed, for building a match set.
-function idsOf(
+// Per-directory match counts keyed by path rather than by id, for readability.
+// Both kinds take the same shape: a rule's attributes are per-rule, so "every
+// rule in this directory matches" is no longer a special case.
+function countsAt(
   entries: readonly DirEntry[],
-  paths: readonly string[],
-): Set<number> {
-  return new Set(
-    entries.filter((d) => paths.includes(d.path)).map((d) => d.id),
+  at: Readonly<Record<string, number>>,
+): Map<number, number> {
+  return new Map(
+    Object.entries(at).map(([path, n]) => [idFor(entries, path), n]),
   );
 }
 
@@ -98,16 +100,6 @@ function idFor(entries: readonly DirEntry[], path: string): number {
   const found = entries.find((d) => d.path === path);
   if (found === undefined) throw new Error(`no such dir: ${path}`);
   return found.id;
-}
-
-// A dep-match map keyed by path rather than by id, for readability.
-function depsAt(
-  entries: readonly DirEntry[],
-  at: Readonly<Record<string, number>>,
-): Map<number, number> {
-  return new Map(
-    Object.entries(at).map(([path, n]) => [idFor(entries, path), n]),
-  );
 }
 
 // The tree as `label` strings, depth-first, so a whole shape is one assertion.
@@ -132,7 +124,7 @@ describe('FilteredTree rollup', () => {
     // The rollup is the whole reason this class exists: a hard filter has to know
     // whether a match is anywhere *below* a row, however deep.
     const d = dirs([['a/b/c/d', 0, 5]]);
-    const tree = new FilteredTree(d, new Set(), depsAt(d, {'a/b/c/d': 3}));
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c/d': 3}));
     for (const path of ['a', 'a/b', 'a/b/c', 'a/b/c/d']) {
       expect(tree.subtreeMatches(idFor(d, path), 'dep')).toBe(3);
     }
@@ -148,22 +140,21 @@ describe('FilteredTree rollup', () => {
     ]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'a/x': 4, 'a/y': 1}),
+      new Map(),
+      countsAt(d, {'a/x': 4, 'a/y': 1}),
     );
     expect(tree.subtreeMatches(idFor(d, 'a'), 'dep')).toBe(5);
     expect(tree.matchCount).toBe(5);
   });
 
-  it('matches rules a whole directory at a time', () => {
-    // A rule's label is its bare dune id, so it is matched on its directory -
-    // which means every rule in a matched directory matches, and none in an
-    // unmatched one does, whatever its deps do.
+  it('rolls rule matches up the same way as dep matches', () => {
+    // The two kinds arrive in the same shape - per-directory counts - so this
+    // class does not care what matched, only how much did and where.
     const d = dirs([
       ['lib', 3, 0],
       ['bin', 2, 0],
     ]);
-    const tree = new FilteredTree(d, idsOf(d, ['lib']), new Map());
+    const tree = new FilteredTree(d, countsAt(d, {lib: 3}), new Map());
     expect(tree.directMatches(idFor(d, 'lib'), 'rule')).toBe(3);
     expect(tree.directMatches(idFor(d, 'bin'), 'rule')).toBe(0);
     expect(tree.matchCount).toBe(3);
@@ -171,7 +162,7 @@ describe('FilteredTree rollup', () => {
 
   it('reports nothing matching as empty', () => {
     const d = dirs([['a/b', 2, 2]]);
-    const tree = new FilteredTree(d, new Set(), new Map());
+    const tree = new FilteredTree(d, new Map(), new Map());
     expect(tree.empty).toBe(true);
     expect(tree.roots()).toEqual([]);
   });
@@ -184,7 +175,7 @@ describe('FilteredTree hard filter', () => {
       ['a/drop/y', 0, 1],
       ['b/also-drop', 0, 1],
     ]);
-    const tree = new FilteredTree(d, new Set(), depsAt(d, {'a/keep/x': 1}));
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/keep/x': 1}));
     // `a` survives only because of what is under it; `a/drop` and `b` go.
     expect(shape(tree)).toEqual(['a/keep/x']);
   });
@@ -196,8 +187,8 @@ describe('FilteredTree hard filter', () => {
     ]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'a/x': 1, 'a/y': 1}),
+      new Map(),
+      countsAt(d, {'a/x': 1, 'a/y': 1}),
     );
     // Two visible children, so `a` is a real branch point and stays a row.
     expect(shape(tree)).toEqual(['a', '  x', '  y']);
@@ -212,7 +203,7 @@ describe('FilteredTree compression', () => {
       ['a/b/c/leaf', 0, 3],
       ['a/other', 0, 3],
     ]);
-    const tree = new FilteredTree(d, new Set(), depsAt(d, {'a/b/c/leaf': 2}));
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c/leaf': 2}));
     expect(shape(tree)).toEqual(['a/b/c/leaf']);
   });
 
@@ -225,8 +216,8 @@ describe('FilteredTree compression', () => {
     ]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'a/b': 1, 'a/b/c': 1}),
+      new Map(),
+      countsAt(d, {'a/b': 1, 'a/b/c': 1}),
     );
     expect(shape(tree)).toEqual(['a/b', '  c']);
   });
@@ -238,8 +229,8 @@ describe('FilteredTree compression', () => {
     ]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'a/b/x': 1, 'a/b/y': 1}),
+      new Map(),
+      countsAt(d, {'a/b/x': 1, 'a/b/y': 1}),
     );
     expect(shape(tree)).toEqual(['a/b', '  x', '  y']);
   });
@@ -252,7 +243,7 @@ describe('FilteredTree compression', () => {
       ['a/b', 0, 9],
       ['a/b/c', 0, 1],
     ]);
-    const tree = new FilteredTree(d, new Set(), depsAt(d, {'a/b/c': 1}));
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c': 1}));
     expect(shape(tree)).toEqual(['a/b/c']);
   });
 
@@ -260,8 +251,8 @@ describe('FilteredTree compression', () => {
     const d = dirs([['_build/default/lib', 0, 1]]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'_build/default/lib': 1}),
+      new Map(),
+      countsAt(d, {'_build/default/lib': 1}),
     );
     const [root] = tree.roots();
     expect([root.dir.path, root.pathFrom]).toEqual(['_build/default/lib', '']);
@@ -276,8 +267,8 @@ describe('FilteredTree.autoExpand', () => {
     ]);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, {'a/x': 1, 'a/y': 1}),
+      new Map(),
+      countsAt(d, {'a/x': 1, 'a/y': 1}),
     );
     // `a` has to be open for `x` and `y` to be on screen; the leaves do not.
     const expand = tree.autoExpand(10);
@@ -296,8 +287,8 @@ describe('FilteredTree.autoExpand', () => {
     const d = dirs(spec);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
+      new Map(),
+      countsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
     );
     expect(tree.autoExpand(1)).toEqual(new Set());
   });
@@ -317,8 +308,8 @@ describe('FilteredTree.autoExpand', () => {
     const d = dirs(spec);
     const tree = new FilteredTree(
       d,
-      new Set(),
-      depsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
+      new Map(),
+      countsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
     );
     expect(tree.autoExpand(3)).toBeUndefined();
     expect(tree.autoExpand(100)?.size).toBe(12);
@@ -328,7 +319,7 @@ describe('FilteredTree.autoExpand', () => {
     // 50,000 matches in one place should expand; the budget is about how much
     // tree appears, not how much matched.
     const d = dirs([['a/b', 0, 50_000]]);
-    const tree = new FilteredTree(d, new Set(), depsAt(d, {'a/b': 50_000}));
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b': 50_000}));
     expect(tree.autoExpand(1)).not.toBeUndefined();
   });
 });
