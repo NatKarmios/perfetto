@@ -79,7 +79,9 @@
  *   a dep's the directory its path lives in. That union is exactly what
  *   `dune_dir` is interned from, so `dir_id` and the `n_rules` / `n_deps`
  *   counts agree by construction, and it is on `dune_node` rather than split
- *   across the detail tables because every node has one. Never NULL.
+ *   across the detail tables because every node has one. Never NULL. Indexed,
+ *   because listing one directory's members is the directory explorer's inner
+ *   loop and a scan of every node in the build is not.
  * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id, action_ts,
  *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages, deps_unknown)` — one
  *   row per rule node, a view over `_dune_rule`. `outcome`: `executed` |
@@ -138,7 +140,9 @@
  *   rather than `JOINID(dune_dir.id)` because nothing in the mirror declares
  *   its own cross-references that way; a *client* is free to (see
  *   `DUNE_NODE_JOINID` in node_cell.ts), which is what would make it render as
- *   a directory chip.
+ *   a directory chip. `parent_id` is indexed: it is how the tree is descended
+ *   (`WHERE parent_id = ?`, `IS NULL` for the roots), once per directory
+ *   expanded in the explorer pane.
  * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage)` — a typed
  *   PERFETTO VIEW, with `src` / `dst` the endpoints' `node_id`s (chip-rendered;
  *   join `dune_node USING`-style on them for an endpoint's label or slice).
@@ -1098,6 +1102,31 @@ export async function buildNodeMirror(
     dirRows(dirs, selfDurNs),
     opts,
   );
+
+  // What the directory explorer walks the tree with (dir_explorer.ts). Both are
+  // *descent* keys rather than identities, so neither is a rowid and neither
+  // comes for free:
+  //
+  // - `_dune_node(dir_id)` is the one that matters. Listing a directory's
+  //   members is `WHERE dir_id = ?`, and unindexed that is a scan of every node
+  //   in the build - 818k rows on the monorepo trace - once per directory
+  //   expanded. Indexed it is a probe returning the handful of rows asked for.
+  // - `_dune_dir(parent_id)` is the same shape for the tree's own edges
+  //   (`WHERE parent_id = ?`, and `IS NULL` for the roots). 19k rows is small
+  //   enough that a scan would be survivable, but it is paid on every single
+  //   expansion, and an index over 19k rows is nothing.
+  //
+  // Plain indexes on plain tables, so both are dropped with their table.
+  await measure(perf, `sql: index ${DIR_TABLE} descent`, async (p) => {
+    await engine.query(
+      `CREATE INDEX ${RAW_NODE_TABLE}_dir_id ON ${RAW_NODE_TABLE}(dir_id)`,
+    );
+    await engine.query(
+      `CREATE INDEX ${RAW_DIR_TABLE}_parent_id ` +
+        `ON ${RAW_DIR_TABLE}(parent_id)`,
+    );
+    p.rows(graph.nodeCount + dirs.tree.size);
+  });
 
   // Typed views over the raw tables: this is where the stored integers become
   // the public schema again - dict ids resolve through `dune_string`, codes

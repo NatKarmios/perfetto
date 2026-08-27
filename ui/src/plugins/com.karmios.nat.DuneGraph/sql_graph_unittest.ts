@@ -331,6 +331,22 @@ describe('sql_graph dir tier', () => {
     }
   });
 
+  it('indexes the two columns the directory explorer descends by', async () => {
+    // Both are descent keys rather than identities, so neither is a rowid and
+    // neither is free. `_dune_node(dir_id)` is the one that matters: listing one
+    // directory's members is `WHERE dir_id = ?`, and unindexed that is a scan of
+    // every node in the build once per directory expanded (818k rows on the
+    // monorepo trace). See dir_explorer.ts for the queries that probe them.
+    const sql = await capture(fixture().graph);
+    const indexes = sql.filter((q) => q.startsWith('CREATE INDEX'));
+    expect(indexes).toContain(
+      'CREATE INDEX _dune_node_dir_id ON _dune_node(dir_id)',
+    );
+    expect(indexes).toContain(
+      'CREATE INDEX _dune_dir_parent_id ON _dune_dir(parent_id)',
+    );
+  });
+
   it('maps trace-side rule ids to directories, then drops the map', async () => {
     const sql = await capture(fixture().graph);
     // Keyed by `rule_id`, not `node_id`: it exists to be probed from
