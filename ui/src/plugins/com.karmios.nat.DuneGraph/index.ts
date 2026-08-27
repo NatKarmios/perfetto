@@ -19,6 +19,7 @@ import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import {DuneGraphController} from './controller';
 import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
+import {DirExplorerPanel} from './dir_explorer_panel';
 import {DuneGraphPanel} from './panel';
 import {DuneQueryTab} from './query_tab';
 import {dumpPerfRuns} from './perf';
@@ -26,6 +27,7 @@ import './styles.scss';
 
 const PLUGIN_ID = 'com.karmios.nat.DuneGraph';
 const SIDE_PANEL_URI = `${PLUGIN_ID}#Nodes`;
+const EXPLORER_URI = `${PLUGIN_ID}#Explorer`;
 const QUERY_TAB_URI = `${PLUGIN_ID}#Query`;
 // Omnibox trigger for the Dune-graph SQL mode (':' and '>' are already taken).
 const QUERY_TRIGGER = '@';
@@ -59,6 +61,18 @@ export default class implements PerfettoPlugin {
       icon: 'landscape',
       render: () => m(DuneGraphPanel, {controller, trace}),
     });
+    // The same graph seen as directories rather than as a node selection: a
+    // lazily-descended trie of `dune_dir` with each directory's rules and deps
+    // at it (see dir_explorer_panel.ts). A second tab rather than a third area
+    // of the first one - a directory tree wants the whole height of the panel,
+    // and it has nothing to do with what is currently selected.
+    trace.sidePanel.registerTab({
+      uri: EXPLORER_URI,
+      title: 'Explorer',
+      icon: 'account_tree',
+      render: () => m(DirExplorerPanel, {controller, trace}),
+    });
+
     // Reveal the graph side panel on load rather than making the user open it.
     trace.sidePanel.showTab(SIDE_PANEL_URI);
 
@@ -66,6 +80,12 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#ShowNodes`,
       name: 'Dune: show build graph',
       callback: () => trace.sidePanel.showTab(SIDE_PANEL_URI),
+    });
+
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#ShowExplorer`,
+      name: 'Dune: show directory explorer',
+      callback: () => trace.sidePanel.showTab(EXPLORER_URI),
     });
 
     trace.commands.registerCommand({

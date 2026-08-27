@@ -193,6 +193,14 @@ export class DuneGraphController {
   // syncTimeline()).
   private version = 0;
 
+  // Bumped whenever the *loaded graph* is replaced, i.e. whenever every node id
+  // and every mirror table stops meaning what it meant. Deliberately separate
+  // from `version`, which tracks the node *selection* and moves on every ＋/－
+  // click: a cache of things read out of the mirror (the directory explorer's
+  // tree, see dir_explorer_panel.ts) must survive those and must not survive
+  // this.
+  private mirrorVersionValue = 0;
+
   // The dedicated workspace projecting the graph selection onto the timeline,
   // installed once via installTimeline().
   private timelineWorkspace?: Workspace;
@@ -231,6 +239,19 @@ export class DuneGraphController {
   // can change it.
   get graphVersion(): number {
     return this.version;
+  }
+
+  /**
+   * Monotonic version of the *loaded graph*: bumped when the node mirror is
+   * built and when it is dropped, so anything caching rows read out of the
+   * mirror can tell that its ids no longer mean anything.
+   *
+   * Not `graphVersion`, which moves whenever a node is added to or removed from
+   * the graph selection - orders of magnitude more often, and for a reason a
+   * mirror cache has no interest in.
+   */
+  get mirrorVersion(): number {
+    return this.mirrorVersionValue;
   }
 
   // The nodes the graph pane and timeline track should actually show: the
@@ -955,6 +976,7 @@ export class DuneGraphController {
         perf,
         onProgress: this.progressFor(this.nodeMirrorStep),
       });
+      this.mirrorVersionValue++;
       this.completeStep(this.nodeMirrorStep);
       // The timeline track's dataset is empty until the mirror exists, so it
       // has to be told to re-query now that it does.
@@ -1018,6 +1040,7 @@ export class DuneGraphController {
   private async dropLoaded(): Promise<void> {
     await this.edgeMirror?.[Symbol.asyncDispose]();
     this.edgeMirror = undefined;
+    if (this.nodeMirror !== undefined) this.mirrorVersionValue++;
     await this.nodeMirror?.[Symbol.asyncDispose]();
     this.nodeMirror = undefined;
     this.graph = EMPTY_GRAPH;

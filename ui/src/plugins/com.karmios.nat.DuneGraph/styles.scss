@@ -605,6 +605,66 @@
   }
 }
 
+// The "Explorer" side-panel tab: the build's directory hierarchy (see
+// dir_explorer_panel.ts). Its tree rows are `.pf-dune-tree`'s, shared with the
+// selection panel's path trees so the two group identically; what's here is the
+// scroll container and the row kinds only this tree has.
+.pf-dune-explorer {
+  // The tree scrolls, the toolbar above it doesn't.
+  &__body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 8px 8px;
+  }
+
+  // A directory's own name. Takes the slack in the header row so the counts
+  // stay right-aligned, and wraps rather than ellipsising - a long directory
+  // name is worth two lines in a narrow panel.
+  &__dir-name {
+    overflow-wrap: anywhere;
+  }
+
+  // Failed rules in the counts, so a broken subtree is visible while collapsed.
+  &__failed {
+    color: var(--pf-color-text-error, #d32f2f);
+  }
+
+  // A per-kind bucket, standing in for a directory's members when there are too
+  // many to list. Indented like a member row rather than like a subdirectory,
+  // since it belongs to this directory rather than being one below it.
+  &__bucket > .pf-dune-tree__group-header {
+    font-style: italic;
+  }
+
+  &__member {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 0;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  &__member-actions {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding-left: 4px;
+  }
+
+  // The "show N more" row at the end of a partly-read bucket.
+  &__more {
+    padding: 2px 0;
+  }
+
+  // An in-flight fetch, in place of the rows it will become.
+  &__loading {
+    padding: 2px 0;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+}
+
 // The "Dune query" details-drawer tab: a full-height DataGrid of query results.
 .pf-dune-query {
   display: flex;
