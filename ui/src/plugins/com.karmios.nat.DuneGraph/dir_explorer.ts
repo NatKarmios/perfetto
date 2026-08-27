@@ -47,6 +47,7 @@ import {
 import type {
   DepResolutionKind,
   DepStatus,
+  ForcedByKind,
   NodeKind,
   RuleOutcome,
 } from './graph';
@@ -241,6 +242,9 @@ export interface MemberFilter {
   // no duration and so does not pass a threshold - "took at least 10ms" is a
   // claim about a measured span, and an unmeasured one has not made it.
   readonly minDurNs?: bigint;
+  // Both kinds, against `dune_node.forced_by_kind`: what pulled the node into
+  // the build. Every node has a forcer, which is why this is not per-kind.
+  readonly forcedBy?: ReadonlySet<ForcedByKind>;
 }
 
 /** Whether anything at all is selected. */
@@ -264,6 +268,7 @@ export function fingerprint(filter: MemberFilter): string {
     set(filter.statuses),
     filter.depsUnknown === true ? 'du' : '',
     filter.minDurNs === undefined ? '' : String(filter.minDurNs),
+    set(filter.forcedBy),
   ];
   // Empty when nothing is selected, so `filterActive` is a comparison against
   // '' rather than a second walk over the same fields.
@@ -281,13 +286,32 @@ function inList(col: string, values?: ReadonlySet<string>): string | undefined {
   return `${col} IN (${list})`;
 }
 
+/**
+ * The predicates that apply to *either* kind, from columns on `dune_node`
+ * itself.
+ *
+ * `forced_by_kind` is one of these rather than a per-kind one because both kinds
+ * have a forcer: every node was pulled into the build by something. Note it is
+ * NULL when dune recorded no forcer at all, so selecting any kind excludes those
+ * nodes - `IN` never matches NULL - which is the same reading the other
+ * selections have.
+ */
+function nodeAttrs(filter: MemberFilter): (string | undefined)[] {
+  return [
+    inList('n.forced_by_kind', filter.forcedBy),
+    filter.minDurNs === undefined
+      ? undefined
+      : `n.dur_ns >= ${filter.minDurNs}`,
+  ];
+}
+
 // The predicates that apply to a *rule*, other than the path.
 function ruleAttrs(filter: MemberFilter): string[] {
-  const preds = [inList('r.outcome', filter.outcomes)];
-  if (filter.depsUnknown === true) preds.push('r.deps_unknown = 1');
-  if (filter.minDurNs !== undefined) {
-    preds.push(`n.dur_ns >= ${filter.minDurNs}`);
-  }
+  const preds = [
+    inList('r.outcome', filter.outcomes),
+    filter.depsUnknown === true ? 'r.deps_unknown = 1' : undefined,
+    ...nodeAttrs(filter),
+  ];
   return preds.filter((p): p is string => p !== undefined);
 }
 
@@ -296,10 +320,8 @@ function depAttrs(filter: MemberFilter): string[] {
   const preds = [
     inList('d.resolution', filter.resolutions),
     inList('d.status', filter.statuses),
+    ...nodeAttrs(filter),
   ];
-  if (filter.minDurNs !== undefined) {
-    preds.push(`n.dur_ns >= ${filter.minDurNs}`);
-  }
   return preds.filter((p): p is string => p !== undefined);
 }
 

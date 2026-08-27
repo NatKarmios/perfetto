@@ -82,7 +82,12 @@ import {
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../widgets/text_input';
 import {MenuDivider, MenuItem, MenuTitle, PopupMenu} from '../../widgets/menu';
-import {DEP_RESOLUTIONS, DEP_STATUSES, RULE_OUTCOMES} from './graph';
+import {
+  DEP_RESOLUTIONS,
+  DEP_STATUSES,
+  FORCED_BY_KINDS,
+  RULE_OUTCOMES,
+} from './graph';
 import type {NodeKind} from './graph';
 import {plural} from './graph';
 import {formatDurNs} from './node_display';
@@ -360,6 +365,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         closePopupOnClick: false,
         onclick: () => this.toggleFailedOnly(attrs),
       }),
+      this.renderSetSubmenu(
+        attrs,
+        'Forced by',
+        FORCED_BY_KINDS,
+        'forcedBy',
+        undefined,
+      ),
       m(
         MenuItem,
         {label: 'Duration', icon: 'timer', disabled: bothHidden},
@@ -459,12 +471,16 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // selected means "no opinion" rather than "nothing matches", so the submenu
   // needs no explicit "any" entry - unchecking everything is that. Disabled when
   // its kind is hidden, since it could then change nothing on screen.
-  private renderSetSubmenu<K extends 'outcomes' | 'resolutions' | 'statuses'>(
+  private renderSetSubmenu<
+    K extends 'outcomes' | 'resolutions' | 'statuses' | 'forcedBy',
+  >(
     attrs: DirExplorerPanelAttrs,
     label: string,
     values: readonly string[],
     key: K,
-    kind: NodeKind,
+    // The kind this narrows, or undefined for one that narrows both - which is
+    // then only dead when neither kind is shown at all.
+    kind: NodeKind | undefined,
   ): m.Children {
     const selected: ReadonlySet<string> = this.filter[key] ?? new Set();
     const suffix = selected.size === 0 ? '' : ` (${selected.size})`;
@@ -474,7 +490,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         label: `${label}${suffix}`,
         icon: 'checklist',
         // Narrowing a kind that isn't shown would do nothing visible.
-        disabled: !this.show[kind],
+        disabled:
+          kind === undefined
+            ? !this.show.rule && !this.show.dep
+            : !this.show[kind],
       },
       values.map((value) =>
         m(MenuItem, {
@@ -499,8 +518,15 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // Groups rather than values: "Filters (2)" should mean two things are being
   // asked, not that one of them names two outcomes.
   private selectionCount(): number {
-    const {path, outcomes, resolutions, statuses, depsUnknown, minDurNs} =
-      this.filter;
+    const {
+      path,
+      outcomes,
+      resolutions,
+      statuses,
+      depsUnknown,
+      minDurNs,
+      forcedBy,
+    } = this.filter;
     return [
       path !== undefined,
       outcomes !== undefined,
@@ -508,6 +534,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       statuses !== undefined,
       depsUnknown === true,
       minDurNs !== undefined,
+      forcedBy !== undefined,
     ].filter(Boolean).length;
   }
 

@@ -616,6 +616,27 @@ describe('filtered member queries', () => {
     );
   });
 
+  it('narrows both kinds by what forced them', async () => {
+    // `forced_by_kind` is a column on `dune_node`, not on either detail table -
+    // every node has a forcer - so it lands in both arms.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, undefined, 500, 0, {
+      forcedBy: new Set(['RULE' as const, 'REQUEST' as const]),
+    });
+    expect(
+      has(
+        sql[0],
+        "(n.kind = 'rule' AND (n.forced_by_kind IN ('REQUEST', 'RULE')))",
+      ),
+    ).toBe(true);
+    expect(
+      has(
+        sql[0],
+        "(n.kind = 'dep' AND (n.forced_by_kind IN ('REQUEST', 'RULE')))",
+      ),
+    ).toBe(true);
+  });
+
   it('narrows rules whose deps dune could not determine', async () => {
     const {engine, sql} = stubEngine([]);
     await dirMembers(engine, 9, 'rule', 500, 0, {depsUnknown: true});
@@ -675,9 +696,10 @@ describe('fingerprint', () => {
         {depsUnknown: true as const},
         {minDurNs: 5n},
         {minDurNs: 6n},
+        {forcedBy: new Set(['RULE' as const])},
       ].map(fingerprint),
     );
-    expect(seen.size).toBe(8);
+    expect(seen.size).toBe(9);
   });
 });
 
