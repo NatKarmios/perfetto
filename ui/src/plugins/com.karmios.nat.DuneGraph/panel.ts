@@ -14,7 +14,6 @@
 
 import m from 'mithril';
 import {formatBytesSi} from '../../base/bytes_format';
-import {Router} from '../../core/router';
 import {Button} from '../../widgets/button';
 import {Callout} from '../../widgets/callout';
 import {Intent} from '../../widgets/common';
@@ -31,6 +30,24 @@ import {GraphPanel} from './graph_panel';
 // The Data Explorer's route (`DataExplorerPlugin`'s registered page), which is
 // the only place the "add to the current graph" section makes sense.
 const EXPLORE_PAGE = '/explore';
+
+// The prefix the shell puts in front of every route in the URL fragment.
+const ROUTE_PREFIX = '#!';
+
+/**
+ * Whether the Data Explorer's page is the one currently open.
+ *
+ * The shell's own `Router` is core-private - plugins can navigate (`app.navigate`)
+ * but can't ask what the current route is - so this reads the fragment itself.
+ * It only needs the page, i.e. the first path component of `#!/page/subpage`,
+ * so it stops short of the subpage/args parsing `Router.parseUrl` does.
+ */
+function isExplorePageOpen(): boolean {
+  const hash = window.location.hash;
+  if (!hash.startsWith(ROUTE_PREFIX)) return false;
+  const path = hash.substring(ROUTE_PREFIX.length).split(/[?#]/)[0];
+  return path === EXPLORE_PAGE || path.startsWith(`${EXPLORE_PAGE}/`);
+}
 
 interface DuneGraphPanelAttrs {
   readonly controller: DuneGraphController;
@@ -102,7 +119,7 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
    * clicking one of these means it is already on screen.
    */
   private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
-    if (Router.parseUrl(window.location.href).page !== EXPLORE_PAGE) {
+    if (!isExplorePageOpen()) {
       return undefined;
     }
     const {controller, trace} = attrs;

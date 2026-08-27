@@ -32,7 +32,6 @@ import {
   validateSerializedGraph,
 } from '../dev.perfetto.DataExplorer/json_handler';
 import type {SerializedNode} from '../dev.perfetto.DataExplorer/json_handler';
-import type {SqlModules} from '../dev.perfetto.SqlModules/sql_modules';
 import type {Trace} from '../../public/trace';
 import {DIR_TREE_SOURCE} from './dir_tree_graph';
 import type {ExploreSource} from './explore_source';
@@ -51,7 +50,10 @@ registerCoreNodes();
 // Nothing in these graphs reads the trace or the SQL modules: the sources are
 // raw SQL (not stdlib tables) and the other nodes only shuffle columns.
 const trace = {} as Trace;
-const sqlModules = {} as SqlModules;
+// `SqlModules` comes from a plugin this one doesn't depend on, so its type is
+// taken off `deserializeState` rather than imported across. Nothing here reads
+// it - the loaders under test only pass it through - so a bare stub will do.
+const sqlModules = {} as Parameters<typeof deserializeState>[2];
 
 // A source of no particular interest, so that the mechanism is tested rather
 // than either of the two real ones.
