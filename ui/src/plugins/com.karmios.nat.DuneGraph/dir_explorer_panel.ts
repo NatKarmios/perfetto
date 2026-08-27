@@ -81,7 +81,7 @@ import {
 } from './dir_explorer';
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../widgets/text_input';
-import {MenuDivider, MenuItem, PopupMenu} from '../../widgets/menu';
+import {MenuDivider, MenuItem, MenuTitle, PopupMenu} from '../../widgets/menu';
 import {DEP_RESOLUTIONS, DEP_STATUSES, RULE_OUTCOMES} from './graph';
 import type {NodeKind} from './graph';
 import {plural} from './graph';
@@ -252,11 +252,12 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   }
 
   /**
-   * The path filter box and the kind toggles.
+   * The path filter box, the Filters menu, and Collapse all.
    *
-   * The kind toggles can both be off at once - the pane then degenerates to a
-   * plain directory tree, which is a legitimate way to look at a build's shape
-   * and is why `visibleSubtree` special-cases it rather than blanking the pane.
+   * The kind toggles live *in* the menu, at the head of their own sections (see
+   * `renderFilterMenu`): they are the coarsest filter there is, and having them
+   * outside meant the two halves of "which members do I want" sat in different
+   * places.
    */
   private renderToolbar(attrs: DirExplorerPanelAttrs): m.Children {
     if (!attrs.controller.nodeMirrorReady) return undefined;
@@ -265,19 +266,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.renderFilterBar(attrs),
       m(
         '.pf-dune-graph__toolbar-buttons',
-        KINDS.map((kind) =>
-          m(Button, {
-            label: KIND_LABEL[kind],
-            icon: this.show[kind] ? 'visibility' : 'visibility_off',
-            active: this.show[kind],
-            title: this.show[kind]
-              ? `Hide ${KIND_LABEL[kind].toLowerCase()}`
-              : `Show ${KIND_LABEL[kind].toLowerCase()}`,
-            onclick: () => {
-              this.show[kind] = !this.show[kind];
-            },
-          }),
-        ),
+        this.renderFilterMenu(attrs),
         m(Button, {
           label: 'Collapse all',
           icon: 'unfold_less',
@@ -285,7 +274,6 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           disabled: this.expanded.size === 0,
           onclick: () => this.expanded.clear(),
         }),
-        this.renderFilterMenu(attrs),
       ),
     );
   }
@@ -366,6 +354,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    */
   private renderFilterMenu(attrs: DirExplorerPanelAttrs): m.Children {
     const n = this.selectionCount();
+    const bothHidden = !this.show.rule && !this.show.dep;
     return m(
       PopupMenu,
       {
@@ -373,7 +362,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           label: n === 0 ? 'Filters' : `Filters (${n})`,
           icon: 'filter_alt',
           active: n > 0,
-          title: 'Narrow the tree by rule outcome, dep resolution, or duration',
+          title: 'Choose which members the tree shows',
         }),
       },
       m(MenuItem, {
@@ -382,39 +371,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         title:
           'Rules that failed, and deps whose own build failed. Cancelled and ' +
           'unfinished are not failures.',
+        disabled: bothHidden,
         closePopupOnClick: false,
         onclick: () => this.toggleFailedOnly(attrs),
       }),
-      m(MenuDivider),
-      this.renderSetSubmenu(attrs, 'Rule outcome', RULE_OUTCOMES, 'outcomes'),
-      m(MenuItem, {
-        label: 'Rule deps unknown',
-        icon:
-          this.filter.depsUnknown === true
-            ? 'check_box'
-            : 'check_box_outline_blank',
-        title:
-          "Rules whose deps dune couldn't determine - n_static_deps reads 0 " +
-          'either way, so this is how to tell the two apart',
-        closePopupOnClick: false,
-        onclick: () =>
-          this.apply(attrs, {
-            ...this.filter,
-            depsUnknown: this.filter.depsUnknown === true ? undefined : true,
-          }),
-      }),
-      m(MenuDivider),
-      this.renderSetSubmenu(
-        attrs,
-        'Dep resolution',
-        DEP_RESOLUTIONS,
-        'resolutions',
-      ),
-      this.renderSetSubmenu(attrs, 'Dep status', DEP_STATUSES, 'statuses'),
-      m(MenuDivider),
       m(
         MenuItem,
-        {label: 'Duration', icon: 'timer'},
+        {label: 'Duration', icon: 'timer', disabled: bothHidden},
         DURATION_THRESHOLDS.map(([label, ns]) =>
           m(MenuItem, {
             label,
@@ -430,6 +393,45 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           }),
         ),
       ),
+
+      m(MenuTitle, {label: KIND_LABEL.rule}),
+      this.renderKindToggle('rule'),
+      this.renderSetSubmenu(
+        attrs,
+        'Outcome',
+        RULE_OUTCOMES,
+        'outcomes',
+        'rule',
+      ),
+      m(MenuItem, {
+        label: 'Deps unknown',
+        icon:
+          this.filter.depsUnknown === true
+            ? 'check_box'
+            : 'check_box_outline_blank',
+        title:
+          "Rules whose deps dune couldn't determine - n_static_deps reads 0 " +
+          'either way, so this is how to tell the two apart',
+        disabled: !this.show.rule,
+        closePopupOnClick: false,
+        onclick: () =>
+          this.apply(attrs, {
+            ...this.filter,
+            depsUnknown: this.filter.depsUnknown === true ? undefined : true,
+          }),
+      }),
+
+      m(MenuTitle, {label: KIND_LABEL.dep}),
+      this.renderKindToggle('dep'),
+      this.renderSetSubmenu(
+        attrs,
+        'Resolution',
+        DEP_RESOLUTIONS,
+        'resolutions',
+        'dep',
+      ),
+      this.renderSetSubmenu(attrs, 'Status', DEP_STATUSES, 'statuses', 'dep'),
+
       m(MenuDivider),
       m(MenuItem, {
         label: 'Clear all filters',
@@ -443,20 +445,52 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
+  /**
+   * A kind's show/hide toggle, at the head of its section.
+   *
+   * Deliberately the *first* item under each heading, and the thing everything
+   * below it is gated on: hiding a kind is the coarsest filter available, so a
+   * disabled `Outcome` submenu under a hidden `Rules` says why it would have no
+   * effect rather than letting someone set it and see nothing change.
+   *
+   * The selections themselves are kept while a kind is hidden, so showing it
+   * again restores what was asked rather than silently resetting it.
+   */
+  private renderKindToggle(kind: NodeKind): m.Children {
+    const on = this.show[kind];
+    const noun = KIND_LABEL[kind].toLowerCase();
+    return m(MenuItem, {
+      label: `Show ${noun}`,
+      icon: on ? 'check_box' : 'check_box_outline_blank',
+      title: on ? `Hide ${noun}` : `Show ${noun}`,
+      closePopupOnClick: false,
+      onclick: () => {
+        this.show[kind] = !this.show[kind];
+      },
+    });
+  }
+
   // One multi-select group: a submenu of values, each a checkable item. Nothing
   // selected means "no opinion" rather than "nothing matches", so the submenu
-  // needs no explicit "any" entry - unchecking everything is that.
+  // needs no explicit "any" entry - unchecking everything is that. Disabled when
+  // its kind is hidden, since it could then change nothing on screen.
   private renderSetSubmenu<K extends 'outcomes' | 'resolutions' | 'statuses'>(
     attrs: DirExplorerPanelAttrs,
     label: string,
     values: readonly string[],
     key: K,
+    kind: NodeKind,
   ): m.Children {
     const selected: ReadonlySet<string> = this.filter[key] ?? new Set();
     const suffix = selected.size === 0 ? '' : ` (${selected.size})`;
     return m(
       MenuItem,
-      {label: `${label}${suffix}`, icon: 'checklist'},
+      {
+        label: `${label}${suffix}`,
+        icon: 'checklist',
+        // Narrowing a kind that isn't shown would do nothing visible.
+        disabled: !this.show[kind],
+      },
       values.map((value) =>
         m(MenuItem, {
           label: value,
