@@ -182,6 +182,13 @@ export class DuneGraphController {
   // while the lookup itself is a query. Cleared whenever the graph changes.
   private selectionNode?: {readonly key: string; readonly node?: NodeId};
 
+  // Brings the panel that explains a node forward, and the node it was last
+  // called for. Set by the plugin (see revealPanelWhenNodeSelected); polled from
+  // onFrame() rather than pushed from the places that change the selection,
+  // since those include the core timeline, which knows nothing about us.
+  private revealPanel?: () => void;
+  private revealedNode?: NodeId;
+
   // Whether rule nodes are hidden from both the graph pane and the timeline
   // track (see visibleNodes()). Lives here (not in GraphPanel) so it survives
   // panel remounts and the timeline track can see it too.
@@ -310,6 +317,7 @@ export class DuneGraphController {
 
   private onFrame(): void {
     this.syncTimeline();
+    this.syncSelectionReveal();
     const current = this.trace.currentWorkspace;
     if (current === this.lastWorkspace) return;
     const previous = this.lastWorkspace;
@@ -429,6 +437,41 @@ export class DuneGraphController {
     if (node === undefined) return undefined;
     if (kind !== 'action') return this.sliceIdOf(node);
     return spanSliceId((await this.timingFor(node)).actionTiming);
+  }
+
+  /**
+   * Ask for `reveal` to be called whenever the *selected node* changes to a node
+   * of this graph.
+   *
+   * "Changes" is the operative word: this fires on a transition, not on every
+   * frame a node happens to be selected, so it cannot fight the user for the
+   * side panel. It deliberately does not fire when the selection *clears* or
+   * lands on something that isn't one of our nodes - a Dune panel yanked forward
+   * to say "nothing selected" is worse than one left where it was.
+   *
+   * Polled from onFrame() rather than hooked into the places that navigate,
+   * because those include clicking a slice directly on the timeline, which goes
+   * through the core selection manager and has no idea this plugin exists. One
+   * rule here beats a hook on every route to a node.
+   *
+   * Note that a `reveal` implemented with `sidePanel.showTab` also *opens* the
+   * side panel if it was closed, since that API does both.
+   */
+  revealPanelWhenNodeSelected(reveal: () => void): void {
+    this.revealPanel = reveal;
+  }
+
+  // Fires the reveal callback on a change of selected node. Reads
+  // nodeForSelection() rather than the raw selection so that it follows the
+  // *node*: re-selecting a different slice of the same node is not a change, and
+  // a selection whose node takes a query to resolve fires when the answer lands
+  // rather than not at all.
+  private syncSelectionReveal(): void {
+    if (this.revealPanel === undefined) return;
+    const node = this.nodeForSelection();
+    if (node === this.revealedNode) return;
+    this.revealedNode = node;
+    if (node !== undefined) this.revealPanel();
   }
 
   // Switch the timeline to the dedicated "Dune graph" workspace. Getting back
@@ -1048,6 +1091,9 @@ export class DuneGraphController {
     this.selection.clear();
     this.reverseIndex = undefined;
     this.selectionNode = undefined;
+    // A reload renumbers every node, so a remembered id would suppress the
+    // reveal for whichever unrelated node inherits it.
+    this.revealedNode = undefined;
     this.graphStep.reset();
     this.nodeMirrorStep.reset();
     this.edgeMirrorStep.reset();

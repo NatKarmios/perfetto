@@ -73,6 +73,17 @@ export default class implements PerfettoPlugin {
       render: () => m(DirExplorerPanel, {controller, trace}),
     });
 
+    // Whenever the selected node changes - clicked in the Explorer tree, on the
+    // timeline, in the query tab, in the graph pane - bring the tab that
+    // explains it forward. Wired here rather than in each of those places
+    // because the tab URIs belong to this entry point, and because one rule
+    // beats four call sites that would drift apart. The Explorer tab keeps its
+    // state while hidden (the side panel gates inactive tabs rather than
+    // unmounting them), so switching away costs nothing to come back from.
+    controller.revealPanelWhenNodeSelected(() =>
+      trace.sidePanel.showTab(SIDE_PANEL_URI),
+    );
+
     // Reveal the graph side panel on load rather than making the user open it.
     trace.sidePanel.showTab(SIDE_PANEL_URI);
 
