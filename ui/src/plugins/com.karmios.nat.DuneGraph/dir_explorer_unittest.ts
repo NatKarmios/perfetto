@@ -419,23 +419,27 @@ describe('strippedDepLabel', () => {
 });
 
 describe('compileFilter', () => {
+  const pat = (text: string) => compileFilter(text)?.pattern;
+
   it('treats plain text as a case-insensitive substring', () => {
-    // What someone typing `lib` means, and the same conversion the DataGrid's
-    // own column search uses.
-    expect(compileFilter('lib')?.pattern).toBe('*[lL][iI][bB]*');
+    // What someone typing `lib` means. GLOB is always case-sensitive with no
+    // pragma to change it, so a per-letter class is the only way to fold case.
+    expect(pat('lib')).toBe('*[lL][iI][bB]*');
   });
 
-  it('passes a glob through verbatim', () => {
+  it('uses a string with wildcards as a glob, unfolded', () => {
     // A pattern with wildcards was written deliberately. Case-folding it would
-    // silently change what the user asked for.
+    // silently change what the user asked for, and wrapping it in more stars
+    // would claim they wanted a substring.
     for (const text of ['lib/*.cmi', 'a?c', '[abc]x']) {
-      expect(compileFilter(text)?.pattern).toBe(text);
+      expect(pat(text)).toBe(text);
     }
   });
 
   it('keeps the typed text alongside the pattern', () => {
-    // The chip shows what was typed, not the glob it became.
+    // The chip and the clear button's tooltip show what was typed, not the glob.
     expect(compileFilter('lib')?.text).toBe('lib');
+    expect(compileFilter(String.raw`a\*b`)?.text).toBe(String.raw`a\*b`);
   });
 
   it('trims, and reads blank as no filter', () => {
@@ -444,6 +448,99 @@ describe('compileFilter', () => {
     expect(compileFilter('   ')).toBeUndefined();
   });
 });
+
+describe('compileFilter escapes', () => {
+  const pat = (text: string) => compileFilter(text)?.pattern;
+
+  it('quotes an escaped metacharacter as a one-character class', () => {
+    // GLOB takes no ESCAPE clause and has no escape character at all, so a
+    // bracket class is the only way to spell a literal `*`, `?` or `[`.
+    expect(pat(String.raw`\*`)).toBe('*[*]*');
+    expect(pat(String.raw`\?`)).toBe('*[?]*');
+    expect(pat(String.raw`\[`)).toBe('*[[]*');
+  });
+
+  it('does not let an escaped wildcard pick the glob arm', () => {
+    // The point of layering escapes under the auto-detection: this is a
+    // case-insensitive substring search for a literal star, not a glob.
+    expect(pat(String.raw`a\*b`)).toBe('*[aA][*][bB]*');
+  });
+
+  it('mixes a literal wildcard and a real one in the same pattern', () => {
+    // An unescaped wildcard is present, so this is a glob - and within it the
+    // escaped star is quoted while the bare one stays a wildcard.
+    expect(pat(String.raw`lib/\*.cmi*`)).toBe('lib/[*].cmi*');
+  });
+
+  it('takes a doubled backslash as a literal backslash', () => {
+    expect(pat(String.raw`a\\b`)).toBe('*[aA]\\[bB]*');
+  });
+
+  it('keeps a backslash that escapes nothing escapable', () => {
+    // `a\b` searches for `a\b` rather than silently becoming `ab`. Never
+    // discarding input beats a tidier rule, and a stray backslash is likelier
+    // than a deliberate escape of `b`.
+    expect(pat(String.raw`a\b`)).toBe('*[aA]\\[bB]*');
+  });
+
+  it('takes a trailing lone backslash literally', () => {
+    // Malformed input with a defined answer: it is what the user typed.
+    expect(pat('ab\\')).toBe('*[aA][bB]\\*');
+  });
+
+  it('needs no escape for a closing bracket', () => {
+    // `]` is literal in GLOB outside a character class, so it is not a wildcard
+    // and does not push the input onto the glob arm.
+    expect(pat('a]b')).toBe('*[aA]][bB]*');
+    // Escaping it anyway is allowed, and means the same thing.
+    expect(pat(String.raw`a\]b`)).toBe('*[aA]][bB]*');
+  });
+
+  it('never emits an unterminated character class', () => {
+    // GLOB treats a malformed class as a silent non-match rather than an error,
+    // so a bug here would look like "the filter found nothing" rather than
+    // failing loudly. Checked with GLOB's own class rules, not by counting
+    // brackets: inside a class `[` is an ordinary member, so `[[]` - the quote
+    // for a literal `[` - is well formed and a naive depth count calls it broken.
+    for (const text of [
+      String.raw`\[`,
+      String.raw`\]`,
+      String.raw`\*`,
+      String.raw`\?`,
+      String.raw`\\`,
+      'plain',
+      'a]b',
+      String.raw`a\b`,
+      'x\\',
+      String.raw`lib/\*.cmi*`,
+    ]) {
+      expect([text, classesClosed(pat(text) ?? '')]).toEqual([text, true]);
+    }
+  });
+});
+
+/**
+ * Whether every character class in a GLOB pattern is terminated, by GLOB's own
+ * rules: a class runs from `[` to the next `]`, except that a leading `^`
+ * negates and a `]` in first position is a literal member rather than the
+ * terminator.
+ */
+function classesClosed(pattern: string): boolean {
+  let i = 0;
+  while (i < pattern.length) {
+    if (pattern[i] !== '[') {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    if (pattern[j] === '^') j++;
+    if (pattern[j] === ']') j++;
+    while (j < pattern.length && pattern[j] !== ']') j++;
+    if (j >= pattern.length) return false;
+    i = j + 1;
+  }
+  return true;
+}
 
 describe('filtered member queries', () => {
   const filter = {path: {text: 'x', pattern: '*x*'}};

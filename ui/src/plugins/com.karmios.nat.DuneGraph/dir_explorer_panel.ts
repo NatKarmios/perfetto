@@ -305,8 +305,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         placeholder: 'Filter by path, e.g. lib or _build/**.cmi …',
         title:
           'A plain string matches anywhere in a path, case-insensitively. A ' +
-          'string containing * ? or [ is used as a glob verbatim. Press Enter ' +
-          'to apply.',
+          'string containing * ? or [ is used as a glob. Escape with a ' +
+          'backslash to match one of those literally (\\* \\? \\[), and ' +
+          '\\\\ for a literal backslash. Press Enter to apply.',
         value: this.draft,
         oninput: (e: Event) => {
           this.draft = (e.target as HTMLInputElement).value;

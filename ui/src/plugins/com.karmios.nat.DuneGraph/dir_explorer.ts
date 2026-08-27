@@ -36,7 +36,6 @@
  * per level of the tree and never fans out.
  */
 
-import {toCaseInsensitiveGlob} from '../../components/widgets/datagrid/column_filter_menu';
 import {sqlValue} from '../../components/widgets/datagrid/sql_utils';
 import type {Engine} from '../../trace_processor/engine';
 import {
@@ -88,21 +87,119 @@ export interface PathFilter {
   readonly pattern: string;
 }
 
-// Characters that make a typed string a glob rather than a substring. `[` counts
-// because a character class is how you write a case-insensitive letter by hand,
-// which is exactly what `toCaseInsensitiveGlob` generates.
-const GLOB_CHARS = /[*?[]/;
+/**
+ * One character of typed filter text, and whether it is to be matched literally.
+ *
+ * `literal` is set by an escape in the input, and is what the two emitters below
+ * branch on: a literal metacharacter has to be quoted for GLOB, an unescaped one
+ * is the user's own wildcard and passes through.
+ */
+interface FilterChar {
+  readonly ch: string;
+  readonly literal: boolean;
+}
+
+// The characters `\` can escape. `]` is included for symmetry even though GLOB
+// does not need it quoted outside a character class, so that escaping any
+// metacharacter is something a user can do without having to know which ones
+// happen to need it.
+const ESCAPABLE = new Set(['*', '?', '[', ']', '\\']);
+
+// The metacharacters that have to be quoted to be matched literally, and how.
+// Each replacement is a complete one-character class: GLOB has no escape
+// character at all (unlike LIKE, it takes no ESCAPE clause), so a bracket class
+// is the only way to spell a literal `*`, `?` or `[`.
+const GLOB_LITERAL: Readonly<Record<string, string>> = {
+  '*': '[*]',
+  '?': '[?]',
+  '[': '[[]',
+};
+
+/**
+ * Splits typed text into characters, resolving escapes.
+ *
+ * The rules, in full:
+ *
+ * - `\` before one of {@link ESCAPABLE} makes that character literal.
+ * - `\` before anything else is *itself* literal, and the next character is read
+ *   normally. So `a\b` searches for `a\b` rather than silently becoming `ab` -
+ *   never discarding input is worth more here than a tidier rule, and a stray
+ *   backslash in a build path is far likelier than a deliberate escape of `b`.
+ * - A trailing `\` with nothing after it is a literal backslash, for the same
+ *   reason: it is what the user typed.
+ */
+function splitFilterText(text: string): FilterChar[] {
+  const out: FilterChar[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '\\') {
+      out.push({ch: text[i], literal: false});
+      continue;
+    }
+    const next = text[i + 1];
+    if (next !== undefined && ESCAPABLE.has(next)) {
+      out.push({ch: next, literal: true});
+      i++;
+    } else {
+      out.push({ch: '\\', literal: true});
+    }
+  }
+  return out;
+}
+
+// Whether the text contains a wildcard the user meant as a wildcard. Only
+// unescaped ones count, so `foo\*bar` is a plain substring search for a literal
+// star rather than a glob.
+function hasWildcard(chars: readonly FilterChar[]): boolean {
+  return chars.some((c) => !c.literal && c.ch in GLOB_LITERAL);
+}
+
+/**
+ * Emits a GLOB pattern from parsed characters.
+ *
+ * Every `[` this produces belongs to a complete class - either a
+ * {@link GLOB_LITERAL} quote or a case fold - so it can never emit the
+ * unterminated `[` that GLOB treats as a silent non-match rather than an error.
+ * An unescaped `[` on the wildcard arm is passed through untouched: that is the
+ * user's own character class, and theirs to get right.
+ *
+ * `caseFold` folds letters into `[aA]` classes: GLOB is always case-sensitive
+ * with no pragma to change it, so that is the only way to get a case-insensitive
+ * match out of it.
+ */
+function emitGlob(chars: readonly FilterChar[], caseFold: boolean): string {
+  let out = '';
+  for (const {ch, literal} of chars) {
+    if (literal && ch in GLOB_LITERAL) {
+      out += GLOB_LITERAL[ch];
+      continue;
+    }
+    const lower = ch.toLowerCase();
+    const upper = ch.toUpperCase();
+    out += caseFold && lower !== upper ? `[${lower}${upper}]` : ch;
+  }
+  return out;
+}
 
 /**
  * Turns typed text into a {@link PathFilter}.
  *
  * Wildcards are detected rather than assumed either way, because the two things
  * people type want opposite treatment. `lib` means "anything with lib in it", so
- * it becomes a case-insensitive `*[lL][iI][bB]*` via the same helper the
- * DataGrid's column search uses. `lib/*.cmi` is a pattern the user wrote
- * deliberately: wrapping it in further stars would be harmless, but silently
- * case-folding it would not be, and either way it is theirs to write. So a
- * string containing a glob metacharacter is passed through verbatim.
+ * it becomes a case-insensitive `*[lL][iI][bB]*`. `lib/*.cmi` is a pattern the
+ * user wrote deliberately: wrapping it in further stars would be harmless, but
+ * silently case-folding it would not be, and either way it is theirs to write.
+ * So a string containing a wildcard is used as a glob.
+ *
+ * A `\` escape sits underneath that choice rather than replacing it: it makes a
+ * metacharacter literal *and* stops it counting as a wildcard for the purposes of
+ * picking an arm. So `foo\*bar` is a case-insensitive search for a literal star,
+ * while `lib/\*.cmi*` is a glob whose first star is literal and whose last is a
+ * real wildcard. Plain text with no backslashes behaves exactly as before, which
+ * is the point: the effortless case must not pay for the escape hatch.
+ *
+ * Note the two independent quoting layers here. This one is *GLOB* quoting;
+ * `sqlValue` separately does SQL string-literal quoting when the pattern is
+ * interpolated. Conflating them would be a bug in both directions.
  *
  * Returns undefined for blank text, which is "no filter" rather than "match
  * everything" - the caller uses it to clear.
@@ -110,12 +207,10 @@ const GLOB_CHARS = /[*?[]/;
 export function compileFilter(text: string): PathFilter | undefined {
   const trimmed = text.trim();
   if (trimmed === '') return undefined;
-  return {
-    text: trimmed,
-    pattern: GLOB_CHARS.test(trimmed)
-      ? trimmed
-      : toCaseInsensitiveGlob(trimmed),
-  };
+  const chars = splitFilterText(trimmed);
+  const glob = hasWildcard(chars);
+  const body = emitGlob(chars, !glob);
+  return {text: trimmed, pattern: glob ? body : `*${body}*`};
 }
 
 /**
