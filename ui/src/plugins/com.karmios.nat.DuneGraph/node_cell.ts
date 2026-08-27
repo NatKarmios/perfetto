@@ -20,7 +20,8 @@
  *   tree modes both draw, given a node they have already resolved. Only the
  *   anchor is shared out; the chip is reached through the value-based layer.
  * - Value-based (`renderNodeCell` / `nodeCellLabel` / `renderNodeCellActions`):
- *   the same thing for a DataGrid cell whose value *is* a `dune_node.node_id`,
+ *   the same thing for a DataGrid cell whose value *is* a `dune_node.node_id`
+ *   (optionally relabelled - see {@link NodeChipOptions}),
  *   plus `registerNodeColumnRenderer`, which teaches every DataGrid in the UI
  *   to draw a `JOINID(dune_node.node_id)` column that way - the query tab's
  *   results, a Data Explorer results panel, a dashboard grid.
@@ -69,21 +70,46 @@ export const DUNE_NODE_JOINID: PerfettoSqlType = {
 /**
  * A node's label as a link that jumps to its slice on the timeline. The icon
  * marks it as a selection-changing link, as everywhere else in the UI.
+ *
+ * `title` overrides the default tooltip, for a caller showing an abbreviated
+ * label that wants the hover to say what was abbreviated away - more use than
+ * restating what the icon already conveys (see the directory explorer's member
+ * rows).
  */
 export function nodeAnchor(
   controller: DuneGraphController,
   node: NodeId,
   label: string,
+  title: string = 'Go to slice on the timeline',
 ): m.Children {
   return m(
     Anchor,
     {
       icon: Icons.UpdateSelection,
-      title: 'Go to slice on the timeline',
+      title,
       onclick: () => void controller.goToNode(node),
     },
     label,
   );
+}
+
+/**
+ * Overrides for how a node's chip is labelled.
+ *
+ * Only for a caller that already knows a shorter, unambiguous label *because of
+ * where it is drawing the row* - a directory tree, whose rows sit under a
+ * heading that supplies the part it drops. Everywhere else a node has one label
+ * and this is left empty, so the chip stays identical across the query tab, the
+ * selection panel and every DataGrid.
+ */
+export interface NodeChipOptions {
+  // Shown instead of the node's own display text. The kind chip and the
+  // build/code icon are unaffected: they say what *kind* of thing this is and
+  // where its path lives, which an abbreviation doesn't change.
+  readonly label?: string;
+  // The link's tooltip. Pass the unabbreviated label whenever `label` is set -
+  // an abbreviated row that can't be expanded on hover has lost information.
+  readonly title?: string;
 }
 
 /**
@@ -94,6 +120,7 @@ export function nodeAnchor(
 function renderNodeChip(
   controller: DuneGraphController,
   node: NodeId,
+  opts: NodeChipOptions = {},
 ): m.Children {
   const {graph} = controller;
   const {icon, text} = decorateNode(graph, node);
@@ -101,7 +128,7 @@ function renderNodeChip(
     'span.pf-dune-graph__node-cell',
     kindChip(graph.kindOf(node)),
     icon,
-    nodeAnchor(controller, node, text),
+    nodeAnchor(controller, node, opts.label ?? text, opts.title),
   );
 }
 
@@ -125,10 +152,11 @@ export function nodeForCellValue(
 export function renderNodeCell(
   controller: DuneGraphController,
   value: SqlValue,
+  opts: NodeChipOptions = {},
 ): m.Children {
   const node = nodeForCellValue(controller, value);
   if (node === undefined) return value === null ? '' : String(value);
-  return renderNodeChip(controller, node);
+  return renderNodeChip(controller, node, opts);
 }
 
 /**

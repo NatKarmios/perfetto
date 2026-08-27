@@ -66,26 +66,63 @@ export function nodesInGroup<T extends {readonly node?: NodeId}>(
   return [...seen];
 }
 
-// A directory group's bulk actions: add every node under it to the graph, or
-// remove every node under it from the graph. Both are unconditionally
-// enabled regardless of current membership (matching the query tab's
-// "Add all" / "Remove all" Graph-menu pair, which doesn't gate on membership
-// either). Absent when the group has no nodes to act on.
+/**
+ * The ＋all / －all pair for a set of nodes the caller can name but may not yet
+ * hold: `nodes` is called on click, and may return its list or a promise of it.
+ *
+ * That indirection is what lets the directory explorer share these buttons. Its
+ * tree is lazy, so a directory's members generally aren't loaded when its row is
+ * drawn - only the *count* is, off `dune_dir` - and fetching them up front to
+ * satisfy a button that may never be pressed would defeat the laziness. So the
+ * count comes in separately (it is only ever a label) and the ids are fetched
+ * by the click.
+ *
+ * Both actions are unconditionally enabled regardless of current membership,
+ * matching the query tab's "Add all" / "Remove all" Graph-menu pair. Absent
+ * when there is nothing to act on.
+ *
+ * `count` is how many nodes the click will act on, and is only ever a label;
+ * `nodes` is called on click and returns the nodes to act on, or a promise of
+ * them; `what` names the scope in the button titles ("in this directory").
+ */
+export function bulkNodeActions(
+  controller: DuneGraphController,
+  count: number,
+  nodes: () => readonly NodeId[] | Promise<readonly NodeId[]>,
+  what: string = 'in this directory',
+): m.Children {
+  if (count === 0) return undefined;
+  const act = (apply: (ns: readonly NodeId[]) => void) => {
+    const resolved = nodes();
+    if (Array.isArray(resolved)) {
+      apply(resolved);
+      return;
+    }
+    // Resolved between frames, so the graph's own redraw isn't coming: ask.
+    void (resolved as Promise<readonly NodeId[]>).then((ns) => {
+      apply(ns);
+      controller.requestRedraw();
+    });
+  };
+  return [
+    m(Button, {
+      icon: 'add',
+      title: `Add all ${count} nodes ${what} to the graph`,
+      onclick: () => act((ns) => controller.addToGraph(ns)),
+    }),
+    m(Button, {
+      icon: 'remove',
+      title: `Remove all ${count} nodes ${what} from the graph`,
+      onclick: () => act((ns) => controller.removeFromGraph(ns)),
+    }),
+  ];
+}
+
+// A directory group's bulk actions, for a tree that already holds its nodes -
+// the two `PathTreeView` trees, whose rows are built from a resolved list.
 export function groupBulkActions(
   controller: DuneGraphController,
   nodes: readonly NodeId[],
 ): m.Children {
-  if (nodes.length === 0) return undefined;
-  return [
-    m(Button, {
-      icon: 'add',
-      title: `Add all ${nodes.length} nodes in this directory to the graph`,
-      onclick: () => controller.addToGraph(nodes),
-    }),
-    m(Button, {
-      icon: 'remove',
-      title: `Remove all ${nodes.length} nodes in this directory from the graph`,
-      onclick: () => controller.removeFromGraph(nodes),
-    }),
-  ];
+  return bulkNodeActions(controller, nodes.length, () => nodes);
 }
