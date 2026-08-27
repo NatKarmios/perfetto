@@ -44,7 +44,7 @@
 import {HSLColor} from '../../base/color';
 import type {ColorScheme} from '../../base/color_scheme';
 import {makeColorScheme} from '../../components/colorizer';
-import {SliceTrack} from '../../components/tracks/slice_track';
+import {ColorVariant, SliceTrack} from '../../components/tracks/slice_track';
 import type {TrackRenderer} from '../../public/track';
 import type {Trace} from '../../public/trace';
 import {SourceDataset} from '../../trace_processor/dataset';
@@ -188,13 +188,35 @@ export function createGraphTrackRenderer(
     // (see controller.ts's goToNode()).
     sliceName: (row: Row) => sliceName(controller, kind, row),
     colorizer: () => KIND_COLORS.get(kind)!,
+    // Hovering any row shades its whole family, across all four tracks. The
+    // default (`highlightHoveredAndSameTitle`) would shade by *title*, which
+    // happens to catch a rule and its action - they carry the same label - but
+    // catches nothing else of the family and does catch unrelated slices that
+    // share a name. Same shape as dev.perfetto.Sched's cpu_slice_track, which
+    // shades by hovered thread/process.
+    onUpdatedSlices: (slices) => {
+      const rule = controller.hoveredFamily;
+      const variants = new Array<ColorVariant>(slices.length);
+      if (rule === undefined) return variants.fill(ColorVariant.BASE);
+      for (let i = 0; i < slices.length; i++) {
+        variants[i] =
+          controller.familyOfRow(kind, slices[i].id) === rule
+            ? ColorVariant.VARIANT
+            : ColorVariant.BASE;
+      }
+      return variants;
+    },
+    onSliceOver: ({slice}) => controller.setHoveredFamily(kind, slice.id),
+    onSliceOut: () => controller.setHoveredFamily(undefined, undefined),
     // Stock SliceTrack details plus the process track's inherited args (see
     // row_details_panel.ts). The name is resolved here rather than in the panel
     // so the two read identically to the label on the canvas.
     detailsPanel: (row: Row) =>
       new GraphTrackDetailsPanel(
         trace,
-        {...row, kind: spec.name, arg_set_id: row.arg_set_id ?? null},
+        controller,
+        kind,
+        row,
         sliceName(controller, kind, row),
       ),
   });

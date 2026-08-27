@@ -41,8 +41,15 @@ import {
   graphTrackKind,
   graphTrackUri,
 } from './graph_track';
-import type {ArrowIndex} from './arrows';
-import {arrowsForSelection, buildArrowIndex, emptyArrowIndex} from './arrows';
+import {arrowsForSelection} from './arrows';
+import type {FamilyIndex} from './family';
+import type {FamilyMembers} from './family';
+import {
+  buildFamilyIndex,
+  emptyFamilyIndex,
+  familyMembers,
+  ruleOfRow,
+} from './family';
 import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
 import type {Distances, SqlEdgeMirror, SqlNodeMirror} from './sql_graph';
@@ -214,10 +221,15 @@ export class DuneGraphController {
   // The four track nodes, by kind. The `rule` and `rule-action` ones are taken
   // out of the tree while rules are hidden, rather than left as empty rows.
   private readonly trackNodes = new Map<GraphTrackKind, TrackNode>();
-  // Where every projected row was laid out, rebuilt off `version`. The arrows
-  // themselves are derived from it per frame, for whatever is selected right
-  // now (see arrows.ts).
-  private arrowIndex: ArrowIndex = emptyArrowIndex();
+  // What belongs with what, and where each row was drawn - rebuilt off
+  // `version` (see family.ts). The arrows and the hover shading are both
+  // derived from it per frame.
+  private familyIndex: FamilyIndex = emptyFamilyIndex();
+  // The family under the cursor, as the rule that names it - every track shades
+  // its own rows against this (see graph_track.ts). Plain controller state
+  // rather than something on `trace.timeline`: all four tracks are ours, so
+  // nothing outside the plugin needs to see it.
+  private hoveredRule?: NodeId;
   // `version` as of the last sync, so the tree and the arrows are only rebuilt
   // when the selection actually changed (see onFrame()).
   private syncedVersion = -1;
@@ -337,7 +349,42 @@ export class DuneGraphController {
     if (this.syncedVersion === this.version) return;
     this.syncedVersion = this.version;
     this.seatTracks();
-    void this.rebuildArrowIndex(this.version);
+    void this.rebuildFamilyIndex(this.version);
+  }
+
+  // The family currently under the cursor, if any.
+  get hoveredFamily(): NodeId | undefined {
+    return this.hoveredRule;
+  }
+
+  // Called by every track as the cursor enters and leaves its rows. `kind` and
+  // `rowId` are undefined on the way out.
+  setHoveredFamily(kind?: GraphTrackKind, rowId?: number): void {
+    this.hoveredRule =
+      kind === undefined || rowId === undefined
+        ? undefined
+        : this.familyOfRow(kind, rowId);
+  }
+
+  // The family a row belongs to, named by its rule. A map lookup, since it is
+  // read for every visible slice on every frame (see graph_track.ts).
+  familyOfRow(kind: GraphTrackKind, rowId: number): NodeId | undefined {
+    return ruleOfRow(this.familyIndex, kind, rowId);
+  }
+
+  // The rows making up the family a given row belongs to - what the details
+  // panel lists as links (see row_details_panel.ts).
+  familyMembersOf(
+    kind: GraphTrackKind,
+    rowId: number,
+  ): FamilyMembers | undefined {
+    return familyMembers(this.familyIndex, kind, rowId);
+  }
+
+  // Select a row on one of the four tracks and scroll it into view - what the
+  // details panel's family links do.
+  goToRow(kind: GraphTrackKind, rowId: number): void {
+    this.selectOnGraphTrack(graphTrackUri(kind), rowId);
   }
 
   // The arrows to draw right now: the ones touching the selected row, and only
@@ -348,7 +395,7 @@ export class DuneGraphController {
     if (selection.kind !== 'track_event') return [];
     const kind = graphTrackKind(selection.trackUri);
     if (kind === undefined) return [];
-    return arrowsForSelection(this.arrowIndex, kind, selection.eventId);
+    return arrowsForSelection(this.familyIndex, kind, selection.eventId);
   }
 
   // Puts the track nodes in the workspace, leaving out the two rule tracks
@@ -373,10 +420,10 @@ export class DuneGraphController {
   // The index needs the rows' laid-out depths, which only SQL can answer, so
   // this is async and lands a frame or two later. `generation` guards against a
   // slower earlier build overwriting a newer one.
-  private async rebuildArrowIndex(generation: number): Promise<void> {
-    const index = await buildArrowIndex(this.trace.engine, this);
+  private async rebuildFamilyIndex(generation: number): Promise<void> {
+    const index = await buildFamilyIndex(this.trace.engine, this);
     if (this.version !== generation) return; // superseded meanwhile
-    this.arrowIndex = index;
+    this.familyIndex = index;
     this.changed();
   }
 

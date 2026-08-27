@@ -24,121 +24,17 @@
  *
  * **Only the selected row's chain is drawn.** Drawing every chain at once
  * turned the timeline into a thicket and needed an arbitrary cap to stay
- * affordable; showing one chain instead is both legible and free.
- * So this is split in two: an {@link ArrowIndex} of where every row was laid
- * out, rebuilt when the *selection set* changes, and {@link arrowsForSelection},
- * which reads a handful of entries out of it on whatever row is selected right
- * now - cheap enough to run per frame, and synchronous, which the overlay
- * requires.
- *
- * **Where the depths come from.** An arrow has to land on the row the track
- * actually drew it on, and those rows are assigned by the core's
- * `internal_layout` inside the query SliceTrack generates. Rather than
- * reimplement that packing (and drift from it), the index runs the core's own
- * `generateRenderQuery` over the very same `SourceDataset` the track was given
- * and reads `id`, `ts` and `depth` straight back out - so the positions are
- * correct by construction. Omitting a depth is not a good fallback: the
- * visualiser then aims at the vertical centre of the whole track, which on a
- * track several rows deep points at nothing.
+ * affordable; showing one chain instead is both legible and free. The lookups
+ * come out of the shared family index (see family.ts), so this stays
+ * synchronous, which the overlay requires.
  */
 
 import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
-import {generateRenderQuery} from '../../components/tracks/slice_track';
 import {Time} from '../../base/time';
-import type {Engine} from '../../trace_processor/engine';
-import {LONG, NUM} from '../../trace_processor/query_result';
-import type {BuildGraph, NodeId} from './graph';
+import type {FamilyIndex} from './family';
+import {ruleOfRow} from './family';
 import type {GraphTrackKind} from './graph_track';
-import {graphTrackDataset, graphTrackUri} from './graph_track';
-import type {DuneGraphController} from './controller';
-
-// Where one row ended up: its start, and the row it was packed onto.
-interface RowPos {
-  readonly ts: bigint;
-  readonly depth: number;
-}
-
-// One track's rows, by the id the track keys them with (a `node_id` on the
-// three node-backed tracks, a `slice.id` on the process track).
-type TrackPositions = ReadonlyMap<number, RowPos>;
-
-/**
- * Everything {@link arrowsForSelection} needs to answer synchronously: where
- * each row was drawn, and which rows belong together.
- */
-export interface ArrowIndex {
-  readonly positions: ReadonlyMap<GraphTrackKind, TrackPositions>;
-  // Rule node -> the selected dep that resolves to it, and back.
-  readonly depByRule: ReadonlyMap<NodeId, NodeId>;
-  readonly ruleByDep: ReadonlyMap<NodeId, NodeId>;
-  // Rule node -> the process slices its action spawned, and back.
-  readonly processesByRule: ReadonlyMap<NodeId, readonly number[]>;
-  readonly ruleByProcess: ReadonlyMap<number, NodeId>;
-  // Whether the rule tracks were empty when this was built - the arrows have
-  // to route around them (a connection to a track that isn't rendered is
-  // silently dropped by the visualiser, which would leave processes
-  // unattached).
-  readonly hideRules: boolean;
-}
-
-const EMPTY_INDEX: ArrowIndex = {
-  positions: new Map(),
-  depByRule: new Map(),
-  ruleByDep: new Map(),
-  processesByRule: new Map(),
-  ruleByProcess: new Map(),
-  hideRules: false,
-};
-
-export function emptyArrowIndex(): ArrowIndex {
-  return EMPTY_INDEX;
-}
-
-/** Builds the index for the current selection set. */
-export async function buildArrowIndex(
-  engine: Engine,
-  controller: DuneGraphController,
-): Promise<ArrowIndex> {
-  if (!controller.nodeMirrorReady) return EMPTY_INDEX;
-  const graph = controller.graph;
-  const hideRules = controller.hideRules;
-
-  const kinds: GraphTrackKind[] = hideRules
-    ? ['dep', 'process']
-    : ['dep', 'rule', 'action', 'process'];
-  const positions = new Map<GraphTrackKind, TrackPositions>();
-  for (const kind of kinds) {
-    positions.set(kind, await trackPositions(engine, controller, kind));
-  }
-
-  const depByRule = resolvingDeps(graph, controller.selectedNodes);
-  const ruleByDep = new Map<NodeId, NodeId>();
-  for (const [rule, dep] of depByRule) ruleByDep.set(dep, rule);
-
-  const byRuleId = new Map<number, NodeId>();
-  for (const node of controller.selectedNodes) {
-    if (graph.isRule(node)) byRuleId.set(graph.timingKeyOf(node), node);
-  }
-  const processesByRule = new Map<NodeId, number[]>();
-  const ruleByProcess = new Map<number, NodeId>();
-  for (const [sliceId, ruleId] of await processRules(engine, controller)) {
-    const rule = byRuleId.get(ruleId);
-    if (rule === undefined) continue;
-    ruleByProcess.set(sliceId, rule);
-    const list = processesByRule.get(rule);
-    if (list === undefined) processesByRule.set(rule, [sliceId]);
-    else list.push(sliceId);
-  }
-
-  return {
-    positions,
-    depByRule,
-    ruleByDep,
-    processesByRule,
-    ruleByProcess,
-    hideRules,
-  };
-}
+import {graphTrackUri} from './graph_track';
 
 /**
  * The whole chain the selected row belongs to: the dep that wanted the rule,
@@ -155,7 +51,7 @@ export async function buildArrowIndex(
  * the process track.
  */
 export function arrowsForSelection(
-  index: ArrowIndex,
+  index: FamilyIndex,
   kind: GraphTrackKind,
   eventId: number,
 ): ArrowConnection[] {
@@ -204,80 +100,4 @@ export function arrowsForSelection(
   link('rule', rule, 'action', rule);
   for (const sliceId of processes) link('action', rule, 'process', sliceId);
   return arrows;
-}
-
-// The rule whose chain a row belongs to. The two rule tracks are keyed by the
-// rule itself; a dep and a process each name one indirectly.
-function ruleOfRow(
-  index: ArrowIndex,
-  kind: GraphTrackKind,
-  eventId: number,
-): NodeId | undefined {
-  switch (kind) {
-    case 'dep':
-      return index.ruleByDep.get(eventId);
-    case 'rule':
-    case 'action':
-      return eventId;
-    case 'process':
-      return index.ruleByProcess.get(eventId);
-  }
-}
-
-/**
- * Which selected dep resolves to each selected rule. First dep wins: a rule can
- * be resolved to by several deps (the same output reached by more than one
- * path), and one arrow per rule is enough to show where it came from.
- */
-export function resolvingDeps(
-  graph: BuildGraph,
-  selected: readonly NodeId[],
-): ReadonlyMap<NodeId, NodeId> {
-  const inSelection = new Set(selected);
-  const byRule = new Map<NodeId, NodeId>();
-  for (const dep of selected) {
-    if (graph.isRule(dep)) continue;
-    const rule = graph.resolvedRuleOf(dep);
-    if (rule === undefined || !inSelection.has(rule) || byRule.has(rule)) {
-      continue;
-    }
-    byRule.set(rule, dep);
-  }
-  return byRule;
-}
-
-// One track's laid-out rows, read back through the core's own render query so
-// the depths match what was drawn (see the file header).
-async function trackPositions(
-  engine: Engine,
-  controller: DuneGraphController,
-  kind: GraphTrackKind,
-): Promise<TrackPositions> {
-  const dataset = graphTrackDataset(controller, kind);
-  const rows = await engine.query(`
-    select id, ts, depth from (${generateRenderQuery(dataset)})
-  `);
-  const positions = new Map<number, RowPos>();
-  const it = rows.iter({id: NUM, ts: LONG, depth: NUM});
-  for (; it.valid(); it.next()) {
-    positions.set(it.id, {ts: it.ts, depth: it.depth});
-  }
-  return positions;
-}
-
-// Each projected process slice and the rule that forced it, straight off the
-// process track's own rows so the two can't disagree about which processes are
-// on screen.
-async function processRules(
-  engine: Engine,
-  controller: DuneGraphController,
-): Promise<ReadonlyMap<number, number>> {
-  const dataset = graphTrackDataset(controller, 'process');
-  const rows = await engine.query(`
-    select id, rule_id from (${dataset.query()})
-  `);
-  const bySlice = new Map<number, number>();
-  const it = rows.iter({id: NUM, rule_id: NUM});
-  for (; it.valid(); it.next()) bySlice.set(it.id, it.rule_id);
-  return bySlice;
 }

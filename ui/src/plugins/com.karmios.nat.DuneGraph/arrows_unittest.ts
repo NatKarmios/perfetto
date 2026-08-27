@@ -13,51 +13,9 @@
 // limitations under the License.
 
 import {describe, expect, test} from 'vitest';
-import type {ArrowIndex} from './arrows';
-import {arrowsForSelection, resolvingDeps} from './arrows';
+import {arrowsForSelection} from './arrows';
+import type {FamilyIndex} from './family';
 import {graphTrackUri} from './graph_track';
-import {dep, rule, testGraph} from './graph_test_helper';
-
-// Which dep each rule gets an arrow from. Everything else about the arrows
-// needs laid-out depths, i.e. a query engine; this is the part that is pure.
-describe('resolvingDeps', () => {
-  const fixture = testGraph([
-    dep('a/x.cmi', {resolvedRule: 'r1'}),
-    dep('alias/x.cmi', {resolvedRule: 'r1'}),
-    dep('a/y.ml', {isSource: true}),
-    rule('r1', {dir: 'a', targetFiles: ['x.cmi']}),
-    rule('r2', {dir: 'a', targetFiles: ['z.cmi']}),
-  ]);
-  const {graph} = fixture;
-  const id = (name: string) => fixture.id(name);
-  const pairs = (names: readonly string[]) =>
-    [...resolvingDeps(graph, names.map(id))].map(([r, d]) => [r, d]);
-
-  test('pairs a rule with the dep that resolves to it', () => {
-    expect(pairs(['a/x.cmi', 'r1'])).toEqual([[id('r1'), id('a/x.cmi')]]);
-  });
-
-  test('draws one arrow when several deps resolve to the same rule', () => {
-    // Both aliases are selected, but a second arrow to the same rule would say
-    // nothing new - the first in selection order wins.
-    expect(pairs(['alias/x.cmi', 'a/x.cmi', 'r1'])).toEqual([
-      [id('r1'), id('alias/x.cmi')],
-    ]);
-  });
-
-  test('ignores a dep whose rule is not selected', () => {
-    // There would be no row at the far end of the arrow.
-    expect(pairs(['a/x.cmi'])).toEqual([]);
-  });
-
-  test('ignores a rule nothing selected resolves to', () => {
-    expect(pairs(['a/x.cmi', 'r1', 'r2'])).toEqual([[id('r1'), id('a/x.cmi')]]);
-  });
-
-  test('ignores deps that resolve to something other than a rule', () => {
-    expect(pairs(['a/y.ml', 'r1'])).toEqual([]);
-  });
-});
 
 // Which arrows a given row lights up. The positions are stubbed - what matters
 // here is which pairs get linked, not where they land; the depths come from the
@@ -71,7 +29,7 @@ describe('arrowsForSelection', () => {
   // Every row exists at a distinct timestamp, so an arrow's endpoints identify
   // themselves in the assertions below.
   const pos = (id: number) => [id, {ts: BigInt(id), depth: 0}] as const;
-  const index = (hideRules: boolean): ArrowIndex => ({
+  const index = (hideRules: boolean): FamilyIndex => ({
     positions: new Map([
       ['dep', new Map([pos(DEP)])],
       ['rule', new Map([pos(RULE)])],
@@ -148,7 +106,7 @@ describe('arrowsForSelection', () => {
   test('draws nothing for a row that is in no chain', () => {
     // A dep that resolves to no selected rule, and a slice that isn't one of
     // the projected processes.
-    const bare: ArrowIndex = {...index(false), ruleByDep: new Map()};
+    const bare: FamilyIndex = {...index(false), ruleByDep: new Map()};
     expect(arrowsForSelection(bare, 'dep', DEP)).toEqual([]);
     expect(arrowsForSelection(index(false), 'process', 999)).toEqual([]);
   });
