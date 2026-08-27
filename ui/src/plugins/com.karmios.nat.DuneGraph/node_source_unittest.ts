@@ -72,6 +72,16 @@ describe('NODE_SOURCE', () => {
     );
     expect(nodeRefs.map((c) => c.name)).toEqual(['node_id']);
   });
+
+  it('exports dir_id, and as a directory id rather than a node one', () => {
+    // `dune_node.dir_id` indexes `dune_dir`, whose ids are a space of their own
+    // (see sql_graph.ts); typing it as a node reference would chip every row as
+    // whichever unrelated node shared the number. The mirror-side counterpart
+    // of this check is DIR_TREE_COLUMNS' in dir_tree_graph_unittest.ts.
+    const byName = new Map(DUNE_NODE_COLUMNS.map((c) => [c.name, c.type]));
+    expect(byName.has('dir_id')).toBe(true);
+    expect(byName.get('dir_id')).toBe('int');
+  });
 });
 
 describe('the nodes source as a graph', () => {

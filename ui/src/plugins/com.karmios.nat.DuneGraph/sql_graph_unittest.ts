@@ -282,6 +282,55 @@ describe('sql_graph dir tier', () => {
     ]);
   });
 
+  it('files every node under a directory, deps included', async () => {
+    const g = fixture();
+    const sql = await capture(g.graph);
+    // `_dune_dir`'s ids in insert order, so a row's directory can be named.
+    const dirPath = new Map(rowsOf(sql, '_dune_dir').map((r) => [r[0], r[3]]));
+    // `_dune_node` is (node_id, orig_id, forced_by_kind, forced_by_target_id,
+    // dir_id): the directory is the last column.
+    const filed = new Map(
+      rowsOf(sql, '_dune_node').map((r) => [r[0], dirPath.get(r[4])]),
+    );
+    const of = (name: string) => filed.get(String(g.id(name)));
+
+    // A rule is filed under its context `dir` - including both spellings of
+    // the top level, which must land on the same row.
+    expect(of('1')).toBe("'_build/default/lib'");
+    expect(of('3')).toBe("'_build/default/bin'");
+    expect(of('4')).toBe("''");
+    expect(of('5')).toBe("''");
+    // A dep under the directory its path lives in, which is the whole point:
+    // `/usr/bin` is under no rule's dir at all.
+    expect(of('_build/default/lib/x.cmi')).toBe("'_build/default/lib'");
+    expect(of('/usr/bin/ocamlopt')).toBe("'/usr/bin'");
+    expect(of('dune-project')).toBe("''");
+    // Never NULL: every node contributed a directory to the tree.
+    expect([...filed.values()].filter((d) => d === undefined)).toEqual([]);
+  });
+
+  it('agrees with the n_rules / n_deps counts it is interned from', async () => {
+    const sql = await capture(fixture().graph);
+    const dirs = rowsOf(sql, '_dune_dir');
+    // The SQL aggregate the census's doc says is now expressible, done here in
+    // JS: group `_dune_node.dir_id` by which side of the rule/dep boundary the
+    // node falls on, and it must reproduce the stored direct counts.
+    const ruleCount = dirs.reduce((n, r) => n + Number(r[5]), 0);
+    const nRules = new Map<string, number>();
+    const nDeps = new Map<string, number>();
+    for (const r of rowsOf(sql, '_dune_node')) {
+      const counts = Number(r[0]) < ruleCount ? nRules : nDeps;
+      counts.set(r[4], (counts.get(r[4]) ?? 0) + 1);
+    }
+    for (const r of dirs) {
+      expect([r[3], nRules.get(r[0]) ?? 0, nDeps.get(r[0]) ?? 0]).toEqual([
+        r[3],
+        Number(r[5]),
+        Number(r[6]),
+      ]);
+    }
+  });
+
   it('maps trace-side rule ids to directories, then drops the map', async () => {
     const sql = await capture(fixture().graph);
     // Keyed by `rule_id`, not `node_id`: it exists to be probed from

@@ -57,7 +57,12 @@ const SLICE_JOINID: PerfettoSqlType = {
  *   is a lie.
  * - everything else plainly. `orig_id` in particular is *not* a node reference:
  *   it is the trace-side id (a rule's dune id, a dep's dict id), which collides
- *   with unrelated `node_id`s by construction.
+ *   with unrelated `node_id`s by construction. Nor is `dir_id`, for the sharper
+ *   version of the same reason - it indexes `dune_dir`, a space with no
+ *   relation to `node_id` at all (see sql_graph.ts, and the matching note on
+ *   `DIR_TREE_COLUMNS`). It stays a plain int rather than
+ *   `JOINID(dune_dir.id)` only because no renderer is registered for directory
+ *   ids yet; the day one is, this is the column that should get it.
  */
 export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'node_id', type: DUNE_NODE_JOINID},
@@ -67,6 +72,7 @@ export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'slice_id', type: SLICE_JOINID},
   {name: 'forced_by_kind', type: 'string'},
   {name: 'forced_by_target', type: 'string'},
+  {name: 'dir_id', type: 'int'},
   {name: 'ts', type: 'timestamp'},
   {name: 'dur', type: 'duration', expr: 'dur_ns'},
   {name: 'occurrences', type: 'int', expr: 'n_occurrences'},

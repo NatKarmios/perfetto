@@ -58,8 +58,9 @@
  * FK would be redundant, and every join is a plain `... USING (node_id)`.
  *
  * - `dune_node(node_id, kind, orig_id, slice_id, label, forced_by_kind,
- *   forced_by_target, ts, dur_ns, n_occurrences)` — one row per node, a typed
- *   PERFETTO VIEW over the raw `_dune_node` table the rows are inserted into,
+ *   forced_by_target, dir_id, ts, dur_ns, n_occurrences)` — one row per node,
+ *   a typed PERFETTO VIEW over the raw `_dune_node` table the rows are
+ *   inserted into,
  *   joined to the timing table (`lifecycle_sql.ts`) on (kind, orig_id).
  *   `node_id` is the node's identity everywhere (it's what the query tab
  *   chip-renders and what the relation functions take); `slice_id` is its
@@ -72,6 +73,13 @@
  *   spans were seen (>1 under watch mode, or for a dep built repeatedly).
  *   `forced_by_kind` / `forced_by_target` mirror the node's `forcedBy` (the
  *   target is the forcing rule id / dep path / dune-file path, or NULL).
+ *   `dir_id` is the node's directory in `dune_dir` - a plain id column, not a
+ *   `JOINID` (see `dune_dir` below) - and is the one column here whose *source*
+ *   differs by kind while its meaning does not: a rule's is its context `dir`,
+ *   a dep's the directory its path lives in. That union is exactly what
+ *   `dune_dir` is interned from, so `dir_id` and the `n_rules` / `n_deps`
+ *   counts agree by construction, and it is on `dune_node` rather than split
+ *   across the detail tables because every node has one. Never NULL.
  * - `dune_rule(node_id, rule_id, dir, outcome, action_slice_id, action_ts,
  *   action_dur_ns, n_targets, n_static_deps, n_dyn_stages, deps_unknown)` — one
  *   row per rule node, a view over `_dune_rule`. `outcome`: `executed` |
@@ -122,7 +130,15 @@
  *   The one table whose rows are neither nodes nor edges, so its ids are a dense
  *   space of their own with no relation to `node_id`; `name` and `path` are
  *   stored as text because a *prefix* of an interned directory is not itself
- *   interned, the same reason `dune_rule_target.path` is.
+ *   interned, the same reason `dune_rule_target.path` is. Reached from a node
+ *   through `dune_node.dir_id`, which is an `id` and not a `path` on purpose:
+ *   `id` is the rowid, so that join is a primary-key probe of a small table,
+ *   whereas joining on `path` would be a TEXT comparison with no index behind
+ *   it - the `dune_rule_target.path` hazard again. The column is typed `LONG`
+ *   rather than `JOINID(dune_dir.id)` because nothing in the mirror declares
+ *   its own cross-references that way; a *client* is free to (see
+ *   `DUNE_NODE_JOINID` in node_cell.ts), which is what would make it render as
+ *   a directory chip.
  * - `dune_edge(src, dst, forced, edge_kind, dyn_deps_stage)` — a typed
  *   PERFETTO VIEW, with `src` / `dst` the endpoints' `node_id`s (chip-rendered;
  *   join `dune_node USING`-style on them for an endpoint's label or slice).
@@ -639,13 +655,14 @@ function stringRows(graph: BuildGraph): RowSource {
   };
 }
 
-function nodeRows(graph: BuildGraph): RowSource {
+function nodeRows(graph: BuildGraph, census: DirCensus): RowSource {
   return {
     count: graph.nodeCount,
     *rows(): Iterable<string> {
       for (let id = 0; id < graph.nodeCount; id++) {
         const target = int(graph.forcedByTargetIdOf(id));
-        yield `(${id}, ${int(graph.traceIdOf(id))}, ${graph.forcedByCodeOf(id)}, ${target})`;
+        yield `(${id}, ${int(graph.traceIdOf(id))}, ` +
+          `${graph.forcedByCodeOf(id)}, ${target}, ${census.dirId[id]})`;
       }
     },
   };
@@ -735,19 +752,32 @@ const DIR_COLUMNS = [
  * deps are counted separately, so a directory holding only deps is still a
  * visible row rather than an empty one.
  *
- * The counts are computed here rather than by aggregating `_dune_rule` /
- * `_dune_dep` in SQL because the pass that has to happen anyway - interning
- * every directory, which cannot be done in SQL without recursive string
- * splitting - already visits every node. The SQL alternative would also want a
- * dir id *per node* to group by (818k rows of resident pages), and the mirror
- * has very little room for those (see PERF_SUMMARY.LOCAL.md).
+ * The counts are computed here rather than by aggregating `_dune_node.dir_id`
+ * in SQL because the pass that has to happen anyway - interning every
+ * directory, which cannot be done in SQL without recursive string splitting -
+ * already visits every node and so has the counts for free.
+ *
+ * That aggregate *is* now expressible (`SELECT dir_id, count(*) FROM
+ * _dune_node GROUP BY 1`, once split by which side of `ruleCount` the node
+ * falls on) - `dir_id` is this census's own output, so the two cannot disagree.
+ * It stays a consistency check rather than the source: it is a scan of 818k
+ * rows to recover numbers this loop already has, and it could not produce
+ * `self_dur_ns` anyway (see {@link ruleDurationsByDir}). The earlier objection
+ * here - that a per-node dir id would cost 818k rows of resident pages the
+ * mirror has no room for (see PERF_SUMMARY.LOCAL.md) - was about a *separate*
+ * map table with its own rowids and index, the shape RULE_DIR_TABLE takes and
+ * drops again. As a fifth integer column on a table that already exists it is
+ * ~2-3 MB of pages, which that budget absorbs.
  */
 interface DirCensus {
   readonly tree: DirTree;
 
-  // Each rule node's directory id, indexed by node id (rules are the first
-  // `ruleCount` nodes). Only RULE_DIR_TABLE reads it.
-  readonly ruleDirId: Int32Array;
+  // Each node's directory id, indexed by node id: a rule's `dir`, a dep's
+  // containing directory - the same two contributions the tree is interned
+  // from, so `dune_node.dir_id` and `dune_dir`'s `n_rules` / `n_deps` agree by
+  // construction. Read by RULE_DIR_TABLE (its rule prefix) and by
+  // {@link nodeRows}.
+  readonly dirId: Int32Array;
 
   // Per directory id: rules whose `dir` it is, deps whose path is directly in
   // it, and how many of those rules failed. All three are `tree.size` long.
@@ -766,7 +796,7 @@ function ruleDirKey(dir: string | undefined): string {
 
 function censusDirs(graph: BuildGraph): DirCensus {
   const tree = new DirTree();
-  const ruleDirId = new Int32Array(graph.ruleCount);
+  const dirId = new Int32Array(graph.nodeCount);
   // Grown as directories are interned; a directory that exists only as an
   // intermediate prefix is never bumped, so these end up at most `tree.size`
   // long and are padded out below.
@@ -778,17 +808,19 @@ function censusDirs(graph: BuildGraph): DirCensus {
     counts[id]++;
   };
   for (let id = 0; id < graph.ruleCount; id++) {
-    const dirId = tree.intern(ruleDirKey(graph.dirOf(id)));
-    ruleDirId[id] = dirId;
-    bump(nRules, dirId);
+    const dir = tree.intern(ruleDirKey(graph.dirOf(id)));
+    dirId[id] = dir;
+    bump(nRules, dir);
     if (FAILED_OUTCOME_CODES.has(graph.outcomeCodeOf(id))) {
-      bump(nFailed, dirId);
+      bump(nFailed, dir);
     }
   }
   for (let id = graph.ruleCount; id < graph.nodeCount; id++) {
     // A dep's path is its interned string; its directory is everything before
     // the last segment boundary.
-    bump(nDeps, tree.intern(parentDir(graph.path(graph.traceIdOf(id)))));
+    const dir = tree.intern(parentDir(graph.path(graph.traceIdOf(id))));
+    dirId[id] = dir;
+    bump(nDeps, dir);
   }
   const sized = (counts: number[]): Int32Array => {
     const out = new Int32Array(tree.size);
@@ -797,7 +829,7 @@ function censusDirs(graph: BuildGraph): DirCensus {
   };
   return {
     tree,
-    ruleDirId,
+    dirId,
     nRules: sized(nRules),
     nDeps: sized(nDeps),
     nFailed: sized(nFailed),
@@ -811,7 +843,7 @@ function ruleDirRows(graph: BuildGraph, census: DirCensus): RowSource {
     count: graph.ruleCount,
     *rows(): Iterable<string> {
       for (let id = 0; id < graph.ruleCount; id++) {
-        yield `(${graph.traceIdOf(id)}, ${census.ruleDirId[id]})`;
+        yield `(${graph.traceIdOf(id)}, ${census.dirId[id]})`;
       }
     },
   };
@@ -965,6 +997,16 @@ export async function buildNodeMirror(
   // `nodeMirrorReady` gates it too (see controller.ts).
   const processes: SqlProcessSlices = await buildProcessSlices(engine, perf);
 
+  // The directory census runs first, ahead of every insert: it is a pure pass
+  // over the graph (no engine), and `_dune_node.dir_id` comes out of it. Only
+  // the census moves up - RAW_DIR_TABLE itself is still built last, because its
+  // duration rollup has to read the timing table.
+  const dirs = measureSync(perf, `sql: ${DIR_TABLE} census`, (p) => {
+    const census = censusDirs(graph);
+    p.rows(census.tree.size);
+    return census;
+  });
+
   // The raw/plain tables (chunked inserts; pre-dropped for idempotent reload).
   // `node_id` / `id` are declared INTEGER PRIMARY KEY, i.e. they *are* the
   // rowid, so every lookup and join on them is already a primary-key hit and
@@ -981,9 +1023,9 @@ export async function buildNodeMirror(
     engine,
     RAW_NODE_TABLE,
     'node_id INTEGER PRIMARY KEY, orig_id INTEGER, ' +
-      'forced_by_kind INTEGER, forced_by_target_id INTEGER',
-    ['node_id', 'orig_id', 'forced_by_kind', 'forced_by_target_id'],
-    nodeRows(graph),
+      'forced_by_kind INTEGER, forced_by_target_id INTEGER, dir_id INTEGER',
+    ['node_id', 'orig_id', 'forced_by_kind', 'forced_by_target_id', 'dir_id'],
+    nodeRows(graph, dirs),
     opts,
   );
   const rawRuleTable = await materializeTable(
@@ -1040,14 +1082,10 @@ export async function buildNodeMirror(
     p.rows(2 * targets.count);
   });
 
-  // The directory tier (see the file header and dir_tree.ts). Last of the raw
-  // tables because its duration rollup reads the timing table, and because it is
-  // the one table built from a *query's* result as well as from the graph.
-  const dirs = measureSync(perf, `sql: ${DIR_TABLE} census`, (p) => {
-    const census = censusDirs(graph);
-    p.rows(census.tree.size);
-    return census;
-  });
+  // The directory table itself (see the file header and dir_tree.ts). Last of
+  // the raw tables because its duration rollup reads the timing table, and
+  // because it is the one table built from a *query's* result as well as from
+  // the graph. Its census already ran, above.
   const selfDurNs = await ruleDurationsByDir(engine, graph, dirs, opts);
   const rawDirTable = await materializeTable(
     engine,
@@ -1091,6 +1129,7 @@ export async function buildNodeMirror(
         label STRING,
         forced_by_kind STRING,
         forced_by_target STRING,
+        dir_id LONG,
         ts LONG,
         dur_ns LONG,
         n_occurrences LONG
@@ -1104,6 +1143,7 @@ export async function buildNodeMirror(
             THEN cast(n.forced_by_target_id AS TEXT)
           ELSE coalesce(fs.str, '#' || n.forced_by_target_id)
         END AS forced_by_target,
+        n.dir_id,
         s.ts AS ts, t.dur_ns AS dur_ns, t.occurrence_count AS n_occurrences
       FROM ${RAW_NODE_TABLE} n
       ${labelJoin('n', 'ls', space)}
