@@ -225,28 +225,41 @@ export class FilteredTree {
   }
 
   /**
-   * Every directory id that has to be expanded for `limit` rows' worth of the
-   * tree to be on screen, or undefined when that would take more than `limit`.
+   * The id of the row that *displays* directory `dirId`, or undefined when
+   * nothing matching is under it and so it has no row at all.
    *
-   * Undefined rather than a truncated set, because a half-expanded tree is worse
-   * than a collapsed one: the user cannot tell which unexpanded branches were
-   * left alone because they hold nothing and which because the budget ran out.
-   * The caller shows the collapsed tree and its match counts instead.
-   *
-   * The budget counts *directories to expand*, not matches: a pattern hitting
-   * 50,000 deps in three directories should expand, and one hitting 200 deps
-   * across 200 directories should not.
+   * Not `dirId` itself, in general: compression means a row is keyed on the
+   * deepest directory of the run it swallowed, so `_build` may be displayed by
+   * the row for `_build/default/lib`. Well defined wherever the directory is
+   * visible, because a run is linear - descending from an ancestor of `dirId`
+   * passes through it and carries on to the same terminal that descending from
+   * `dirId` reaches.
    */
-  autoExpand(limit: number): Set<number> | undefined {
-    const expand = new Set<number>();
-    const walk = (row: FilteredRow): boolean => {
-      const children = this.childRows(row.dir.id, row.dir.path);
-      if (children.length === 0) return true;
-      if (expand.size >= limit) return false;
-      expand.add(row.dir.id);
-      return children.every((child) => walk(child));
-    };
-    return this.roots().every((root) => walk(root)) ? expand : undefined;
+  rowIdFor(dirId: number): number | undefined {
+    if (!this.hasMatch(dirId)) return undefined;
+    return this.rowFor(dirId, '').dir.id;
+  }
+
+  /**
+   * Re-keys a set of expanded directory ids onto this tree's rows, dropping the
+   * ones nothing matching is under any more.
+   *
+   * This is what lets a filter leave the tree where the user had it. Keeping the
+   * ids verbatim would not: compression re-decides which directory a row is
+   * keyed on, so an id that named a row before the filter can name a swallowed
+   * directory after it, and the row that swallowed it would render collapsed.
+   *
+   * The result stays closed upward - a row is only reachable when every row
+   * above it is expanded - because compression only ever merges runs, so the
+   * images of an id's ancestors are the ancestors of its image.
+   */
+  remapExpanded(dirIds: Iterable<number>): Set<number> {
+    const out = new Set<number>();
+    for (const id of dirIds) {
+      const row = this.rowIdFor(id);
+      if (row !== undefined) out.add(row);
+    }
+    return out;
   }
 
   /**

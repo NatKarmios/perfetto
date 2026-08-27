@@ -99,22 +99,6 @@ import {bulkNodeActions} from './node_tree_actions';
 const TOP_LEVEL_LABEL = '(top level)';
 
 /**
- * How many directories a filter may auto-expand before the tree is left
- * collapsed instead.
- *
- * A filter that narrows to a handful of places should show them without further
- * clicking; one that still matches half the build should not dump half the
- * hierarchy on screen. The budget counts *directories to expand* rather than
- * matches, because expanding is per-directory: a pattern hitting 50,000 deps in
- * three directories is worth expanding and one hitting 200 deps across 200
- * directories is not.
- *
- * The value is a guess, not a measurement - it wants trying against a real
- * monorepo trace and moving.
- */
-const AUTO_EXPAND_LIMIT = 50;
-
-/**
  * The "at least this long" thresholds offered, in nanoseconds.
  *
  * Presets rather than a number box: the useful question is an order of magnitude
@@ -189,9 +173,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // pair with it anyway.
   private readonly show: Record<NodeKind, boolean> = {rule: true, dep: true};
 
-  // Expanded rows, by `rowKey`. Absent = collapsed, which is the initial state
-  // for every row including the roots' children.
-  private readonly expanded = new Set<string>();
+  // Expanded rows, by `dirKey` / `bucketKey`. Absent = collapsed, which is the
+  // initial state for every row including the roots' children. Survives a filter
+  // change, re-keyed onto the new rows - see `apply`.
+  private expanded = new Set<string>();
 
   private readonly children = new Map<number, ChildState>();
   // Keyed by `memberKey`: a directory plus which kinds are being asked for.
@@ -334,10 +319,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   /**
    * Applies whatever is in the box: three queries, then the tree.
    *
-   * Auto-expansion is all-or-nothing (see `FilteredTree.autoExpand`). When the
-   * filter narrows to few enough places, every ancestor chain is opened so the
-   * matches are simply on screen; when it does not, the tree is left as the user
-   * had it and the per-directory match counts are what guide the next click.
+   * Whatever was expanded stays expanded, re-keyed onto the new rows: a filter
+   * narrows what is on screen without moving the user somewhere else. Nothing is
+   * opened for them - the per-directory match counts are what say where to look
+   * next.
    */
   /**
    * The attribute filters, as a popup menu.
@@ -568,10 +553,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * Replaces the active filter and rebuilds the tree: up to three queries, then
    * the rollup.
    *
-   * Auto-expansion is all-or-nothing (see `FilteredTree.autoExpand`). When the
-   * filter narrows to few enough places, every ancestor chain is opened so the
-   * matches are simply on screen; when it does not, the tree is left as the user
-   * had it and the per-directory match counts are what guide the next click.
+   * Whatever was expanded stays expanded, re-keyed onto the new rows: a filter
+   * narrows what is on screen without moving the user somewhere else. Nothing is
+   * opened for them - the per-directory match counts are what say where to look
+   * next.
    */
   private apply(attrs: DirExplorerPanelAttrs, filter: MemberFilter): void {
     if (!filterActive(filter)) {
@@ -604,11 +589,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       // one (or under no filter) describes this view.
       this.children.clear();
       this.members.clear();
-      const expand = tree.autoExpand(AUTO_EXPAND_LIMIT);
-      if (expand !== undefined) {
-        this.expanded.clear();
-        for (const id of expand) this.expanded.add(`dir:${id}`);
-      }
+      this.expanded = remapKeys(this.expanded, tree);
     })()
       .catch((e) => {
         this.filterError = `Could not apply the filter: ${errorText(e)}`;
@@ -778,7 +759,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     dir: DirEntry,
     parentPath: string,
   ): m.Children {
-    const key = `dir:${dir.id}`;
+    const key = dirKey(dir.id);
     const open = this.expanded.has(key);
     const kinds = this.memberKinds(dir);
     const memberCount = this.visibleMemberCount(dir);
@@ -957,7 +938,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     dir: DirEntry,
     kind: NodeKind,
   ): m.Children {
-    const key = `bucket:${dir.id}:${kind}`;
+    const key = bucketKey(dir.id, kind);
     const open = this.expanded.has(key);
     const count = this.shownCount(dir, kind);
     return m(
@@ -1111,7 +1092,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       return;
     }
     this.expanded.delete(key);
-    const dirId = Number(key.slice(key.indexOf(':') + 1).split(':')[0]);
+    const dirId = dirIdOfKey(key);
     if (this.children.get(dirId)?.error !== undefined) {
       this.children.delete(dirId);
     }
@@ -1294,6 +1275,50 @@ export function strippedDepLabel(
   // dir_tree.ts's `segName` and path_tree.ts's leaves follow.
   const stripped = sep === '@' ? `@${rest}` : rest;
   return stripped === '' ? undefined : stripped;
+}
+
+/**
+ * Row keys. A directory row and its per-kind buckets are separate collapsible
+ * rows of the same directory, so they need separate keys off the same id.
+ *
+ * Built through functions rather than inline templates because the expansion set
+ * has to be *re-keyed* when a filter changes which directory a row is keyed on
+ * (see {@link remapKeys}), which means parsing them back again.
+ */
+function dirKey(id: number): string {
+  return `dir:${id}`;
+}
+
+function bucketKey(id: number, kind: NodeKind): string {
+  return `bucket:${id}:${kind}`;
+}
+
+// The directory id a row key names.
+function dirIdOfKey(key: string): number {
+  return Number(key.slice(key.indexOf(':') + 1).split(':')[0]);
+}
+
+/**
+ * Re-keys an expansion set onto a filtered tree's rows, so that applying or
+ * changing a filter leaves the tree where the user had it.
+ *
+ * Both kinds of key move: compression re-decides which directory carries a row,
+ * so `dir:<_build>` can become `dir:<_build/default/lib>` and a bucket travels
+ * with its directory. Keys whose directory has nothing matching under it any more
+ * are dropped rather than kept as dead entries.
+ */
+function remapKeys(keys: ReadonlySet<string>, tree: FilteredTree): Set<string> {
+  const out = new Set<string>();
+  for (const key of keys) {
+    const row = tree.rowIdFor(dirIdOfKey(key));
+    if (row === undefined) continue;
+    if (key.startsWith('bucket:')) {
+      out.add(bucketKey(row, key.slice(key.lastIndexOf(':') + 1) as NodeKind));
+    } else {
+      out.add(dirKey(row));
+    }
+  }
+  return out;
 }
 
 function errorText(e: unknown): string {

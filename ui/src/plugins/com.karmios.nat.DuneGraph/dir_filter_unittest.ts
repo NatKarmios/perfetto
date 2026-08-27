@@ -259,67 +259,93 @@ describe('FilteredTree compression', () => {
   });
 });
 
-describe('FilteredTree.autoExpand', () => {
-  it('returns every ancestor of every match when it fits', () => {
+describe('FilteredTree.rowIdFor', () => {
+  it('names the row that swallowed a directory, not the directory', () => {
+    // The reason a plain expansion set cannot be carried across a filter change:
+    // `a` and `a/b` are both displayed by the row for `a/b/c/leaf`.
     const d = dirs([
-      ['a/x', 0, 1],
-      ['a/y', 0, 1],
+      ['a/b/c/leaf', 0, 3],
+      ['a/other', 0, 3],
+    ]);
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c/leaf': 2}));
+    const leaf = idFor(d, 'a/b/c/leaf');
+    for (const path of ['a', 'a/b', 'a/b/c', 'a/b/c/leaf']) {
+      expect([path, tree.rowIdFor(idFor(d, path))]).toEqual([path, leaf]);
+    }
+  });
+
+  it('is itself for a directory that carries its own row', () => {
+    const d = dirs([
+      ['a/x', 0, 2],
+      ['a/y', 0, 2],
     ]);
     const tree = new FilteredTree(
       d,
       new Map(),
       countsAt(d, {'a/x': 1, 'a/y': 1}),
     );
-    // `a` has to be open for `x` and `y` to be on screen; the leaves do not.
-    const expand = tree.autoExpand(10);
-    expect(expand).toEqual(new Set([idFor(d, 'a')]));
+    const a = idFor(d, 'a');
+    expect(tree.rowIdFor(a)).toBe(a);
   });
 
-  it('needs no expansion at all when compression got there first', () => {
-    // Each of these is a single chain down to its one match, so the compression
-    // pass turns each root into one row and there is nothing left to open. Worth
-    // pinning: it is the case where the budget is irrelevant, and an empty set
-    // here must not be confused with the give-up answer below.
-    const spec = Array.from(
-      {length: 12},
-      (_, i) => [`root${i}/sub/leaf`, 0, 1] as const,
+  it('has no row for a directory with nothing matching under it', () => {
+    const d = dirs([
+      ['a/keep', 0, 1],
+      ['a/drop', 0, 1],
+    ]);
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/keep': 1}));
+    expect(tree.rowIdFor(idFor(d, 'a/drop'))).toBeUndefined();
+  });
+});
+
+describe('FilteredTree.remapExpanded', () => {
+  it('keeps a directory open through the row it became', () => {
+    // What makes a filter narrow the tree without moving the user: `a` was
+    // expanded, and after filtering `a` is displayed by `a/b/c/leaf`, so that
+    // row is the one that should be open.
+    const d = dirs([
+      ['a/b/c/leaf', 0, 3],
+      ['a/other', 0, 3],
+    ]);
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c/leaf': 2}));
+    expect(tree.remapExpanded([idFor(d, 'a')])).toEqual(
+      new Set([idFor(d, 'a/b/c/leaf')]),
     );
-    const d = dirs(spec);
+  });
+
+  it('collapses several expanded directories onto one row', () => {
+    // Every directory of a collapsed run maps to the same row, so a set that
+    // held all of them comes back as one entry rather than duplicates.
+    const d = dirs([['a/b/c/leaf', 0, 1]]);
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b/c/leaf': 1}));
+    const all = ['a', 'a/b', 'a/b/c'].map((p) => idFor(d, p));
+    expect(tree.remapExpanded(all).size).toBe(1);
+  });
+
+  it('drops what the filter removed', () => {
+    const d = dirs([
+      ['a/keep', 0, 1],
+      ['b/gone', 0, 1],
+    ]);
+    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/keep': 1}));
+    const remapped = tree.remapExpanded([idFor(d, 'a'), idFor(d, 'b')]);
+    expect(remapped.has(idFor(d, 'b'))).toBe(false);
+    expect(remapped.size).toBe(1);
+  });
+
+  it('leaves an unaffected expansion alone', () => {
+    // Nothing compressed and nothing removed, so the set comes back unchanged -
+    // the common case when only an attribute filter changed.
+    const d = dirs([
+      ['a/x', 0, 2],
+      ['a/y', 0, 2],
+    ]);
     const tree = new FilteredTree(
       d,
       new Map(),
-      countsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
+      countsAt(d, {'a/x': 1, 'a/y': 1}),
     );
-    expect(tree.autoExpand(1)).toEqual(new Set());
-  });
-
-  it('gives up rather than half-expanding', () => {
-    // A half-expanded tree is worse than a collapsed one: the user cannot tell
-    // which unopened branches hold nothing from which ran out of budget. Two
-    // matching leaves per root, so every root is a real branch point and has to
-    // be opened for its matches to show.
-    const spec = Array.from({length: 12}, (_, i) => i).flatMap(
-      (i) =>
-        [
-          [`root${i}/x`, 0, 1],
-          [`root${i}/y`, 0, 1],
-        ] as const,
-    );
-    const d = dirs(spec);
-    const tree = new FilteredTree(
-      d,
-      new Map(),
-      countsAt(d, Object.fromEntries(spec.map(([p]) => [p, 1]))),
-    );
-    expect(tree.autoExpand(3)).toBeUndefined();
-    expect(tree.autoExpand(100)?.size).toBe(12);
-  });
-
-  it('is budgeted on directories, not on matches', () => {
-    // 50,000 matches in one place should expand; the budget is about how much
-    // tree appears, not how much matched.
-    const d = dirs([['a/b', 0, 50_000]]);
-    const tree = new FilteredTree(d, new Map(), countsAt(d, {'a/b': 50_000}));
-    expect(tree.autoExpand(1)).not.toBeUndefined();
+    const a = idFor(d, 'a');
+    expect(tree.remapExpanded([a])).toEqual(new Set([a]));
   });
 });
