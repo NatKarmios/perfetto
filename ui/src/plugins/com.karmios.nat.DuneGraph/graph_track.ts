@@ -183,6 +183,11 @@ export function createGraphTrackRenderer(
     trace,
     uri: spec.uri,
     dataset,
+    // Every track opens folded: its rows are one kind of thing, so depth 0 is
+    // a real row and the fold gives a readable summary rather than slivers of
+    // nothing. The track shell's own button expands it (see slice_track.ts's
+    // getTrackShellButtons).
+    sliceLayout: {collapsed: true},
     // Deliberately no rootTableName: resolveSqlEvents() would then also match
     // these tracks for plain "slice" ids, racing with a node's original track
     // (see controller.ts's goToNode()).
