@@ -30,6 +30,7 @@ import type {
   OutRef,
 } from './graph';
 import {
+  basename,
   decorateDepPath,
   decorateNode,
   depResolutionLabel,
@@ -45,6 +46,7 @@ import {
   nodesInGroup,
   nodeToggleButton,
 } from './node_tree_actions';
+import type {ProcessDetails} from './process_sql';
 import type {PathTreeItem, PathTreeLeaf} from './path_tree';
 import {buildPathTree} from './path_tree';
 import {PathTreeView} from './path_tree_view';
@@ -74,10 +76,12 @@ interface Ref {
  * empty state when the selection isn't a build-dep / exec-rule slice. Reads the
  * selection off the controller each render (selection is poll-based).
  *
- * The body is two lists - `dependencies` (nodes this one depends on) and
- * `dependants` (nodes that depend on this one) - each a union of the node's own
- * referenced ids and the graph's accrued edges, with forced edges marked by a
- * leading icon.
+ * The body is three accordion sections. `processes` leads (and is a rule's only
+ * - see `renderProcesses`): what the rule actually *ran* is the concrete answer,
+ * where the two graph lists are for navigating outwards from it. Those two are
+ * `dependants` (nodes that depend on this one) and `dependencies` (nodes this
+ * one depends on), each a union of the node's own referenced ids and the graph's
+ * accrued edges, with forced edges marked by a leading icon.
  */
 export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAttrs> {
   // Collapse state for the dependants/dependencies path-tree groups, keyed by
@@ -86,6 +90,14 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // re-rendered on a selection poll rather than remounted, so this can't just
   // live in the constructor).
   private collapsed = new Set<string>();
+  // Disclosure state for the processes list, keyed `proc:<sliceId>` /
+  // `proc-args:<sliceId>`. A second set rather than more keys in `collapsed`
+  // because it defaults the other way round: a directory group is open until
+  // folded, while a process entry is *closed* until opened - a rule's few
+  // processes read as a list of command lines, and the full path / cwd / argv
+  // behind each are what you go looking for. Reset with `collapsed`, and for
+  // the same reason.
+  private expanded = new Set<string>();
   private selectionKey?: string;
   // The selected node's timing, which lives in SQL rather than on the node
   // (see lifecycle_sql.ts) and so has to be fetched. Keyed by the node *and*
@@ -93,12 +105,18 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // mid-load picks its timing up as soon as the mirror lands.
   private timingKey?: string;
   private timing?: NodeTiming;
+  // The processes the selected rule spawned, fetched and keyed exactly like the
+  // timing above (and undefined for a dep, which forces no process - a process
+  // names the rule that pulled it in and nothing else).
+  private processesKey?: string;
+  private processes?: readonly ProcessDetails[];
 
   view({attrs}: m.CVnode<SelectionInfoPanelAttrs>): m.Children {
     const {controller} = attrs;
     const selected = controller.nodeForSelection();
     if (selected === undefined) {
       this.collapsed.clear();
+      this.expanded.clear();
       this.selectionKey = undefined;
       return m(EmptyState, {
         icon: 'info',
@@ -108,6 +126,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     const selectionKey = String(selected);
     if (selectionKey !== this.selectionKey) {
       this.collapsed.clear();
+      this.expanded.clear();
       this.selectionKey = selectionKey;
     }
     this.fetchTiming(controller, selected, selectionKey);
@@ -115,6 +134,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     // lines below want every scalar the node has, and there is exactly one of
     // them on screen (see graph.ts's GraphNode).
     const node = controller.graph.node(selected);
+    this.fetchProcesses(controller, node, selectionKey);
     const dependants = this.dependants(controller, selected);
     return m(
       '.pf-dune-graph__info',
@@ -125,12 +145,19 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       m(
         Accordion,
         {multi: true},
-        this.renderRefs(controller, 'Dependants', dependants),
-        this.renderRefs(
-          controller,
-          'Dependencies',
-          this.dependencies(controller, selected),
-        ),
+        // Keyed, and the holes filtered out: the Processes section comes and
+        // goes (rules only, and only once its query lands), so without keys
+        // mithril would match an `AccordionSection` to whichever section now
+        // sits in its old position and hand it that one's open/closed state.
+        [
+          this.renderProcesses(controller),
+          this.renderRefs(controller, 'Dependants', dependants),
+          this.renderRefs(
+            controller,
+            'Dependencies',
+            this.dependencies(controller, selected),
+          ),
+        ].filter((section) => section !== undefined),
       ),
     );
   }
@@ -150,6 +177,27 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     void controller.timingFor(node).then((timing) => {
       if (this.timingKey !== key) return; // selection moved on meanwhile
       this.timing = timing;
+      controller.requestRedraw();
+    });
+  }
+
+  // The same shape as fetchTiming(), for the selected rule's processes. A dep
+  // is short-circuited here rather than in the controller so that the key still
+  // moves with the selection - otherwise a dep selected after a rule would keep
+  // showing the rule's processes.
+  private fetchProcesses(
+    controller: DuneGraphController,
+    node: GraphNode,
+    selectionKey: string,
+  ): void {
+    const key = `${selectionKey}|${controller.nodeMirrorReady}`;
+    if (this.processesKey === key) return;
+    this.processesKey = key;
+    this.processes = undefined;
+    if (node.kind !== 'rule') return;
+    void controller.processesForRule(node.nodeId).then((processes) => {
+      if (this.processesKey !== key) return; // selection moved on meanwhile
+      this.processes = processes;
       controller.requestRedraw();
     });
   }
@@ -392,7 +440,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     const tree = buildPathTree(refs.map(refPathItem));
     return m(
       AccordionSection,
-      {summary: `${title} (${refs.length})`, defaultOpen: true},
+      {key: title, summary: `${title} (${refs.length})`, defaultOpen: true},
       refs.length === 0
         ? m('.pf-dune-graph__refs-empty', 'None')
         : m(PathTreeView<Ref>, {
@@ -440,6 +488,158 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       ),
       ref.node !== undefined && nodeToggleButton(controller, ref.node),
     );
+  }
+
+  /**
+   * The processes the selected rule is responsible for, as a third accordion
+   * section - one collapsible entry each.
+   *
+   * Rules only, and only when there are any: a dep spawns nothing (see
+   * fetchProcesses), and a trace whose dune doesn't emit the `forced_by` arg has
+   * no process slices at all, which is still the common case - an empty
+   * "Processes (0)" would then sit under every rule saying nothing. The section
+   * is likewise absent while the fetch is in flight rather than shown empty and
+   * then filled, since a rule forces at most a handful of processes and the
+   * query is one round trip.
+   */
+  private renderProcesses(controller: DuneGraphController): m.Children {
+    const processes = this.processes;
+    if (processes === undefined || processes.length === 0) return undefined;
+    // Which entry the reader arrived on, when they got here by clicking a
+    // process slice. Read once per render rather than per entry.
+    const selectedSlice = controller.selectedProcessSlice();
+    return m(
+      AccordionSection,
+      {
+        key: 'processes',
+        summary: `Processes (${processes.length})`,
+        defaultOpen: true,
+      },
+      processes.map((p) => this.renderProcess(controller, p, selectedSlice)),
+    );
+  }
+
+  // One process: a header that is always visible, and a body that isn't. Both
+  // halves fold on the panel's own `expanded` set rather than on a nested
+  // AccordionSection's component-local state, so that a stale "open" can't leak
+  // onto a different rule's entry when mithril reuses the component by position
+  // - the set is cleared whenever the selection changes.
+  private renderProcess(
+    controller: DuneGraphController,
+    p: ProcessDetails,
+    selectedSlice: number | undefined,
+  ): m.Children {
+    const key = `proc:${p.sliceId}`;
+    const open = this.expanded.has(key);
+    return m(
+      '.pf-dune-graph__proc',
+      m(
+        '.pf-dune-graph__proc-header',
+        {
+          // The slice this panel was reached through, so it is obvious which of
+          // the rule's processes you came in on.
+          className:
+            p.sliceId === selectedSlice
+              ? 'pf-dune-graph__proc-header--selected'
+              : undefined,
+          // The whole command, since the visible text is ellipsised.
+          title: commandLine(p),
+          onclick: () => this.toggleExpanded(key),
+        },
+        m(Icon, {
+          icon: open ? 'expand_more' : 'chevron_right',
+          className: 'pf-dune-tree__group-caret',
+        }),
+        m('span.pf-dune-graph__proc-command', commandLine(p)),
+        p.exitCode !== undefined &&
+          p.exitCode !== 0 &&
+          m(
+            'span.pf-dune-graph__proc-exit',
+            {title: `Exited with status ${p.exitCode}`},
+            `exit ${p.exitCode}`,
+          ),
+        p.durNs !== undefined &&
+          m('span.pf-dune-graph__status-dur', formatDurNs(p.durNs)),
+      ),
+      open && this.renderProcessBody(controller, p),
+    );
+  }
+
+  private renderProcessBody(
+    controller: DuneGraphController,
+    p: ProcessDetails,
+  ): m.Children {
+    return m(
+      '.pf-dune-graph__proc-body',
+      // Ordered by how often it is what you came for: how long it took, what
+      // ran, with which arguments - then the two that are usually the same for
+      // every process of a build (cwd) or unremarkable (a zero exit).
+      p.durNs !== undefined &&
+        this.renderProcField('duration', formatDurNs(p.durNs)),
+      // The program's full path, decorated the way every other path in this
+      // panel is (a `_build/` prefix folded into an icon tooltip).
+      p.prog !== undefined && this.renderProcField('prog', decorated(p.prog)),
+      this.renderProcArgs(p),
+      p.dir !== undefined && this.renderProcField('dir', decorated(p.dir)),
+      p.exitCode !== undefined &&
+        this.renderProcField('exit', String(p.exitCode)),
+      m(
+        '.pf-dune-graph__proc-link',
+        m(
+          Anchor,
+          {
+            icon: Icons.UpdateSelection,
+            title: 'Select on the timeline',
+            onclick: () => void controller.goToProcessSlice(p.sliceId),
+          },
+          'Go to slice',
+        ),
+      ),
+    );
+  }
+
+  // One `label: value` line of a process's body, matching the muted `dir` /
+  // `action` lines under the panel header.
+  private renderProcField(label: string, value: m.Children): m.Children {
+    return m(
+      '.pf-dune-graph__proc-field',
+      m('span.pf-dune-graph__dir-label', label),
+      m('span.pf-dune-graph__proc-value', value),
+    );
+  }
+
+  // The process's argv, itself collapsible: one argument per line, which is the
+  // only readable form for the long ones (up to ~90 arguments on a real build,
+  // several of them paths). Absent for a program invoked with none.
+  private renderProcArgs(p: ProcessDetails): m.Children {
+    if (p.args.length === 0) return undefined;
+    const key = `proc-args:${p.sliceId}`;
+    const open = this.expanded.has(key);
+    return m(
+      '.pf-dune-graph__proc-args',
+      m(
+        '.pf-dune-tree__group-header',
+        {onclick: () => this.toggleExpanded(key)},
+        m(Icon, {
+          icon: open ? 'expand_more' : 'chevron_right',
+          className: 'pf-dune-tree__group-caret',
+        }),
+        `args (${p.args.length})`,
+      ),
+      open &&
+        m(
+          '.pf-dune-graph__proc-arg-list',
+          p.args.map((arg) => m('.pf-dune-graph__proc-arg', arg)),
+        ),
+    );
+  }
+
+  // Flips one `expanded` key. The mirror image of the path tree's
+  // `onToggleGroup`, which flips a `collapsed` one - see `expanded`'s comment
+  // for why the processes list defaults the other way.
+  private toggleExpanded(key: string): void {
+    if (this.expanded.has(key)) this.expanded.delete(key);
+    else this.expanded.add(key);
   }
 
   // Nodes this one depends on (its outgoing edges): a rule's static + dynamic
@@ -531,4 +731,25 @@ function nodeLink(
 function refPathItem(ref: Ref): PathTreeItem<Ref> {
   const {dir: dirSegs, leaf} = nodePathParts(ref.kind, ref.label, ref.dir);
   return {dir: dirSegs, leaf, item: ref};
+}
+
+// A process's command line as one string: the program's *filename* followed by
+// its arguments. The program's directory is dropped here (`ocamlc.opt`, not
+// `/nix/store/…/bin/ocamlc.opt`) because it is the same for every process of a
+// build and would push the arguments - the half that distinguishes one process
+// from another - off the end of the line. The full path is in the entry's body,
+// and the whole of this string is on the header's tooltip.
+//
+// Not shell-quoted: an argument is shown as dune passed it, so this reads as a
+// command but is not one to paste.
+function commandLine(p: ProcessDetails): string {
+  const prog = basename(p.prog) ?? 'process';
+  return p.args.length === 0 ? prog : `${prog} ${p.args.join(' ')}`;
+}
+
+// A path as the rest of the panel renders one: the leading build/code icon with
+// any `_build/<dir>/` prefix folded into its tooltip, then the remainder.
+function decorated(path: string): m.Children {
+  const {icon, text} = decorateDepPath(path);
+  return [icon, text];
 }

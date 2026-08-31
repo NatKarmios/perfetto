@@ -369,6 +369,117 @@
     color: var(--pf-color-text-muted);
   }
 
+  // One process the selected rule spawned (see selection_info_panel.ts): a
+  // header that is always visible, and a body that folds. Divided like the
+  // `__ref` rows above so the two lists read as the same kind of list.
+  &__proc {
+    display: flex;
+    flex-direction: column;
+
+    &:not(:last-child) {
+      border-bottom: 1px solid var(--pf-color-border);
+    }
+  }
+
+  &__proc-header {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 0;
+    cursor: pointer;
+    // The command must ellipsize rather than wrap: with the caret, the exit
+    // chip and the duration all shrink-proof, the line stays one row high
+    // however long the argv is. The full text is on the row's tooltip.
+    overflow: hidden;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+
+    // The duration (`__status-dur`, shared with the header's status chips) has
+    // no width rule of its own; keep it whole and let the command give way.
+    > .pf-dune-graph__status-dur {
+      flex-shrink: 0;
+    }
+  }
+
+  // The process whose slice is the current timeline selection - i.e. the one
+  // that brought the reader to this panel.
+  &__proc-header--selected {
+    font-weight: 700;
+  }
+
+  // The command is the row's content, so it keeps the normal text colour while
+  // the caret and the trailing duration stay muted like the header around them.
+  &__proc-command {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-family: monospace;
+    color: var(--pf-color-text);
+  }
+
+  // A non-zero exit status, chipped like the header's status labels but in the
+  // danger colour - a failed process is the thing you are looking for.
+  &__proc-exit {
+    flex-shrink: 0;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: var(--pf-color-danger);
+    border: 1px solid var(--pf-color-danger);
+  }
+
+  &__proc-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    // Indented and rule-divided like `.pf-dune-tree__children`, so nesting
+    // reads the same here as in the path trees.
+    margin: 0 0 4px 6px;
+    padding-left: 6px;
+    border-left: 1px solid var(--pf-color-border);
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
+
+  &__proc-field {
+    display: flex;
+    align-items: baseline;
+  }
+
+  &__proc-value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-family: monospace;
+  }
+
+  &__proc-args {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__proc-arg-list {
+    display: flex;
+    flex-direction: column;
+    margin-left: 6px;
+    padding-left: 6px;
+    border-left: 1px solid var(--pf-color-border);
+  }
+
+  // One argument per line: they are frequently paths, and wrapping them into a
+  // single flowing string is what makes a long argv unreadable.
+  &__proc-arg {
+    font-family: monospace;
+    overflow-wrap: anywhere;
+  }
+
+  &__proc-link {
+    padding-top: 2px;
+  }
+
   // The graph view (area 2): a toolbar over a pannable/zoomable SVG canvas.
   &__graph {
     flex: 1;
