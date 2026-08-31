@@ -188,7 +188,9 @@
  *   (`graph_reachable_bfs!`, the distance query) and nothing else.
  * - `_dune_process(slice_id, rule_id)` — the trace's process slices, indexed by
  *   the rule that forced them. Not derived from the graph at all; owned by the
- *   node tier only so it shares its lifetime. See process_sql.ts.
+ *   node tier only so it shares its lifetime. Read in both directions off the
+ *   mirror handle - `ruleNodeForProcessSlice` and `processesForRule` - as well
+ *   as by the timeline track. See process_sql.ts.
  * - `dune_process(slice_id, ts, dur_ns, rule_id, node_id)` — a typed PERFETTO
  *   VIEW over it, one row per spawned process: its slice as a
  *   `JOINID(slice.id)`, that slice's `ts`/`dur` verbatim, the `rule_id` its
@@ -247,7 +249,7 @@ import {
 } from './lifecycle_sql';
 import type {Phase, PerfRun} from './perf';
 import {measure, measureSync} from './perf';
-import type {SqlProcessSlices} from './process_sql';
+import type {ProcessDetails, SqlProcessSlices} from './process_sql';
 import {
   PROCESS_INDEX_PHASE,
   PROCESS_TABLE,
@@ -570,6 +572,11 @@ export interface SqlNodeMirror extends AsyncDisposable {
   // keys its rows by slice id, so this is how one resolves back to a node (see
   // graph_track.ts, controller.ts).
   ruleNodeForProcessSlice(sliceId: number): Promise<NodeId | undefined>;
+
+  // Every process a rule node's action spawned, with what it ran - the inverse
+  // of the above, and the graph-side face of `processesForRuleId`. Empty for a
+  // dep node: a process names the *rule* that forced it, and nothing else.
+  processesForRule(id: NodeId): Promise<readonly ProcessDetails[]>;
 
   // The node's lifecycle timing, read on demand - timing is no longer carried
   // on the node (see lifecycle_sql.ts). One query per call, so this is for the
@@ -1467,6 +1474,14 @@ export async function buildNodeMirror(
     ): Promise<NodeId | undefined> {
       const ruleId = await processes.ruleIdForSliceId(sliceId);
       return ruleId === undefined ? undefined : graph.nodeForRuleId(ruleId);
+    },
+
+    async processesForRule(id: NodeId): Promise<readonly ProcessDetails[]> {
+      if (!graph.has(id) || !graph.isRule(id)) return [];
+      // `timingKeyOf` is a rule node's own `rule_id` - the same id space the
+      // `dune.forced_by` arg names, verified end to end on merlin's trace (see
+      // process_sql.ts).
+      return processes.processesForRuleId(graph.timingKeyOf(id));
     },
 
     async timingFor(id: NodeId): Promise<NodeTiming> {
