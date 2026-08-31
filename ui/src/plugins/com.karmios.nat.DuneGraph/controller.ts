@@ -53,40 +53,56 @@ import {
 import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
 import type {Distances, SqlEdgeMirror, SqlNodeMirror} from './sql_graph';
-import {
-  EDGE_HARD_LIMIT,
-  EDGE_SOFT_LIMIT,
-  buildEdgeMirror,
-  buildNodeMirror,
-} from './sql_graph';
+import {EDGE_HARD_LIMIT, buildEdgeMirror, buildNodeMirror} from './sql_graph';
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 
 /**
- * Estimated-edge count below which the graph loads itself as soon as the trace
- * opens, rather than waiting for the user to ask (see {@link
- * DuneGraphController.init}). Above it, opening a trace costs nothing and the
- * side panel shows what a load would involve instead.
+ * The setting behind the one soft load gate: estimated stored edge rows below
+ * which the graph loads itself as soon as the trace opens, rather than waiting
+ * to be asked (see {@link DuneGraphController.init}). Above it, opening a trace
+ * costs nothing and the side panel shows what a load would involve instead.
  *
  * The estimate comes from the blob's byte size, not from a parse (see
- * `GraphStats.estimatedEdgeRows`), so it's available before any expensive work
- * has happened.
+ * `GraphStats.estimatedEdgeRows`), so it is available before any expensive work
+ * has happened - which is what makes it the *only* number the user is asked
+ * about. There used to be two: this one, and a post-parse soft cap on the edge
+ * tier, so a large trace was asked once whether to load and then again whether
+ * to pay for the edge tables. Rows win the merge on both counts. They are the
+ * only quantity observable before any work is done, which is the only point at
+ * which a question is worth asking; and since dune started factoring dep sets
+ * they are also the better predictor of what the edge tier costs, because the
+ * tier stores far fewer rows than the graph has edges (6.33M against 28.8M on
+ * the monorepo trace) and byte sizes can only predict the former. So the edge
+ * tier's soft cap is gone rather than converted: its job - don't pay for the
+ * tier unasked - is done strictly better by a gate that fires before the graph
+ * is even parsed. Only the *hard* cap still counts edges (see sql_graph.ts's
+ * EDGE_HARD_LIMIT), because it is a memory ceiling rather than a question and
+ * it is consulted when the exact count is known.
  *
- * It is counted in *stored rows*, which is why this is its own number rather
- * than the edge tier's `EDGE_SOFT_LIMIT`: since dune started factoring dep sets
- * the tier stores far fewer rows than the graph has edges (6.33M against 28.8M
- * on the monorepo trace), and byte sizes can only predict the former. The two
- * caps still count edges, because by the time they are consulted the graph is
- * parsed and the exact edge count is known.
+ * The id lives here rather than in index.ts, which registers it, so that the
+ * gate and its default read together; index.ts imports both. The value is read
+ * live on every access (see {@link DuneGraphController.autoLoadEdgeRowLimit}),
+ * so an edit shows up on the next frame everywhere the limit is displayed. Only
+ * the auto-start decision in `init()` is one-shot, which is why the setting's
+ * description says it takes effect the next time a trace is opened.
+ */
+export const AUTO_LOAD_ROW_LIMIT_SETTING =
+  'com.karmios.nat.DuneGraph#autoLoadEdgeRowLimit';
+
+/**
+ * What that setting ships as, and the value used when it isn't registered at
+ * all (a controller built in a unit test).
  *
  * 2M rows is ~6 s of edge tier in the wasm engine, on the 18.9 s / 6.33M
- * measurement in `PERF_SUMMARY.LOCAL.md` - a few seconds is the same bar the
- * soft cap was originally set by. On the four sample traces this keeps the
- * decision exactly where it was, but with room to spare rather than by 10%: the
- * monorepo trace estimates 5.7M rows against the old estimate's 2.2M "edges"
- * versus a 2M limit, and the three small ones estimate 10k-27k.
+ * measurement in `PERF_SUMMARY.LOCAL.md` - a few seconds is the bar a load is
+ * worth starting unasked at, and it is the same bar the deleted edge cap was
+ * originally set by. On the four sample traces it puts the decision exactly
+ * where the two old gates agreed, but with room to spare rather than by 10%:
+ * the monorepo trace estimates 5.7M rows against the old estimate's 2.2M
+ * "edges", and the three small ones estimate 10k-27k.
  */
-const AUTO_LOAD_EDGE_ROW_LIMIT = 2_000_000;
+export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
 
 // How many slice ids `nodesForSliceIds` resolves per query.
 const SLICE_LOOKUP_BATCH = 5_000;
@@ -140,10 +156,14 @@ function errorMessage(e: unknown): string {
  * 1. `loadGraph()` - blob -> the in-memory {@link BuildGraph}.
  * 2. `buildNodeMirror()` - the cheap SQL tier (`dune_node` + detail).
  * 3. `buildEdgeMirror()` - the expensive SQL tier (`dune_edge` + the relation
- *    functions), one row per edge. Only step 3 is *not* part of `load()` on a
- *    large graph: past {@link EDGE_SOFT_LIMIT} edges it has to be asked for by
- *    name, and past {@link EDGE_HARD_LIMIT} it refuses (see
- *    {@link DuneGraphController.edgeTierIsCheap} / {@link DuneGraphController.edgeTierRefused}).
+ *    functions), stored factored across dep sets. Part of every `load()`: the
+ *    one question a large trace asks is whether to load at all, and it is asked
+ *    before the graph is parsed (see {@link AUTO_LOAD_ROW_LIMIT_SETTING}), so a
+ *    yes there buys all three steps. The only thing that stops step 3 is the
+ *    hard cap, which is a refusal rather than a prompt: past
+ *    {@link EDGE_HARD_LIMIT} edges the build would take the engine down, so
+ *    `load()` skips it and the panel explains why (see
+ *    {@link DuneGraphController.edgeTierRefused}).
  *
  * Each step is idempotent (already-`ready` is a no-op) and pulls in the steps
  * it depends on, so any of them can be called from cold. They all run through
@@ -729,12 +749,6 @@ export class DuneGraphController {
     return this.graph.edgeCount;
   }
 
-  // Whether the edge tier is small enough to build as part of a plain load
-  // rather than only when explicitly asked for.
-  get edgeTierIsCheap(): boolean {
-    return this.graphStep.ready && this.edgeCount <= EDGE_SOFT_LIMIT;
-  }
-
   // Whether the edge tier is so large that building it would take the trace
   // processor down - in which case asking for it refuses instead (see
   // sql_graph.ts's EDGE_HARD_LIMIT).
@@ -896,18 +910,25 @@ export class DuneGraphController {
   }
 
   // Whether a load of this trace would start by itself (see
-  // AUTO_LOAD_EDGE_ROW_LIMIT). False until the stats are in.
+  // AUTO_LOAD_ROW_LIMIT_SETTING). False until the stats are in.
   get autoLoads(): boolean {
     return (
       this.statsValue !== undefined &&
-      this.statsValue.estimatedEdgeRows <= AUTO_LOAD_EDGE_ROW_LIMIT
+      this.statsValue.estimatedEdgeRows <= this.autoLoadEdgeRowLimit
     );
   }
 
   // The point past which a load isn't started unprompted, so the panel can
-  // explain the decision in the same units the estimate is in.
+  // explain the decision in the same units the estimate is in. Read out of the
+  // setting on every access rather than cached - the house idiom, and it means
+  // an edit on the settings page is reflected the next time the panel draws.
+  // The fallback covers a controller built without the plugin having been
+  // activated, i.e. one in a unit test.
   get autoLoadEdgeRowLimit(): number {
-    return AUTO_LOAD_EDGE_ROW_LIMIT;
+    return (
+      this.trace.settings.get<number>(AUTO_LOAD_ROW_LIMIT_SETTING)?.get() ??
+      DEFAULT_AUTO_LOAD_ROW_LIMIT
+    );
   }
 
   // Whether any load step is currently running.
@@ -943,22 +964,27 @@ export class DuneGraphController {
   }
 
   /**
-   * The whole load: the graph, then the node tier, then - only when it's cheap
-   * (see {@link DuneGraphController.edgeTierIsCheap}) - the edge tier. What the panel's "Load
-   * graph" button runs. Steps that are already done are skipped, so this
-   * doubles as "finish whatever is missing".
+   * The whole load: the graph, then the node tier, then - unless the graph is
+   * past the hard cap (see {@link DuneGraphController.edgeTierRefused}) - the
+   * edge tier. What the panel's "Load graph" button runs. Steps that are
+   * already done are skipped, so this doubles as "finish whatever is missing".
    *
-   * The edge tier is one SQL row per *edge*, tens of millions of them on a
-   * monorepo-scale trace, so past the soft limit it is not part of a load at
-   * all: it has to be asked for by name (see {@link DuneGraphController.buildEdgeMirror}), and the
-   * panel says so. Everything except `dune_edge` and the relation functions
-   * works without it.
+   * All three, deliberately. Whether this trace is worth loading at all is
+   * decided once, before anything is parsed, against
+   * {@link AUTO_LOAD_ROW_LIMIT_SETTING}, and someone who has said yes to that
+   * has already agreed to the edge tier - being asked a second time about a
+   * cost the first answer covered is the thing this staging used to get wrong.
+   * The hard cap is not a second question: past it the tier would exhaust the
+   * trace processor whatever anyone answered, so it is skipped here rather than
+   * left to throw out of {@link DuneGraphController.buildEdgeMirror}, and the
+   * panel explains the refusal. Everything except `dune_edge` and the relation
+   * functions works without it.
    */
   load(): Promise<void> {
     return this.run('dune graph: load', async (perf) => {
       await this.doLoadGraph(perf);
       await this.doBuildNodeMirror(perf);
-      if (this.edgeTierIsCheap) await this.doBuildEdgeMirror(perf);
+      if (!this.edgeTierRefused) await this.doBuildEdgeMirror(perf);
     });
   }
 
@@ -995,7 +1021,7 @@ export class DuneGraphController {
       await measure(perf, 'drop previous mirror', () => this.dropLoaded());
       await this.doLoadGraph(perf);
       await this.doBuildNodeMirror(perf);
-      if (this.edgeTierIsCheap) await this.doBuildEdgeMirror(perf);
+      if (!this.edgeTierRefused) await this.doBuildEdgeMirror(perf);
     });
   }
 

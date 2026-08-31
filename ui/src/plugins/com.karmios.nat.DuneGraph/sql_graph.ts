@@ -325,44 +325,34 @@ const INSERT_CHUNK = 5_000;
 const YIELD_EVERY = 10;
 
 /**
- * Edge counts the edge tier is built against, in rows.
+ * Edge count past which the edge tier refuses to build, because there the build
+ * doesn't get slow, it takes the engine down with it.
  *
- * Below the soft cap the tier is built as part of a plain load; above it, it has
- * to be asked for; past the hard cap it refuses, because there the build doesn't
- * get slow, it takes the engine down with it.
+ * It comes from measurement (see PERF_PLAN.LOCAL.md and PERF_SUMMARY.LOCAL.md),
+ * in the wasm engine rather than extrapolated from `trace_processor -q`, which
+ * overstates the per-row cost by ~4×.
  *
- * Both come from measurement (see PERF_PLAN.LOCAL.md and PERF_SUMMARY.LOCAL.md),
- * both in the wasm engine rather than extrapolated from `trace_processor -q`,
- * which overstates the per-row cost by ~4×.
- *
- * **Note these count edges, not rows.** Since the tier was factored on dep sets
+ * **Note this counts edges, not rows.** Since the tier was factored on dep sets
  * an edge is no longer a row: the monorepo trace's 28.8M edges are 6.33M stored
  * rows, and the whole tier - reverse indexes included - builds in **18.9 s for
  * +519 MB** of wasm heap (1,011 -> 1,530 MB), against 114 s and +1,895 MB when
- * every edge was a row. Edges are what the caps keep counting because by the
- * time they are consulted the graph is parsed and the exact edge count is known,
- * where the row count would have to be predicted. The *pre-parse* gate has the
- * opposite problem and so counts rows - see controller.ts's
- * AUTO_LOAD_EDGE_ROW_LIMIT.
+ * every edge was a row. Edges are what this cap counts because by the time it
+ * is consulted the graph is parsed and the exact edge count is known, where the
+ * row count would have to be predicted. The one gate the *user* is asked about
+ * has the opposite problem - it fires before the blob is parsed, so it can only
+ * count rows - which is why it lives elsewhere and in the other unit; see
+ * controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING.
  *
- * Both caps were raised by that measurement, each keeping the bar it was
- * originally set by:
+ * This cap is about *memory*, against a 4 GB ceiling on the memory32 build
+ * (16 GB on memory64, which every current browser loads - see
+ * `gn/standalone/wasm.gni`). At the measured 18 bytes/edge marginal, 100M edges
+ * is ~1.8 GB, which still fits alongside a trace and a node tier on memory32.
+ * The old 40M was set at 54 bytes/edge, i.e. the same ~2.2 GB.
  *
- * - The soft cap is about *time*: a few seconds is a fine thing to do inside a
- *   load. That used to be 2M edges at ~4 s; at 1.5 µs/edge it is now ~10M, and
- *   28.8M at 18.9 s still wants to be asked for.
- * - The hard cap is about *memory*, against a 4 GB ceiling on the memory32 build
- *   (16 GB on memory64, which every current browser loads - see
- *   `gn/standalone/wasm.gni`). At the measured 18 bytes/edge marginal, 100M
- *   edges is ~1.8 GB, which still fits alongside a trace and a node tier on
- *   memory32. The old 40M was set at 54 bytes/edge, i.e. the same ~2.2 GB.
- *
- * The soft cap therefore no longer separates any of the sample traces - the
- * monorepo trace is over it and the rest are orders of magnitude under - but it
- * is what stops a mid-size project paying for the tier unasked, and the band it
- * opens (2M-10M edges, now a plain load) is the point of factoring the tier.
+ * It is a refusal rather than a question: there is no answer the user could
+ * give that would make the build survive, so past it the edge tier is simply
+ * not available and the panel says so.
  */
-export const EDGE_SOFT_LIMIT = 10_000_000;
 export const EDGE_HARD_LIMIT = 100_000_000;
 
 /**
@@ -1836,10 +1826,11 @@ function edgeView(): string {
  * A rule's edges are stored *factored* - as the dep set the blob named, shared
  * across every rule that named it - so this is no longer one row per edge: on
  * the monorepo trace it is ~6M rows for 28.8M edges. What it still is, is the
- * expensive half of the mirror, so it is built as its own step and the caller
- * decides when (or whether) to pay for it. Past {@link EDGE_HARD_LIMIT} edges it
- * refuses outright rather than taking the engine down: there is no partial state
- * to leave behind, since nothing has been created yet at that point.
+ * expensive half of the mirror, so it stays its own separately re-runnable
+ * step even though a load now always reaches it. Past {@link EDGE_HARD_LIMIT}
+ * edges it refuses outright rather than taking the engine down: there is no
+ * partial state to leave behind, since nothing has been created yet at that
+ * point.
  *
  * Rebuilding is idempotent. The returned handle must be disposed *before* the
  * node mirror it was built against: its view joins `_dune_dep`, the relation
@@ -1860,7 +1851,7 @@ export async function buildEdgeMirror(
     nodeCount: nodes.nodeCount,
   };
 
-  // One pass over the CSR: the exact edge count the caps are checked against
+  // One pass over the CSR: the exact edge count the hard cap is checked against
   // (rather than the CSR's slot count, which includes references to nodes the
   // blob never recorded) and the forced edges.
   const census = measureSync(perf, 'sql: edge census', (p) => {

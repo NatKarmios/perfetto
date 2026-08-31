@@ -13,10 +13,16 @@
 // limitations under the License.
 
 import m from 'mithril';
+import {z} from 'zod';
+import type {App} from '../../public/app';
 import type {PerfettoPlugin} from '../../public/plugin';
 import type {Trace} from '../../public/trace';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
-import {DuneGraphController} from './controller';
+import {
+  AUTO_LOAD_ROW_LIMIT_SETTING,
+  DEFAULT_AUTO_LOAD_ROW_LIMIT,
+  DuneGraphController,
+} from './controller';
 import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
 import {DirExplorerPanel} from './dir_explorer_panel';
@@ -41,6 +47,36 @@ export default class implements PerfettoPlugin {
   // onTraceLoad but does *not* enable the dependency, so the hand-off still
   // checks that it is enabled before reaching for it.
   static readonly dependencies = [DataExplorerPlugin];
+
+  /**
+   * Registers the one number the user is asked about: how big a build graph
+   * may be before opening its trace stops loading it and starts offering to
+   * (see controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING for why it is rows, and
+   * why it is the only such number).
+   *
+   * Here rather than in `onTraceLoad` for two reasons: `init()` reads the value
+   * while the trace is loading, and a trace-scoped registration lives in the
+   * trace's `DisposableStack`, so the setting would vanish off the settings
+   * page whenever no trace was open - which is exactly when someone would go
+   * looking for it after being made to wait. The plugin manager injects our
+   * plugin id, so it files itself under this plugin with no extra work.
+   */
+  static async onActivate(app: App): Promise<void> {
+    app.settings.register({
+      id: AUTO_LOAD_ROW_LIMIT_SETTING,
+      name: 'Dune graph: load without asking below (edge rows)',
+      description:
+        'Estimated stored edge rows below which the Dune build graph loads ' +
+        'as soon as the trace opens. Above it the side panel ' +
+        'shows what a load would cost and waits to be asked. 0 always asks; ' +
+        'there is no upper bound, so a large enough number never asks. Takes ' +
+        'effect the next time a trace is opened.',
+      // No .max(): "never ask" is worth being able to express, and the number
+      // it takes is the estimate, which has no ceiling of its own.
+      schema: z.number().int().min(0),
+      defaultValue: DEFAULT_AUTO_LOAD_ROW_LIMIT,
+    });
+  }
 
   async onTraceLoad(trace: Trace): Promise<void> {
     const controller = new DuneGraphController(trace);
@@ -111,9 +147,10 @@ export default class implements PerfettoPlugin {
       callback: () => controller.reload(),
     });
 
-    // The edge tier is one SQL row per dependency edge - tens of millions on a
-    // monorepo-scale trace - so a plain load leaves it out above a few million
-    // and it has to be asked for. See controller.ts and PERF_PLAN.LOCAL.md.
+    // The edge tier is the expensive half of the mirror, and a load builds it
+    // along with everything else. This is the way back when that one step
+    // failed on its own, or was dropped and is wanted again - not a prompt.
+    // See controller.ts and PERF_PLAN.LOCAL.md.
     trace.commands.registerCommand({
       id: `${PLUGIN_ID}#MaterialiseEdges`,
       name: 'Dune: materialise edge table',
@@ -175,10 +212,10 @@ export default class implements PerfettoPlugin {
     // the critical path of opening the trace, and on a large trace the graph
     // load is minutes of work that would hold up the whole UI (and exhaust the
     // trace processor heap under every other plugin). init() only reads the
-    // cheap headline counts, and starts a load by itself only when the trace is
-    // small enough to be worth loading unprompted - otherwise the side panel
-    // offers it as an explicit action. See controller.ts and
-    // PERF_PLAN.LOCAL.md.
+    // cheap headline counts, and starts a load by itself only when the trace's
+    // estimated edge rows are under the "load without asking below" setting
+    // registered in onActivate() - otherwise the side panel offers it as an
+    // explicit action. See controller.ts and PERF_PLAN.LOCAL.md.
     void controller.init();
   }
 }

@@ -194,8 +194,9 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   }
 
   // The trace's headline counts. `estimatedEdgeRows` is the number that decides
-  // whether this is a click or a coffee break (see controller.ts's
-  // AUTO_LOAD_EDGE_ROW_LIMIT), so it's called out rather than listed.
+  // whether this is a click or a coffee break - it is what the one load gate is
+  // measured against (see controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING) - so
+  // it's called out rather than listed.
   private renderStats(controller: DuneGraphController): m.Children {
     const stats = controller.stats;
     if (stats === undefined) return undefined;
@@ -229,10 +230,12 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
             `${stats.estimatedEdgeRows.toLocaleString()} dependency rows to ` +
             `store, past the ` +
             `${controller.autoLoadEdgeRowLimit.toLocaleString()} above which ` +
-            'it is not loaded automatically. Loading it can take a while and a ' +
-            'lot of memory. The edge tables (dune_edge and the relation ' +
-            'functions) may be left out at this size and can be built ' +
-            'separately afterwards.',
+            'it is not loaded automatically. Loading builds all of it - the ' +
+            'graph, the node tables and the edge tables (dune_edge and the ' +
+            'relation functions) - which at this size is minutes of work and ' +
+            'a gigabyte or more of trace-processor memory. This is the only ' +
+            'time you are asked. The threshold is a setting: "Dune graph: ' +
+            'load without asking below (edge rows)".',
         ),
     ];
   }
@@ -299,24 +302,38 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       );
     }
     if (edgeMirrorStep.error !== undefined) {
+      // The only way back from a failed edge tier: the "Load graph" button is
+      // off screen once the graph itself is up (see renderAreas), and the offer
+      // callout that used to carry a build button is gone with the second
+      // prompt. A retry after a failure isn't a prompt - the cost was agreed to
+      // when the load was started.
       return m(
         Callout,
         {icon: 'warning'},
         `Edge tables unavailable (${edgeMirrorStep.error}). Queries over ` +
           'dune_edge and the relation functions need them.',
+        m(Button, {
+          label: 'Retry',
+          icon: 'play_arrow',
+          disabled: controller.busy,
+          onclick: () => void controller.buildEdgeMirror(),
+        }),
       );
     }
     return this.renderEdgeTierPrompt(controller);
   }
 
   /**
-   * The edge tier, when the load deliberately left it out: it is one SQL row
-   * per dependency edge, so past a few million of them it is tens of seconds of
-   * work and a gigabyte or two of engine memory, and the load doesn't do it
-   * unasked (see controller.ts). Everything except `dune_edge` and the relation
-   * functions works without it, so this is an offer rather than a warning -
-   * unless the graph is past the hard limit, where the answer is no and the
-   * reason is the number.
+   * What is left to say about the edge tier once a load has been through it:
+   * either it was built without its reverse index, or it wasn't built at all
+   * because the graph is past the hard limit.
+   *
+   * Not an offer. The tier is part of every load, bought by the one question
+   * asked before the graph is parsed (see controller.ts), so there is no
+   * "build it separately" left to prompt for. Past the hard limit the answer is
+   * no and the reason is the number - materializing it would take the trace
+   * processor down - so that reads as a callout rather than an error, because
+   * everything except `dune_edge` and the relation functions still works.
    */
   private renderEdgeTierPrompt(controller: DuneGraphController): m.Children {
     const {edgeMirrorStep} = controller;
@@ -334,33 +351,18 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       );
     }
     if (edgeMirrorStep.status !== 'idle') return undefined;
-    const edges = controller.edgeCount.toLocaleString();
     if (controller.edgeTierRefused) {
       return m(
         Callout,
         {icon: 'warning'},
-        `This graph's ${edges} edges are past the ` +
-          `${controller.edgeHardLimit.toLocaleString()} the edge tables can ` +
-          'be built for - materializing them would exhaust the trace ' +
+        `This graph's ${controller.edgeCount.toLocaleString()} edges are past ` +
+          `the ${controller.edgeHardLimit.toLocaleString()} the edge tables ` +
+          'can be built for - materializing them would exhaust the trace ' +
           'processor. dune_edge and the relation functions are unavailable on ' +
           'this trace; everything else here works.',
       );
     }
-    return m(
-      Callout,
-      {icon: 'info'},
-      `Edge tables not built: ${edges} edges is enough that mirroring them ` +
-        'into SQL takes tens of seconds and a gigabyte or two of ' +
-        'trace-processor memory (a monorepo-scale 28M edges: ~85 s including ' +
-        'the reverse index, ~1.6 GB), so it is not part of a load. Only ' +
-        'dune_edge and the relation functions need them.',
-      m(Button, {
-        label: 'Build edge tables',
-        icon: 'play_arrow',
-        disabled: controller.busy,
-        onclick: () => void controller.buildEdgeMirror(),
-      }),
-    );
+    return undefined;
   }
 }
 
