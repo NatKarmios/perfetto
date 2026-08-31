@@ -52,6 +52,7 @@ import {
 } from './family';
 import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
+import type {ProcessDetails} from './process_sql';
 import type {
   Distances,
   MirrorPhase,
@@ -118,6 +119,15 @@ export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
 
 // How many slice ids `nodesForSliceIds` resolves per query.
 const SLICE_LOOKUP_BATCH = 5_000;
+
+// What a timeline selection resolved to: the graph node it names, plus - only
+// when the node was reached *through* a process slice - that slice's id, which
+// is how `selectedProcessSlice()` can be exact rather than comparing event ids
+// that are only unique per track. Both absent means "not a node of ours".
+interface SelectionResolution {
+  readonly node?: NodeId;
+  readonly processSliceId?: number;
+}
 
 // State of one load step. Steps are independent: the graph can be loaded while
 // the edge mirror isn't built, and either mirror can fail on its own.
@@ -253,7 +263,7 @@ export class DuneGraphController {
   // The current timeline selection's node, cached against the selection it was
   // resolved for - see nodeForSelection(), which has to answer synchronously
   // while the lookup itself is a query. Cleared whenever the graph changes.
-  private selectionNode?: {readonly key: string; readonly node?: NodeId};
+  private selectionNode?: {readonly key: string} & SelectionResolution;
 
   // Brings the panel that explains a node forward, and the node it was last
   // called for. Set by the plugin (see revealPanelWhenNodeSelected); polled from
@@ -620,6 +630,13 @@ export class DuneGraphController {
    * off here, cached against the selection it was for, and a redraw requested
    * when it lands. A stale result can therefore never be shown, only a
    * momentary "no node".
+   *
+   * A *process* slice resolves to the rule that forced it, wherever it was
+   * selected: on the Dune workspace's own process track, and - since that is
+   * where anyone browsing a raw trace clicks - on the real `job-<n>` track it
+   * came from too. It carries no `rule_id`/`dep_id` arg, so it can't be a
+   * lifecycle instant; the fallback below is tried only once the lifecycle
+   * lookup has come back empty.
    */
   nodeForSelection(): NodeId | undefined {
     const selection = this.trace.selection.selection;
@@ -635,12 +652,58 @@ export class DuneGraphController {
       // they stay a pure range check (a rule's action is filed under the rule);
       // a process row names only a `rule_id`, and only through a query - so it
       // takes the same resolve-and-cache path a real slice id does.
-      if (kind !== 'process') return this.nodeForNodeId(eventId);
+      if (kind !== 'process') {
+        const node = this.nodeForNodeId(eventId);
+        // Recorded even though it took no query: the cache is also what says
+        // *how* the current selection resolved, so leaving a previous entry
+        // behind would let a process selection's `processSliceId` outlive it
+        // (see selectedProcessSlice()). Guarded on the key because this runs
+        // every frame, and a new object per frame is pure garbage.
+        if (this.selectionNode?.key !== key) this.selectionNode = {key, node};
+        return node;
+      }
       return this.cachedSelectionNode(key, () =>
-        this.ruleNodeForProcessSlice(eventId),
+        this.resolveProcessSlice(eventId),
       );
     }
-    return this.cachedSelectionNode(key, () => this.nodeForSliceId(eventId));
+    return this.cachedSelectionNode(key, async () => {
+      const node = await this.nodeForSliceId(eventId);
+      // A lifecycle instant, which is the overwhelmingly common case for a
+      // slice this plugin knows anything about; only on a miss is it worth
+      // asking whether the slice is a process. Ordering it this way keeps an
+      // ordinary click on an unrelated slice at exactly the cost it has today.
+      if (node !== undefined) return {node};
+      return this.resolveProcessSlice(eventId);
+    });
+  }
+
+  /**
+   * Which process slice the current selection *is*, if the panel showing
+   * `nodeForSelection()` got there through one.
+   *
+   * Deliberately not "the selection's `eventId`, if it matches one of the
+   * rule's process slice ids": event ids are per-track, so an unrelated track's
+   * row can carry the same number as a real process slice and would then be
+   * reported as selected. Only the two branches that actually resolved through
+   * the process route record it, which costs nothing beyond the field.
+   */
+  selectedProcessSlice(): number | undefined {
+    // Read via nodeForSelection() so the cache is populated on the first frame
+    // that asks, whichever of the two the caller happens to read first.
+    if (this.nodeForSelection() === undefined) return undefined;
+    return this.selectionNode?.processSliceId;
+  }
+
+  // The rule a process slice resolves to, as a `SelectionResolution` that
+  // remembers the slice it came through (see selectedProcessSlice()). A slice
+  // that isn't a process - or is one forced by a `dep <path>` rather than a
+  // rule, which names no rule at all - resolves to nothing rather than to a
+  // rule it merely shares a number with.
+  private async resolveProcessSlice(
+    sliceId: number,
+  ): Promise<SelectionResolution> {
+    const node = await this.ruleNodeForProcessSlice(sliceId);
+    return node === undefined ? {} : {node, processSliceId: sliceId};
   }
 
   // The cached node for the current selection, kicking `lookup` off on the
@@ -648,7 +711,7 @@ export class DuneGraphController {
   // why the answer is allowed to arrive a redraw late.
   private cachedSelectionNode(
     key: string,
-    lookup: () => Promise<NodeId | undefined>,
+    lookup: () => Promise<SelectionResolution>,
   ): NodeId | undefined {
     if (this.selectionNode?.key === key) return this.selectionNode.node;
     // Recorded before the lookup starts, so a second frame doesn't re-issue it.
@@ -659,11 +722,11 @@ export class DuneGraphController {
 
   private async resolveSelectionNode(
     key: string,
-    lookup: () => Promise<NodeId | undefined>,
+    lookup: () => Promise<SelectionResolution>,
   ): Promise<void> {
-    const node = await lookup();
+    const resolved = await lookup();
     if (this.selectionNode?.key !== key) return; // superseded meanwhile
-    this.selectionNode = {key, node};
+    this.selectionNode = {key, ...resolved};
     this.changed();
   }
 
@@ -700,6 +763,18 @@ export class DuneGraphController {
   // table this reads.
   async ruleNodeForProcessSlice(sliceId: number): Promise<NodeId | undefined> {
     return this.nodeMirror?.ruleNodeForProcessSlice(sliceId);
+  }
+
+  /**
+   * Every process a rule is responsible for, with the command it ran - what the
+   * selection panel lists (see selection_info_panel.ts).
+   *
+   * Empty for a dep node, and empty until the node mirror is built: a process
+   * names the rule that forced it, and the table that records so is the node
+   * tier's.
+   */
+  async processesForRule(node: NodeId): Promise<readonly ProcessDetails[]> {
+    return (await this.nodeMirror?.processesForRule(node)) ?? [];
   }
 
   // The graph node a "build-dep"/"exec-rule" slice id maps to, if any.
@@ -872,6 +947,33 @@ export class DuneGraphController {
     }
     const sliceId = await this.sliceIdOf(node);
     if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
+  }
+
+  /**
+   * Select a process slice and scroll it into view - what the selection panel's
+   * per-process link does (see selection_info_panel.ts).
+   *
+   * The same two branches as goToNode(), for the same reason: while the Dune
+   * workspace is showing, the slice's real `job-<n>` track isn't in it, so the
+   * process track's projection of the row is what gets selected - but only if
+   * the forcing rule is actually in the graph, since that is what puts the row
+   * on the track at all. Everywhere else the real slice is resolved back to its
+   * originating track.
+   *
+   * `isInGraph`, not `visibleNodes`: the process track is fed by the *selection*
+   * and is deliberately not emptied by "hide rules" (see graph_track.ts's
+   * trackSrc), so a hidden rule's processes are still on it. Same test
+   * onWorkspaceChanged() makes.
+   */
+  async goToProcessSlice(sliceId: number): Promise<void> {
+    if (this.showingTimeline && this.nodeMirrorReady) {
+      const rule = await this.ruleNodeForProcessSlice(sliceId);
+      if (rule !== undefined && this.isInGraph(rule)) {
+        this.selectOnGraphTrack(graphTrackUri('process'), sliceId);
+        return;
+      }
+    }
+    await this.selectOnOriginalTrack(sliceId);
   }
 
   // Select a row of one of the Dune workspace's tracks - the half of

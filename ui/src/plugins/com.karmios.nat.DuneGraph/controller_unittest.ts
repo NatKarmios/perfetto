@@ -30,6 +30,7 @@
 
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../trace_processor/engine';
+import type {Row} from '../../trace_processor/query_result';
 import type {LoadStep} from './controller';
 import {
   AUTO_LOAD_ROW_LIMIT_SETTING,
@@ -40,6 +41,7 @@ import type {Trace} from '../../public/trace';
 import type {BuildGraph} from './graph';
 import {DEPS_SECTION} from './graph_blob';
 import {dep, rule, testGraph} from './graph_test_helper';
+import {graphTrackUri} from './graph_track';
 import type {MirrorProgress} from './sql_graph';
 import {
   EDGE_HARD_LIMIT,
@@ -77,6 +79,13 @@ interface Harness {
   // The setting's value, as the settings page would have it. `undefined` is
   // "never registered" - what a controller sees with no plugin activation.
   limit?: number;
+  // The current timeline selection, as `trace.selection.selection`. Assignable
+  // so a test can move the selection the way a click would.
+  selection: unknown;
+  // Extra canned answers, consulted before the defaults: the first entry whose
+  // `match` the statement contains supplies its rows. Lets a test say what a
+  // lookup found without standing up a trace processor.
+  canned: {readonly match: string; readonly rows: readonly Row[]}[];
 }
 
 /**
@@ -118,10 +127,14 @@ function makeHarness(opts: {readonly blobBytes?: number} = {}): Harness {
   const emptyResult = {
     iter: () => ({valid: () => false, next: () => {}}),
     firstRow: () => ({n: 0, instants: 0}),
+    // The single-row lookups (process_sql.ts) check this before reading a row.
+    numRows: () => 0,
   };
   const answer = (q: string) => {
     sql.push(q);
-    // The only query whose rows are read is the blob-section aggregate.
+    const canned = harness.canned.find((c) => q.includes(c.match));
+    if (canned !== undefined) return Promise.resolve(cannedResult(canned.rows));
+    // The only other query whose rows are read is the blob-section aggregate.
     return Promise.resolve(
       q.includes('group by s.name') ? blobResult : emptyResult,
     );
@@ -129,6 +142,8 @@ function makeHarness(opts: {readonly blobBytes?: number} = {}): Harness {
   const harness: Harness = {
     controller: undefined as unknown as DuneGraphController,
     sql,
+    selection: {kind: 'empty'},
+    canned: [],
   };
   const trace = {
     engine: {query: answer, tryQuery: answer} as unknown as Engine,
@@ -138,9 +153,46 @@ function makeHarness(opts: {readonly blobBytes?: number} = {}): Harness {
           ? {get: () => harness.limit}
           : undefined,
     },
+    selection: {
+      get selection() {
+        return harness.selection;
+      },
+    },
     raf: {scheduleFullRedraw: () => {}},
   } as unknown as Trace;
   return Object.assign(harness, {controller: new DuneGraphController(trace)});
+}
+
+/**
+ * A query result over plain rows, for the harness's `canned` answers.
+ *
+ * The cursor's columns are served through a Proxy rather than spelled out,
+ * because the two lookups these tests drive read different column names and the
+ * real `QueryResult` iterator is a wasm-protobuf reader with no plain-object
+ * constructor.
+ */
+function cannedResult(rows: readonly Row[]) {
+  return {
+    numRows: () => rows.length,
+    firstRow: () => rows[0] ?? {},
+    iter: () => {
+      let i = 0;
+      return new Proxy(
+        {},
+        {
+          get: (_t, prop) => {
+            if (prop === 'valid') return () => i < rows.length;
+            if (prop === 'next') {
+              return () => {
+                i++;
+              };
+            }
+            return rows[i]?.[prop as string];
+          },
+        },
+      );
+    },
+  };
 }
 
 // A loaded graph without a load: `doLoadGraph` is a no-op once its step is
@@ -303,5 +355,179 @@ describe('load progress', () => {
     step.activePhase = 'sql: a phase from another run';
     await h.controller.load();
     expect(step.done.has('sql: a phase from another run')).toBe(false);
+  });
+});
+
+/**
+ * How a timeline selection resolves to a node, and what it remembers about how
+ * it got there.
+ *
+ * The interesting case is the *process* slice, which carries no
+ * `rule_id`/`dep_id` arg and so cannot be a lifecycle instant: it resolves to
+ * the rule its `dune.forced_by` names, wherever it was selected. That is a
+ * second lookup on the same click, so the order matters, and the fact that the
+ * node was reached through a process slice has to survive - it is what
+ * `selectedProcessSlice()` reports and the panel bolds on (see
+ * selection_info_panel.ts).
+ *
+ * All of it goes through the async cache, so every assertion is made after
+ * letting the lookup land: the first frame that asks always answers
+ * "no node yet".
+ */
+describe('nodeForSelection', () => {
+  // A node-mirror-backed controller with a selection on some track that isn't
+  // one of the plugin's own - i.e. the default workspace, where the reverse
+  // link matters.
+  async function selecting(sliceId: number): Promise<Harness> {
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    // Any non-zero count makes the process table's lookups run at all.
+    h.canned.push({match: 'count(*) AS n FROM _dune_process', rows: [{n: 5}]});
+    await h.controller.buildNodeMirror();
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 'some.other.plugin#Track',
+      eventId: sliceId,
+    };
+    return h;
+  }
+
+  // The rule of the fixture graph, and the trace-side `rule_id` it was built
+  // from - which is what a process slice's forcer names.
+  const ruleNode = 0;
+  const ruleId = g.graph.timingKeyOf(ruleNode);
+
+  // Lets the pending lookup (and the promise chain behind it) settle.
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  test('a lifecycle instant resolves without asking about processes', async () => {
+    const h = await selecting(42);
+    // The lifecycle lookup finds the rule; `kind` 0 is the `rule` track's code.
+    h.canned.push({
+      match: 's.track_id = t.id',
+      rows: [{slice_id: 42, kind: 0, key: BigInt(ruleId)}],
+    });
+    const before = h.sql.length;
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    // No process probe: the slice was already accounted for, and this is the
+    // path every ordinary click takes.
+    expect(
+      h.sql.slice(before).some((q) => q.includes('WHERE slice_id =')),
+    ).toBe(false);
+    // Not reached through a process, so nothing to bold.
+    expect(h.controller.selectedProcessSlice()).toBeUndefined();
+  });
+
+  test('a process slice on its own track resolves to the forcing rule', async () => {
+    const h = await selecting(42);
+    // The lifecycle lookup finds nothing (no canned rows), so the process table
+    // is asked - and it names the rule.
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+  });
+
+  test('and remembers the slice it came through', async () => {
+    const h = await selecting(42);
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.selectedProcessSlice()).toBe(42);
+  });
+
+  test('a slice that is neither resolves to nothing', async () => {
+    const h = await selecting(42);
+    // Both lookups come back empty - an unrelated slice, which is most of them.
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBeUndefined();
+    expect(h.controller.selectedProcessSlice()).toBeUndefined();
+  });
+
+  test('a lifecycle hit whose id collides with a process slice is not bolded', async () => {
+    // The reason `selectedProcessSlice` is recorded during resolution rather
+    // than compared against event ids in the panel: event ids are per track, so
+    // an unrelated row can carry a real process slice's number.
+    const h = await selecting(42);
+    h.canned.push({
+      match: 's.track_id = t.id',
+      rows: [{slice_id: 42, kind: 0, key: BigInt(ruleId)}],
+    });
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    expect(h.controller.selectedProcessSlice()).toBeUndefined();
+  });
+
+  test('moving from a process row to a node row drops the bolded slice', async () => {
+    // The node-backed tracks answer synchronously, so they never went through
+    // the async cache - and the cache is also what records *how* the current
+    // selection resolved. Leaving it behind kept the previous process's id
+    // alive, which bolded a process entry the reader had navigated away from.
+    const h = await selecting(42);
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.selectedProcessSlice()).toBe(42);
+    // Now the rule's own row on the Dune workspace's rule track, which keys its
+    // rows by `node_id` rather than by slice id.
+    h.selection = {
+      kind: 'track_event',
+      trackUri: graphTrackUri('rule'),
+      eventId: ruleNode,
+    };
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    expect(h.controller.selectedProcessSlice()).toBeUndefined();
+  });
+
+  test('a process row on the Dune workspace track bolds the same slice', async () => {
+    // The process track projects real slices verbatim, keyed by `slice.id`, so
+    // "which process is selected" is the same answer inside the Dune workspace
+    // as outside it - and it takes the query route there too, since the row
+    // names only a rule id.
+    const h = await selecting(42);
+    h.selection = {
+      kind: 'track_event',
+      trackUri: graphTrackUri('process'),
+      eventId: 42,
+    };
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    expect(h.controller.selectedProcessSlice()).toBe(42);
+  });
+
+  test('clearing the selection clears both answers', async () => {
+    const h = await selecting(42);
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.controller.nodeForSelection();
+    await settle();
+    h.selection = {kind: 'empty'};
+    expect(h.controller.nodeForSelection()).toBeUndefined();
+    expect(h.controller.selectedProcessSlice()).toBeUndefined();
+  });
+
+  test('neither lookup is attempted before the node mirror is built', async () => {
+    // The table `ruleNodeForProcessSlice` reads doesn't exist yet, so asking
+    // would be an error rather than a miss.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 'some.other.plugin#Track',
+      eventId: 42,
+    };
+    const before = h.sql.length;
+    h.controller.nodeForSelection();
+    await settle();
+    expect(
+      h.sql.slice(before).some((q) => q.includes('FROM _dune_process')),
+    ).toBe(false);
+    expect(h.controller.nodeForSelection()).toBeUndefined();
   });
 });
