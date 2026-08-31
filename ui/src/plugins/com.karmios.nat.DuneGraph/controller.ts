@@ -54,11 +54,18 @@ import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
 import type {
   Distances,
+  MirrorPhase,
   MirrorProgress,
   SqlEdgeMirror,
   SqlNodeMirror,
 } from './sql_graph';
-import {EDGE_HARD_LIMIT, buildEdgeMirror, buildNodeMirror} from './sql_graph';
+import {
+  EDGE_HARD_LIMIT,
+  EDGE_MIRROR_PHASES,
+  NODE_MIRROR_PHASES,
+  buildEdgeMirror,
+  buildNodeMirror,
+} from './sql_graph';
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 
@@ -118,16 +125,41 @@ export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /**
  * One step of the load, as the side panel sees it. `label` names the step in
- * the UI; `error` is set only in the `error` status; `detail` is where the step
- * has got to while it runs (the SQL tiers report their insert progress through
- * it - see sql_graph.ts's `MirrorOptions.onProgress`).
+ * the UI and `error` is set only in the `error` status.
+ *
+ * A step that builds a SQL tier also carries the manifest of everything that
+ * tier is going to do (`phases`, from sql_graph.ts) and where in it the build
+ * has got to. That is what lets the panel list the whole tier up front and tick
+ * it off, rather than naming only whichever table happens to be current: the
+ * point of the list is that a minutes-long build shows what is left, not just
+ * what is now. The **graph** step's `phases` is empty - its internals live in
+ * `TraceGraphSource.load`, which is a different code path and reports nothing -
+ * so it stays a single row.
+ *
+ * `activePhase` is driven off the *start*-of-phase report and never off row
+ * counts. A small table finishes inside a single flush and so emits no row
+ * report at all (see `MirrorProgress`); inferring the active phase from
+ * `phaseDetail` would leave every one of those permanently pending.
  */
 export class LoadStep {
   status: LoadStatus = 'idle';
   error?: string;
-  detail?: string;
 
-  constructor(readonly label: string) {}
+  // Where in `phases` this run has got to: the phase now running, and the ones
+  // it has finished. Both hold manifest ids; `done` is a set because the only
+  // question ever asked of it is membership, once per phase per render.
+  activePhase?: string;
+  readonly done = new Set<string>();
+
+  // How far the active phase has got, for the ones that report rows -
+  // '1,204,000 of 6,330,000 rows'. Undefined for a phase that inserts nothing,
+  // and for one whose first flush hasn't landed yet.
+  phaseDetail?: string;
+
+  constructor(
+    readonly label: string,
+    readonly phases: readonly MirrorPhase[] = [],
+  ) {}
 
   get ready(): boolean {
     return this.status === 'ready';
@@ -140,25 +172,21 @@ export class LoadStep {
   reset(): void {
     this.status = 'idle';
     this.error = undefined;
-    this.detail = undefined;
+    this.clearPhases();
+  }
+
+  // Forgets where a build had got to, leaving `status` alone. Separate from
+  // `reset()` because starting a step clears the previous run's phases without
+  // passing through `idle`.
+  clearPhases(): void {
+    this.activePhase = undefined;
+    this.phaseDetail = undefined;
+    this.done.clear();
   }
 }
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-// The table an insert phase is filling, for the one-line progress detail. The
-// phase ids are console-facing diagnostics (`sql: insert _dune_depset_add`),
-// and only the insert ones carry row counts, so the prefix is stripped rather
-// than shown. Falls back to the whole id if the shape ever changes, which is
-// wordy but never wrong.
-const INSERT_PHASE_PREFIX = 'sql: insert ';
-
-function insertedTable(phase: string): string {
-  return phase.startsWith(INSERT_PHASE_PREFIX)
-    ? phase.slice(INSERT_PHASE_PREFIX.length)
-    : phase;
 }
 
 /**
@@ -200,8 +228,8 @@ export class DuneGraphController {
   // The load steps, in dependency order. Public so the panel can render each
   // one's status/error individually.
   readonly graphStep = new LoadStep('Graph');
-  readonly nodeMirrorStep = new LoadStep('Node tables');
-  readonly edgeMirrorStep = new LoadStep('Edge tables');
+  readonly nodeMirrorStep = new LoadStep('Node tables', NODE_MIRROR_PHASES);
+  readonly edgeMirrorStep = new LoadStep('Edge tables', EDGE_MIRROR_PHASES);
   // The cheap headline counts shown before (and instead of) a load.
   readonly statsStep = new LoadStep('Trace stats');
   private statsValue?: GraphStats;
@@ -1143,28 +1171,47 @@ export class DuneGraphController {
   private beginStep(step: LoadStep): void {
     step.status = 'loading';
     step.error = undefined;
-    step.detail = undefined;
+    // A re-run starts from nothing done: a retry after a failure rebuilds the
+    // whole tier, so the phases the previous attempt got through are not still
+    // true.
+    step.clearPhases();
     this.changed();
   }
 
   private completeStep(step: LoadStep): void {
     step.status = 'ready';
-    step.detail = undefined;
+    step.activePhase = undefined;
+    step.phaseDetail = undefined;
+    // Mark the lot done rather than only the last one. The sink below closes a
+    // phase when the *next* one opens, so the final phase of a tier - and any
+    // conditional one that was skipped, see EDGE_MIRROR_PHASES' reverse index -
+    // would otherwise be left looking unfinished under a finished step.
+    for (const phase of step.phases) step.done.add(phase.id);
   }
 
-  // A step's progress sink. The inserts yield to the event loop before each
-  // report (see sql_graph.ts), so asking for a redraw here actually paints one.
-  //
-  // Only the row reports are turned into a line today. A build also announces
-  // every phase as it starts, which is what a list of all the phases would be
-  // driven off, but `LoadStep` has nowhere to put that yet, and redrawing on it
-  // would only repaint the previous phase's line unchanged.
+  /**
+   * A step's progress sink: turns a tier's reports into the panel's phase list.
+   *
+   * The builders are straight-line code and never have two phases open at once,
+   * so a report naming a different phase from the current one means the current
+   * one finished - that is the only signal either builder gives that a phase is
+   * over, and it is why the outgoing phase is closed here rather than anywhere
+   * more explicit.
+   *
+   * The inserts yield to the event loop before each report (see sql_graph.ts),
+   * so asking for a redraw here actually paints one.
+   */
   private progressFor(step: LoadStep): (p: MirrorProgress) => void {
     return (p: MirrorProgress) => {
-      if (p.done === undefined || p.total === undefined) return;
-      step.detail =
-        `${insertedTable(p.phase)}: ${p.done.toLocaleString()} of ` +
-        `${p.total.toLocaleString()} rows`;
+      if (p.phase !== step.activePhase) {
+        if (step.activePhase !== undefined) step.done.add(step.activePhase);
+        step.activePhase = p.phase;
+        // Row counts belong to the phase that reported them.
+        step.phaseDetail = undefined;
+      }
+      if (p.done !== undefined && p.total !== undefined) {
+        step.phaseDetail = `${p.done.toLocaleString()} of ${p.total.toLocaleString()} rows`;
+      }
       this.changed();
     };
   }
@@ -1172,7 +1219,10 @@ export class DuneGraphController {
   private failStep(step: LoadStep, perf: PerfRun, e: unknown): void {
     step.status = 'error';
     step.error = errorMessage(e);
-    step.detail = undefined;
+    // `done` is left as it is: which phases got through before the failure is
+    // the most useful thing the panel can say about where it broke.
+    step.activePhase = undefined;
+    step.phaseDetail = undefined;
     perf.fail(`${step.label}: ${step.error}`);
   }
 

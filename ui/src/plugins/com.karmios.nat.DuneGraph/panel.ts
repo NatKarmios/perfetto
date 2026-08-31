@@ -21,11 +21,12 @@ import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
 import {Spinner} from '../../widgets/spinner';
 import type {Trace} from '../../public/trace';
-import type {DuneGraphController, LoadStep} from './controller';
+import type {DuneGraphController, LoadStatus, LoadStep} from './controller';
 import {APPENDABLE_SOURCES, appendExploreSource} from './data_explorer_handoff';
 import {plural} from './graph';
 import {SelectionInfoPanel} from './selection_info_panel';
 import {GraphPanel} from './graph_panel';
+import type {MirrorPhase} from './sql_graph';
 
 // The Data Explorer's route (`DataExplorerPlugin`'s registered page), which is
 // the only place the "add to the current graph" section makes sense.
@@ -80,7 +81,16 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
 
   private renderAreas(attrs: DuneGraphPanelAttrs): m.Children {
     const {controller} = attrs;
-    if (!controller.graphStep.ready) return this.renderUnloaded(controller);
+    // The load owns the whole tab while it runs, not just before the first one.
+    // A build is minutes long and reports itself as a ~30-row list of the
+    // tables it is making (see renderStep); that doesn't fit above the other
+    // panes, and the panes themselves are answering about a graph that is still
+    // being assembled underneath them. A `buildEdgeMirror()` retry from a
+    // loaded state takes the tab over too, which is consistent: it is where the
+    // progress is.
+    if (controller.busy || !controller.graphStep.ready) {
+      return this.renderUnloaded(controller);
+    }
     return [
       this.renderExplore(attrs),
       this.renderMirrorWarnings(controller),
@@ -177,9 +187,12 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       '.pf-dune-graph__load',
       m(
         '.pf-dune-graph__load-title',
-        graphStep.busy ? 'Loading build graph…' : 'Build graph not loaded',
+        // `controller.busy` rather than `graphStep.busy`: this screen now stays
+        // up for the two SQL tiers as well, and the graph being parsed is only
+        // the first of the three things a load does.
+        controller.busy ? 'Loading build graph…' : 'Build graph not loaded',
       ),
-      this.renderStats(controller),
+      this.renderStats(controller, started),
       graphStep.error !== undefined &&
         m(Callout, {icon: 'error'}, graphStep.error),
       m(Button, {
@@ -197,12 +210,19 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   // whether this is a click or a coffee break - it is what the one load gate is
   // measured against (see controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING) - so
   // it's called out rather than listed.
-  private renderStats(controller: DuneGraphController): m.Children {
+  private renderStats(
+    controller: DuneGraphController,
+    started: boolean,
+  ): m.Children {
     const stats = controller.stats;
     if (stats === undefined) return undefined;
     // The stats are in by this point, so this is exactly "too big to load
     // unprompted" - the reason the user is looking at this screen at all.
-    const overLimit = !controller.autoLoads;
+    // Only until the load starts, though: the callout is the answer to a
+    // question that has been answered, and this screen stays up for the whole
+    // build now, where six lines of warning would just push the phase list out
+    // of a narrow panel.
+    const overLimit = !started && !controller.autoLoads;
     return [
       m(
         '.pf-dune-graph__load-stats',
@@ -263,14 +283,56 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   }
 
   private renderStep(step: LoadStep): m.Children {
+    return [
+      m(
+        '.pf-dune-graph__step',
+        step.busy ? m(Spinner) : m(Icon, {icon: statusIcon(step.status)}),
+        m('span', step.label),
+        step.error !== undefined &&
+          m('span.pf-dune-graph__step-error', step.error),
+      ),
+      this.renderPhases(step),
+    ];
+  }
+
+  /**
+   * Everything a step is going to build, listed in full from the moment it
+   * starts.
+   *
+   * The whole point of the list is that it shows what is left as well as what
+   * is now: a tier is minutes of work and naming only the current table said
+   * nothing about how much of it remained. So all of a started step's phases
+   * render, each with its own state, rather than only the active one.
+   *
+   * Not before it starts, though - a step that hasn't begun stays a single row,
+   * or the panel would open on thirty greyed-out table names - and not for the
+   * graph step, whose `phases` is empty (see controller.ts).
+   */
+  private renderPhases(step: LoadStep): m.Children {
+    if (step.status === 'idle' || step.phases.length === 0) return undefined;
     return m(
-      '.pf-dune-graph__step',
-      step.busy ? m(Spinner) : m(Icon, {icon: stepIcon(step)}),
-      m('span', step.label),
-      step.detail !== undefined &&
-        m('span.pf-dune-graph__step-detail', step.detail),
-      step.error !== undefined &&
-        m('span.pf-dune-graph__step-error', step.error),
+      '.pf-dune-graph__phases',
+      step.phases.map((phase) => this.renderPhase(step, phase)),
+    );
+  }
+
+  private renderPhase(step: LoadStep, phase: MirrorPhase): m.Children {
+    const done = step.done.has(phase.id);
+    const active = !done && step.activePhase === phase.id;
+    // Mapped onto the step vocabulary so the ticks and circles down the list
+    // mean the same thing at both levels; the active row gets the spinner a
+    // running step gets.
+    const status: LoadStatus = done ? 'ready' : active ? 'loading' : 'idle';
+    const modifier = done ? 'done' : active ? 'active' : 'pending';
+    return m(
+      `.pf-dune-graph__phase.pf-dune-graph__phase--${modifier}`,
+      active ? m(Spinner) : m(Icon, {icon: statusIcon(status)}),
+      m('span', phase.label),
+      // Only the active row carries a row count; a finished phase's last count
+      // is just its total, and keeping it would make the list a wall of digits.
+      active &&
+        step.phaseDetail !== undefined &&
+        m('span.pf-dune-graph__phase-detail', step.phaseDetail),
     );
   }
 
@@ -278,21 +340,9 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   // panel - it just costs specific features, so say which.
   private renderMirrorWarnings(controller: DuneGraphController): m.Children {
     const {nodeMirrorStep, edgeMirrorStep} = controller;
-    if (nodeMirrorStep.busy || edgeMirrorStep.busy) {
-      const step = nodeMirrorStep.busy ? nodeMirrorStep : edgeMirrorStep;
-      return m(
-        '.pf-dune-graph__status',
-        m(Spinner),
-        m(
-          'span',
-          nodeMirrorStep.busy
-            ? 'Building node tables…'
-            : 'Building edge tables…',
-        ),
-        step.detail !== undefined &&
-          m('span.pf-dune-graph__step-detail', step.detail),
-      );
-    }
+    // Nothing here reports a *running* tier any more: a load owns the tab (see
+    // renderAreas) and reports itself phase by phase there, so a spinner above
+    // the panes would be a second, poorer account of the same work.
     if (nodeMirrorStep.error !== undefined) {
       return m(
         Callout,
@@ -366,8 +416,12 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   }
 }
 
-function stepIcon(step: LoadStep): string {
-  switch (step.status) {
+// One icon vocabulary for both levels of the list: a step and one of its phases
+// say "done", "failed" and "not yet" the same way. Takes the status rather than
+// the step because a phase has no `LoadStep` of its own - see `renderPhase`,
+// which maps its three states onto these.
+function statusIcon(status: LoadStatus): string {
+  switch (status) {
     case 'ready':
       return 'check_circle';
     case 'error':

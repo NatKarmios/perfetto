@@ -30,6 +30,7 @@
 
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../trace_processor/engine';
+import type {LoadStep} from './controller';
 import {
   AUTO_LOAD_ROW_LIMIT_SETTING,
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
@@ -39,7 +40,12 @@ import type {Trace} from '../../public/trace';
 import type {BuildGraph} from './graph';
 import {DEPS_SECTION} from './graph_blob';
 import {dep, rule, testGraph} from './graph_test_helper';
-import {EDGE_HARD_LIMIT} from './sql_graph';
+import type {MirrorProgress} from './sql_graph';
+import {
+  EDGE_HARD_LIMIT,
+  EDGE_MIRROR_PHASES,
+  NODE_MIRROR_PHASES,
+} from './sql_graph';
 
 // A graph small enough to mirror in a test but with real edges in it, so the
 // two mirror builders have something to walk.
@@ -214,5 +220,88 @@ describe('load', () => {
     expect(h.controller.edgeMirrorStep.status).toBe('idle');
     expect(h.controller.edgeMirrorStep.error).toBeUndefined();
     expect(h.sql.some((q) => q.includes('_dune_depset'))).toBe(false);
+  });
+});
+
+/**
+ * A step's progress sink, which is private for the good reason that nothing
+ * outside a running build should be writing a step's phase state.
+ *
+ * Reached through a cast anyway, because the state machine it implements is
+ * exactly what the panel's phase list renders and it can't be exercised report
+ * by report any other way: a build against the stub engine runs to completion
+ * inside one `await`, so the only thing observable afterwards is the end state.
+ * The interesting cases are the ones in between.
+ */
+function sinkFor(
+  controller: DuneGraphController,
+  step: LoadStep,
+): (p: MirrorProgress) => void {
+  const c = controller as unknown as {
+    progressFor(s: LoadStep): (p: MirrorProgress) => void;
+  };
+  return c.progressFor(step);
+}
+
+describe('load progress', () => {
+  test('a start report alone makes a phase active', () => {
+    // The case the start report exists for: a table small enough to finish
+    // inside one flush reports no rows at all, and inferring "active" from a
+    // row count would leave every such phase looking untouched.
+    const h = makeHarness();
+    const step = h.controller.nodeMirrorStep;
+    sinkFor(h.controller, step)({phase: 'sql: create node views'});
+    expect(step.activePhase).toBe('sql: create node views');
+    expect(step.phaseDetail).toBeUndefined();
+    expect(step.done.size).toBe(0);
+  });
+
+  test('row reports fill the detail in, and the next phase clears it', () => {
+    const h = makeHarness();
+    const step = h.controller.nodeMirrorStep;
+    const report = sinkFor(h.controller, step);
+
+    report({phase: 'sql: insert _dune_str'});
+    report({phase: 'sql: insert _dune_str', done: 50_000, total: 120_000});
+    expect(step.activePhase).toBe('sql: insert _dune_str');
+    expect(step.phaseDetail).toBe('50,000 of 120,000 rows');
+    expect(step.done.size).toBe(0);
+
+    // A different phase means the one before it finished - that is the only
+    // signal either builder gives that a phase is over.
+    report({phase: 'sql: insert _dune_node'});
+    expect(step.done.has('sql: insert _dune_str')).toBe(true);
+    expect(step.activePhase).toBe('sql: insert _dune_node');
+    expect(step.phaseDetail).toBeUndefined();
+  });
+
+  test('a finished step is ticked all the way through', async () => {
+    // Including the last phase of each tier, which no later report ever closes,
+    // and the conditional reverse index the stub graph is too small to need.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    await h.controller.load();
+
+    for (const [step, phases] of [
+      [h.controller.nodeMirrorStep, NODE_MIRROR_PHASES],
+      [h.controller.edgeMirrorStep, EDGE_MIRROR_PHASES],
+    ] as const) {
+      expect(step.status).toBe('ready');
+      expect(step.activePhase).toBeUndefined();
+      expect(step.phaseDetail).toBeUndefined();
+      expect([...step.done].sort()).toEqual(phases.map((p) => p.id).sort());
+    }
+  });
+
+  test('a re-run starts from nothing done', async () => {
+    // A retry rebuilds the whole tier, so what a previous attempt got through
+    // is not still true of the current one.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    const step = h.controller.edgeMirrorStep;
+    step.done.add('sql: a phase from another run');
+    step.activePhase = 'sql: a phase from another run';
+    await h.controller.load();
+    expect(step.done.has('sql: a phase from another run')).toBe(false);
   });
 });

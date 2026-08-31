@@ -47,6 +47,10 @@
     align-items: flex-start;
     gap: 8px;
     padding: 8px;
+    // `min-height` so the scroll is real: a flex item's default `min-height:
+    // auto` refuses to shrink below its content, and with both tiers' phases
+    // listed this is comfortably taller than the panel.
+    min-height: 0;
     overflow-y: auto;
   }
 
@@ -103,10 +107,43 @@
     color: var(--pf-color-danger);
   }
 
-  // Where a running step has got to (the SQL tiers' insert progress). Numeric
-  // and updated many times a second, so it's tabular to stop the line jittering.
-  &__step-detail {
-    overflow-wrap: anywhere;
+  // Every table a started step is going to build, under the step's own row (see
+  // panel.ts). ~29 rows across the two tiers in a narrow panel, so the whole
+  // block stays deliberately quiet: no colour, no weight, and the hierarchy
+  // carried by an indent and a rule rather than by anything louder.
+  &__phases {
+    display: flex;
+    flex-direction: column;
+    margin-left: 5px;
+    padding-left: 8px;
+    border-left: 1px solid var(--pf-color-border);
+  }
+
+  &__phase {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  // Pending is the majority state, so it recedes rather than the other two
+  // shouting; done keeps the list's own muted colour, and only the one running
+  // row is at full contrast.
+  &__phase--pending {
+    opacity: 0.55;
+  }
+
+  &__phase--active {
+    color: var(--pf-color-text);
+    font-weight: 500;
+  }
+
+  // Where a running phase has got to. Numeric and updated many times a second,
+  // so it's tabular to stop the digits jittering, and pushed to the right so
+  // the labels down the list stay in one column.
+  &__phase-detail {
+    margin-left: auto;
+    padding-left: 8px;
+    white-space: nowrap;
     color: var(--pf-color-text-muted);
     font-variant-numeric: tabular-nums;
   }
