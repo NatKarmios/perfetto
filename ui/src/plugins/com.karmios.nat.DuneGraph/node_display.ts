@@ -251,3 +251,17 @@ export function decorateDepPath(path: string): {
     text: path,
   };
 }
+
+/**
+ * The last path component of a program path, so a process reads `ocamlc.opt`
+ * rather than `/nix/store/…/bin/ocamlc.opt`.
+ *
+ * Undefined in, undefined out - every caller has a fallback for a process slice
+ * whose `debug.prog` arg is missing (see row_details_panel.ts,
+ * selection_info_panel.ts).
+ */
+export function basename(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  const cut = path.lastIndexOf('/');
+  return cut === -1 ? path : path.slice(cut + 1);
+}

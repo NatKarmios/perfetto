@@ -44,7 +44,7 @@ import {Tree, TreeNode} from '../../widgets/tree';
 import {LONG, NUM, STR, STR_NULL} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
 import type {GraphTrackKind} from './graph_track';
-import {decorateNode, formatDurNs} from './node_display';
+import {basename, decorateNode, formatDurNs} from './node_display';
 
 // The row fields the panel reads. A subset of a track's schema (see
 // graph_track.ts), spelled out here so the panel doesn't depend on the shape of
@@ -146,7 +146,7 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
       members.push({
         kind: 'process',
         rowId: it.id,
-        label: basename(it.prog) ?? it.name,
+        label: basename(it.prog ?? undefined) ?? it.name,
         dur: it.dur >= 0n ? Number(it.dur) : undefined,
       });
     }
@@ -224,13 +224,4 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
       ),
     );
   }
-}
-
-// The last path component of a program, so a row reads `gcc` rather than
-// `/nix/store/…/bin/gcc`. Undefined in, undefined out - the caller falls back
-// to the slice's own name.
-function basename(path: string | null): string | undefined {
-  if (path === null) return undefined;
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? path : path.slice(cut + 1);
 }
