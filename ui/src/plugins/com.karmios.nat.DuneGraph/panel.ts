@@ -70,6 +70,10 @@ interface DuneGraphPanelAttrs {
  * itself and the same screen is just a progress report.
  */
 export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
+  // Which phase we last scrolled to, so the running one is revealed once per
+  // phase rather than once per redraw. See `revealPhase`.
+  private scrolledPhase?: string;
+
   view({attrs}: m.CVnode<DuneGraphPanelAttrs>): m.Children {
     const {controller} = attrs;
     return m(
@@ -272,6 +276,10 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   // failed (see controller.ts). Individually reported because they fail
   // individually - a built graph with no edge tables is a usable state.
   private renderSteps(controller: DuneGraphController): m.Children {
+    // Between loads there is nothing to keep on screen, and forgetting where we
+    // scrolled to means the next load reveals its first phase instead of
+    // deciding it is already there (see `revealPhase`).
+    if (!controller.busy) this.scrolledPhase = undefined;
     return m(
       '.pf-dune-graph__steps',
       [
@@ -326,6 +334,14 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     const modifier = done ? 'done' : active ? 'active' : 'pending';
     return m(
       `.pf-dune-graph__phase.pf-dune-graph__phase--${modifier}`,
+      {
+        oncreate: active
+          ? (v: m.VnodeDOM) => this.revealPhase(v.dom, phase.id)
+          : undefined,
+        onupdate: active
+          ? (v: m.VnodeDOM) => this.revealPhase(v.dom, phase.id)
+          : undefined,
+      },
       active ? m(Spinner) : m(Icon, {icon: statusIcon(status)}),
       m('span', phase.label),
       // Only the active row carries a row count; a finished phase's last count
@@ -334,6 +350,30 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
         step.phaseDetail !== undefined &&
         m('span.pf-dune-graph__phase-detail', step.phaseDetail),
     );
+  }
+
+  /**
+   * Keeps the running phase on screen.
+   *
+   * The two tiers declare 29 phases between them, which is taller than the
+   * panel, so the spinner otherwise walks off the bottom partway through the
+   * node tier and the list stops being a progress report - you would have to
+   * hunt for the row that is moving.
+   *
+   * Once per phase, not once per redraw, which is what `scrolledPhase` is for:
+   * the active row redraws on every row report (one per 50k inserted rows), and
+   * re-scrolling on each of those would fight a panel the user had deliberately
+   * scrolled elsewhere and re-run layout for no change. Scrolling only when the
+   * phase itself changes means a scroll-away survives until the build moves on.
+   *
+   * `block: 'nearest'` both keeps the movement minimal and makes an already
+   * visible row a no-op, so a panel tall enough to show the whole list never
+   * scrolls at all.
+   */
+  private revealPhase(dom: Element, phaseId: string): void {
+    if (this.scrolledPhase === phaseId) return;
+    this.scrolledPhase = phaseId;
+    dom.scrollIntoView({block: 'nearest'});
   }
 
   // Once the graph itself is up, a missing or failed SQL tier doesn't hide the
