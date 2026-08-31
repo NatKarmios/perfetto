@@ -368,3 +368,67 @@ describe('sql_graph dir tier', () => {
     expect(drops).toHaveLength(2);
   });
 });
+
+describe('sql_graph process view', () => {
+  // Five rules, so the rule/dep boundary the generated SQL inlines is 5.
+  const graph = () =>
+    testGraph([rule('1'), rule('2'), rule('3'), rule('4'), rule('5'), dep('a')])
+      .graph;
+
+  const processView = async () => {
+    const sql = await capture(graph());
+    const stmt = sql.find((q) =>
+      q.includes('CREATE PERFETTO VIEW dune_process'),
+    );
+    expect(stmt).toBeDefined();
+    return stmt!;
+  };
+
+  it('reaches a node from a trace-side rule id through an index', async () => {
+    // Without an index on `orig_id` this join is a scan of every node in the
+    // build per process slice (818k rows on the monorepo trace) - the reason
+    // `_dune_process` is keyed by `rule_id` in the first place (process_sql.ts).
+    // Partial, because only the rule half is ever probed: a dep's `orig_id` is
+    // a dict id in an unrelated numbering.
+    const sql = await capture(graph());
+    expect(sql.filter((q) => q.startsWith('CREATE INDEX'))).toContain(
+      'CREATE INDEX _dune_node_orig_id ON _dune_node(orig_id) ' +
+        'WHERE node_id < 5',
+    );
+  });
+
+  it('bounds the node join to rules, with the term the index needs', async () => {
+    const stmt = await processView();
+    // Same predicate as the partial index, so SQLite can use it - and required
+    // for correctness regardless, since a dep's `orig_id` would otherwise match
+    // whatever rule id happened to share its number.
+    expect(stmt).toContain('LEFT JOIN _dune_node n');
+    expect(stmt).toContain('ON n.node_id < 5 AND n.orig_id = p.rule_id');
+  });
+
+  it('keeps a process whose rule the blob never recorded', async () => {
+    // LEFT, not JOIN: such a row reports a NULL node rather than vanishing.
+    expect(await processView()).toContain('LEFT JOIN _dune_node');
+  });
+
+  it('sources slice_id from the join so it carries the id type', async () => {
+    // A stored INTEGER would not be a SliceTable::Id, and the column would stop
+    // rendering as a slice link - the same reason `dune_node.slice_id` is
+    // sourced this way.
+    const stmt = await processView();
+    expect(stmt).toContain('slice_id JOINID(slice.id)');
+    expect(stmt).toContain('SELECT s.id AS slice_id');
+    expect(stmt).toContain('JOIN slice s ON s.id = p.slice_id');
+  });
+
+  it('names the duration dur_ns, so the query tab prints it as one', async () => {
+    // `slice.dur` verbatim, which is already nanoseconds; the name is what
+    // query_tab.ts's DURATION_COLS matches on.
+    expect(await processView()).toContain('s.dur AS dur_ns');
+  });
+
+  it('drops the view with the tier', async () => {
+    const sql = await capture(graph());
+    expect(sql).toContain('DROP VIEW IF EXISTS dune_process');
+  });
+});

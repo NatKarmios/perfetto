@@ -348,7 +348,8 @@ export class DuneQueryTab implements Tab {
         "Use the '&' omnibox mode or the “Dune: query graph” command. " +
           'Query dune_node / dune_edge, per-kind detail via dune_rule / ' +
           'dune_dep / dune_rule_target (joined on node_id), every path the ' +
-          'build mentions via dune_string, or a relation ' +
+          'build mentions via dune_string, the processes the build spawned ' +
+          'via dune_process, or a relation ' +
           'function - bounded dune_descendants/dune_ancestors(node_id, ' +
           'max_steps, step_kind), unbounded ' +
           'dune_all_descendants/dune_all_ancestors(node_id), one-hop ' +

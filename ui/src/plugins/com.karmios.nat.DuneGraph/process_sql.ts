@@ -37,10 +37,16 @@
  * once, here, and the track filters this table instead.
  *
  * Keyed by `rule_id`, not by `node_id`, deliberately. Nothing in here knows
- * about the graph, and the one consumer already has the rule ids of the nodes
- * it wants (graph.ts's `timingKeyOf`). Keying on `node_id` would mean joining
- * `_dune_node`, which SQLite has no index to serve and would run as a scan of
- * all 818k node rows per process slice.
+ * about the graph, and the consumer this table exists for already has the rule
+ * ids of the nodes it wants (graph.ts's `timingKeyOf`). Translating to a
+ * `node_id` here would mean joining `_dune_node` on `orig_id` while the table is
+ * built - which is a scan of all 818k node rows per process slice unless
+ * something has indexed that column.
+ *
+ * Something now has: the `dune_process` view (see sql_graph.ts) is this table's
+ * public face, and it does make that join - lazily, per query, against a
+ * partial index the node tier keeps. So a caller wanting nodes reads that view;
+ * this table stays the graph-free thing the track filters.
  */
 
 import type {Engine} from '../../trace_processor/engine';

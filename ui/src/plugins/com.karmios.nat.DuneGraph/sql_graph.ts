@@ -189,6 +189,15 @@
  * - `_dune_process(slice_id, rule_id)` — the trace's process slices, indexed by
  *   the rule that forced them. Not derived from the graph at all; owned by the
  *   node tier only so it shares its lifetime. See process_sql.ts.
+ * - `dune_process(slice_id, ts, dur_ns, rule_id, node_id)` — a typed PERFETTO
+ *   VIEW over it, one row per spawned process: its slice as a
+ *   `JOINID(slice.id)`, that slice's `ts`/`dur` verbatim, the `rule_id` its
+ *   `dune.forced_by` named, and the graph node that rule is (NULL if the blob
+ *   never recorded it). The one view whose *source* is the trace rather than
+ *   the graph, so it is also the one place the mirror joins a trace-side rule
+ *   id back to a node - which is what `_dune_node(orig_id)` is indexed for.
+ *   A process slice forced by a `dep <path>` rather than a `rule <id>` has no
+ *   rule to hang off and contributes no row (see process_sql.ts).
  *
  * The two header tables (`_dune_core`, `_dune_depset`) and the member tables
  * they address are the mirror's one departure from "every table is keyed by
@@ -238,7 +247,7 @@ import {
 import type {PerfRun} from './perf';
 import {measure, measureSync} from './perf';
 import type {SqlProcessSlices} from './process_sql';
-import {buildProcessSlices} from './process_sql';
+import {PROCESS_TABLE, buildProcessSlices} from './process_sql';
 
 // `dune_node` / `dune_rule` / `dune_dep` / `dune_edge` are typed PERFETTO VIEWS
 // (so slice-id columns are real SliceTable::Ids, and the stored integer codes
@@ -274,6 +283,14 @@ const RULE_DEP_SET_INDEX = '_dune_rule_dep_set';
 // a query wants (see the file header).
 const RULE_TARGET_TABLE = 'dune_rule_target';
 const STRING_TABLE = 'dune_string';
+// The typed view over `_dune_process` (process_sql.ts), plus the index that
+// makes its rule -> node join a probe. Unlike RULE_DEP_SET_INDEX this one is
+// kept for the tier's lifetime: it is one entry per *rule* (386k on the
+// monorepo trace, ~1.5 MB at the measured marginal cost), and it is the only
+// way anything can get from a trace-side rule id back to a node at all - see
+// {@link processView}.
+const PROCESS_VIEW = 'dune_process';
+const NODE_ORIG_ID_INDEX = '_dune_node_orig_id';
 // The directory hierarchy: a raw table and its typed view like the node tables,
 // plus a transient rule -> directory map the duration rollup is aggregated
 // through and which is dropped again as soon as it has been (see
@@ -964,8 +981,60 @@ function dirView(): string {
 }
 
 /**
+ * The typed view over `_dune_process`: a spawned process's slice, its span, the
+ * rule that forced it and that rule's node.
+ *
+ * `slice_id` is sourced as `s.id` from the join rather than as the stored
+ * integer, so it carries a real `SliceTable::Id` the way `dune_node.slice_id`
+ * does; `ts` / `dur_ns` come off the same row, which makes the join a
+ * primary-key probe per process slice rather than something the view has to
+ * store. The duration is named `dur_ns` rather than `dur` so the query tab
+ * prints it as a duration (see `DURATION_COLS` in query_tab.ts) - it is
+ * `slice.dur` verbatim, which is already nanoseconds.
+ *
+ * `node_id` is typed `LONG` and not `JOINID(dune_node.node_id)`, for the same
+ * reason `dune_node.dir_id` is: the mirror doesn't declare its own
+ * cross-references as id types. It still chip-renders in the Dune query tab,
+ * which resolves a node-bearing column by *name* (see `CHIP_COLS` in
+ * query_tab.ts).
+ *
+ * Two things about the node join:
+ *
+ * - It is LEFT. A process can name a rule the blob never recorded, and such a
+ *   row should report a NULL node rather than vanish - the same call
+ *   {@link SqlNodeMirror.ruleNodeForProcessSlice} makes.
+ * - `node_id < ruleCount` is not redundant. A dep's `orig_id` is a dict id, in
+ *   a numbering unrelated to rule ids, so without it the join would match
+ *   whatever dep happened to share the number. It is also the term that lets
+ *   SQLite use the *partial* NODE_ORIG_ID_INDEX, which is written with the same
+ *   predicate.
+ *
+ * Only rule-forced processes appear at all: `_dune_process` is filtered to the
+ * `rule <id>` forcer form (see process_sql.ts), so `rule_id` is never NULL here
+ * and a `dep <path>`-forced process contributes no row.
+ */
+function processView(space: NodeSpace): string {
+  return `
+      CREATE PERFETTO VIEW ${PROCESS_VIEW}(
+        slice_id JOINID(slice.id),
+        ts LONG,
+        dur_ns LONG,
+        rule_id LONG,
+        node_id LONG
+      ) AS
+      SELECT s.id AS slice_id, s.ts AS ts, s.dur AS dur_ns,
+        p.rule_id AS rule_id, n.node_id AS node_id
+      FROM ${PROCESS_TABLE} p
+      JOIN slice s ON s.id = p.slice_id
+      LEFT JOIN ${RAW_NODE_TABLE} n
+        ON n.node_id < ${space.ruleCount} AND n.orig_id = p.rule_id
+  `;
+}
+
+/**
  * Builds the node tier of the mirror (`dune_string` / `dune_node` / `dune_rule`
- * / `dune_dep` / `dune_rule_target` / `dune_dir`, plus the timing table they
+ * / `dune_dep` / `dune_rule_target` / `dune_dir` / `dune_process`, plus the
+ * timing table they
  * join) from `graph` and returns a handle that answers per-node timing and drops everything
  * it made when disposed. Rebuilding is idempotent: any pre-existing tables of
  * the same name are dropped first.
@@ -987,7 +1056,13 @@ export async function buildNodeMirror(
   // goes through the caller's dispose first), but then a stale view would make
   // the timing rebuild the confusing failure instead of this one.
   const dropViews = async () => {
-    for (const view of [NODE_TABLE, RULE_TABLE, DEP_TABLE, DIR_TABLE]) {
+    for (const view of [
+      NODE_TABLE,
+      RULE_TABLE,
+      DEP_TABLE,
+      DIR_TABLE,
+      PROCESS_VIEW,
+    ]) {
       await engine.tryQuery(`DROP VIEW IF EXISTS ${view}`);
     }
   };
@@ -1128,6 +1203,21 @@ export async function buildNodeMirror(
     p.rows(graph.nodeCount + dirs.tree.size);
   });
 
+  // What `dune_process` joins a rule id back to its node with (see
+  // {@link processView}). Partial, so it is one entry per rule rather than per
+  // node - a dep's `orig_id` is a dict id that no rule id is ever looked up
+  // against, so indexing the dep half would be pure waste. Kept for the tier's
+  // lifetime rather than created and dropped around the join, since the view
+  // resolves it lazily on every query and this is the only rule id -> node
+  // route the mirror has. Dropped with its table.
+  await measure(perf, `sql: index ${NODE_TABLE} rule ids`, async (p) => {
+    await engine.query(
+      `CREATE INDEX ${NODE_ORIG_ID_INDEX} ON ${RAW_NODE_TABLE}(orig_id) ` +
+        `WHERE node_id < ${space.ruleCount}`,
+    );
+    p.rows(graph.ruleCount);
+  });
+
   // Typed views over the raw tables: this is where the stored integers become
   // the public schema again - dict ids resolve through `dune_string`, codes
   // through a CASE, a node's kind from which side of `ruleCount` its id falls,
@@ -1227,6 +1317,7 @@ export async function buildNodeMirror(
       LEFT JOIN ${STRING_TABLE} ps ON ps.id = n.orig_id
     `);
     await engine.query(dirView());
+    await engine.query(processView(space));
   });
 
   return {

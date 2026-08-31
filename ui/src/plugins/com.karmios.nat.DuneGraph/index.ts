@@ -156,8 +156,8 @@ export default class implements PerfettoPlugin {
       hint: `'${QUERY_TRIGGER}' for Dune graph SQL`,
       placeholder:
         'SQL over dune_node / dune_edge / dune_rule / dune_dep / ' +
-        'dune_string / dune_descendants / dune_ancestors / … — add nodes via ' +
-        'node / src / dst / slice_id columns',
+        'dune_string / dune_process / dune_descendants / dune_ancestors / … ' +
+        '— add nodes via node / src / dst / slice_id columns',
       className: 'pf-omnibox--query-mode pf-dune-query-mode',
       onSubmit: (query: string) => {
         void queryTab.runQuery(query);
