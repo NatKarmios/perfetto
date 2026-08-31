@@ -32,25 +32,34 @@
 import type {Engine} from '../../trace_processor/engine';
 import type {BuildGraph} from './graph';
 import {dep, depSet, rule, testGraph} from './graph_test_helper';
-import {buildEdgeMirror, buildNodeMirror} from './sql_graph';
+import {PerfRun} from './perf';
+import type {MirrorPhase} from './sql_graph';
+import {
+  EDGE_MIRROR_PHASES,
+  NODE_MIRROR_PHASES,
+  buildEdgeMirror,
+  buildNodeMirror,
+} from './sql_graph';
 
-// Every statement the two mirror builders issue, in order.
-async function capture(graph: BuildGraph): Promise<string[]> {
-  const sql: string[] = [];
+// An engine that answers nothing and appends every statement issued against it
+// to `sql`. Enough for the builders, which only read back a query's result for
+// the directory duration rollup (empty here) and the row counts.
+function stubEngine(sql: string[]): Engine {
   const result = {
     firstRow: () => ({n: 0}),
     iter: () => ({valid: () => false, next: () => {}}),
   };
-  const engine = {
-    query: async (q: string) => {
-      sql.push(q);
-      return result;
-    },
-    tryQuery: async (q: string) => {
-      sql.push(q);
-      return result;
-    },
-  } as unknown as Engine;
+  const record = async (q: string) => {
+    sql.push(q);
+    return result;
+  };
+  return {query: record, tryQuery: record} as unknown as Engine;
+}
+
+// Every statement the two mirror builders issue, in order.
+async function capture(graph: BuildGraph): Promise<string[]> {
+  const sql: string[] = [];
+  const engine = stubEngine(sql);
   const nodes = await buildNodeMirror(engine, graph);
   await buildEdgeMirror(engine, graph, nodes);
   return sql;
@@ -430,5 +439,68 @@ describe('sql_graph process view', () => {
   it('drops the view with the tier', async () => {
     const sql = await capture(graph());
     expect(sql).toContain('DROP VIEW IF EXISTS dune_process');
+  });
+});
+
+describe('sql_graph phase manifests', () => {
+  // NODE_MIRROR_PHASES / EDGE_MIRROR_PHASES are hand-written (see their doc for
+  // why they are not a descriptor array the builders are driven from), so this
+  // is what stops them drifting: the load view lists them up front, and a
+  // `measure()` added, removed or reordered without an entry would silently
+  // produce a progress list that skips - or mis-orders - a step.
+  //
+  // Every phase in both tiers is unconditional except the edge tier's reverse
+  // index, which is gated on the hard edge cap and so always runs at this size.
+
+  // Which positions the recorded phase names and the manifest disagree at, one
+  // human-readable line each. An empty list is the pass, and a failure names
+  // the entry that moved rather than dumping two thirty-element arrays.
+  function drift(
+    ran: readonly string[],
+    manifest: readonly MirrorPhase[],
+  ): string[] {
+    const declared = manifest.map((p) => p.id);
+    const lines: string[] = [];
+    for (let i = 0; i < Math.max(ran.length, declared.length); i++) {
+      if (ran[i] === declared[i]) continue;
+      lines.push(
+        `#${i}: the build ran ${ran[i] ?? '(nothing)'}, ` +
+          `the manifest declares ${declared[i] ?? '(nothing)'}`,
+      );
+    }
+    return lines;
+  }
+
+  // A graph touching every optional shape a phase might otherwise skip: a
+  // shared dep set (cores and adds), a dynamic stage, a rule with targets, and
+  // a forced dep.
+  function graph(): BuildGraph {
+    return testGraph([
+      rule('r1', {
+        depSet: depSet({core: ['c1'], adds: ['a1']}),
+        dynamicDeps: [['d1']],
+        targetFiles: ['lib/a.ml'],
+      }),
+      rule('r2', {depSet: depSet({core: ['c1'], adds: ['a1']})}),
+      dep('c1'),
+      dep('a1'),
+      dep('d1'),
+      dep('lib/a.ml', {forcedBy: {rule: 'r1'}}),
+    ]).graph;
+  }
+
+  it('NODE_MIRROR_PHASES is what buildNodeMirror measures, in order', async () => {
+    const perf = new PerfRun('node tier');
+    await buildNodeMirror(stubEngine([]), graph(), {perf});
+    expect(drift(perf.phaseNames, NODE_MIRROR_PHASES)).toEqual([]);
+  });
+
+  it('EDGE_MIRROR_PHASES is what buildEdgeMirror measures, in order', async () => {
+    const g = graph();
+    const engine = stubEngine([]);
+    const nodes = await buildNodeMirror(engine, g);
+    const perf = new PerfRun('edge tier');
+    await buildEdgeMirror(engine, g, nodes, {perf});
+    expect(drift(perf.phaseNames, EDGE_MIRROR_PHASES)).toEqual([]);
   });
 });

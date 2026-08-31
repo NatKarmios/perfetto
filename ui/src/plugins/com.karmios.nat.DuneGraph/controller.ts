@@ -52,7 +52,12 @@ import {
 } from './family';
 import {TraceGraphSource} from './trace_graph_source';
 import {measure, PerfRun} from './perf';
-import type {Distances, SqlEdgeMirror, SqlNodeMirror} from './sql_graph';
+import type {
+  Distances,
+  MirrorProgress,
+  SqlEdgeMirror,
+  SqlNodeMirror,
+} from './sql_graph';
 import {EDGE_HARD_LIMIT, buildEdgeMirror, buildNodeMirror} from './sql_graph';
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
@@ -141,6 +146,19 @@ export class LoadStep {
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+// The table an insert phase is filling, for the one-line progress detail. The
+// phase ids are console-facing diagnostics (`sql: insert _dune_depset_add`),
+// and only the insert ones carry row counts, so the prefix is stripped rather
+// than shown. Falls back to the whole id if the shape ever changes, which is
+// wordy but never wrong.
+const INSERT_PHASE_PREFIX = 'sql: insert ';
+
+function insertedTable(phase: string): string {
+  return phase.startsWith(INSERT_PHASE_PREFIX)
+    ? phase.slice(INSERT_PHASE_PREFIX.length)
+    : phase;
 }
 
 /**
@@ -1136,9 +1154,17 @@ export class DuneGraphController {
 
   // A step's progress sink. The inserts yield to the event loop before each
   // report (see sql_graph.ts), so asking for a redraw here actually paints one.
-  private progressFor(step: LoadStep): (detail: string) => void {
-    return (detail: string) => {
-      step.detail = detail;
+  //
+  // Only the row reports are turned into a line today. A build also announces
+  // every phase as it starts, which is what a list of all the phases would be
+  // driven off, but `LoadStep` has nowhere to put that yet, and redrawing on it
+  // would only repaint the previous phase's line unchanged.
+  private progressFor(step: LoadStep): (p: MirrorProgress) => void {
+    return (p: MirrorProgress) => {
+      if (p.done === undefined || p.total === undefined) return;
+      step.detail =
+        `${insertedTable(p.phase)}: ${p.done.toLocaleString()} of ` +
+        `${p.total.toLocaleString()} rows`;
       this.changed();
     };
   }

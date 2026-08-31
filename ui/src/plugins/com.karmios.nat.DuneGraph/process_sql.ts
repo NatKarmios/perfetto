@@ -61,6 +61,15 @@ const FORCED_BY_ARG = 'debug.dune.forced_by';
 const RULE_PREFIX = 'rule ';
 
 /**
+ * The name {@link buildProcessSlices} measures itself under.
+ *
+ * Exported for the same reason as lifecycle_sql.ts's LIFECYCLE_TIMING_PHASE:
+ * this is a node-tier phase, so it is listed in sql_graph.ts's
+ * NODE_MIRROR_PHASES and reported from there, and the two must not drift.
+ */
+export const PROCESS_INDEX_PHASE = 'process: index by rule';
+
+/**
  * One row per process slice: its slice id and the `rule_id` that forced it.
  *
  * A plain `PERFETTO TABLE` rather than the keyed `WITHOUT ROWID` shape
@@ -97,7 +106,7 @@ export async function buildProcessSlices(
   engine: Engine,
   perf?: PerfRun,
 ): Promise<SqlProcessSlices> {
-  const rowCount = await measure(perf, 'process: index by rule', async (p) => {
+  const rowCount = await measure(perf, PROCESS_INDEX_PHASE, async (p) => {
     await engine.tryQuery(`DROP TABLE IF EXISTS ${PROCESS_TABLE}`);
     // The name filter goes in the inner query so `extract_arg` - the expensive
     // half - runs only for slices that can possibly qualify. The GLOB is what

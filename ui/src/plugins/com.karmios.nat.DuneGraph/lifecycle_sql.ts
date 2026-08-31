@@ -72,6 +72,16 @@ const TRACK_BY_KIND: ReadonlyMap<TimingKind, string> = new Map([
 const KIND_CODES: readonly TimingKind[] = [...TRACK_BY_KIND.keys()];
 
 /**
+ * The name {@link buildLifecycleTiming} measures itself under.
+ *
+ * Exported so sql_graph.ts can name the phase without repeating the string:
+ * building the timing table is one of the node tier's phases, so it appears in
+ * NODE_MIRROR_PHASES and is reported to `MirrorOptions.onProgress` from there,
+ * and the drift test compares those ids against the recorded phase names.
+ */
+export const LIFECYCLE_TIMING_PHASE = 'lifecycle: pair in SQL';
+
+/**
  * The code {@link TIMING_TABLE} stores `kind` as. Exported because the node
  * mirror's views join the table and so have to write the same code (see
  * `timingJoin` in sql_graph.ts).
@@ -198,7 +208,7 @@ export async function buildLifecycleTiming(
     }
   };
 
-  const rowCount = await measure(perf, 'lifecycle: pair in SQL', async (p) => {
+  const rowCount = await measure(perf, LIFECYCLE_TIMING_PHASE, async (p) => {
     await engine.tryQuery(`DROP TABLE IF EXISTS ${TIMING_TABLE}`);
     await dropIntermediates();
     try {

@@ -240,14 +240,19 @@ import {
   RULE_OUTCOMES,
 } from './graph';
 import {
+  LIFECYCLE_TIMING_PHASE,
   TIMING_TABLE,
   buildLifecycleTiming,
   timingKindCode,
 } from './lifecycle_sql';
-import type {PerfRun} from './perf';
+import type {Phase, PerfRun} from './perf';
 import {measure, measureSync} from './perf';
 import type {SqlProcessSlices} from './process_sql';
-import {PROCESS_TABLE, buildProcessSlices} from './process_sql';
+import {
+  PROCESS_INDEX_PHASE,
+  PROCESS_TABLE,
+  buildProcessSlices,
+} from './process_sql';
 
 // `dune_node` / `dune_rule` / `dune_dep` / `dune_edge` are typed PERFETTO VIEWS
 // (so slice-id columns are real SliceTable::Ids, and the stored integer codes
@@ -395,6 +400,31 @@ export interface Distances {
 }
 
 /**
+ * Where a build has got to, as reported to {@link MirrorOptions.onProgress}.
+ *
+ * `phase` is the id of one of {@link NODE_MIRROR_PHASES} /
+ * {@link EDGE_MIRROR_PHASES}, so a caller holding the manifest can place the
+ * report in the list of everything the build will do rather than only knowing
+ * what is happening right now.
+ *
+ * A report is emitted when a phase *starts*, and then again as rows go in for
+ * the phases that insert any (`done`/`total` are absent otherwise). The
+ * start-of-phase report is what makes the list usable and is not redundant with
+ * the row reports: {@link materializeTable} only reports every
+ * {@link YIELD_EVERY} statements, i.e. every 50,000 rows, so a small table
+ * finishes without ever emitting one and would otherwise never look active.
+ */
+export interface MirrorProgress {
+  // The manifest id of the phase now running.
+  readonly phase: string;
+
+  // Rows inserted so far, and how many the row source expects to yield. Only
+  // the insert phases report these, and only every YIELD_EVERY statements.
+  readonly done?: number;
+  readonly total?: number;
+}
+
+/**
  * How a build reports itself while it runs. Both tiers are long enough to need
  * one (the edge tier by minutes), and the inserts yield to the event loop
  * between batches so the report can actually be painted.
@@ -403,10 +433,120 @@ export interface MirrorOptions {
   // Per-phase timing breakdown; see perf.ts.
   readonly perf?: PerfRun;
 
-  // Called with a short human-readable description of where the build is up to,
-  // at most once per YIELD_EVERY statements. Cleared by the caller when the
+  // Called at the start of every phase, and again as each insert phase flushes
+  // (at most once per YIELD_EVERY statements). Cleared by the caller when the
   // build ends.
-  readonly onProgress?: (detail: string) => void;
+  readonly onProgress?: (p: MirrorProgress) => void;
+}
+
+/**
+ * One unit of a mirror build, as something outside the builder can list.
+ *
+ * `id` is *exactly* the name the phase is measured under (see perf.ts), which
+ * is what lets sql_graph_unittest.ts compare the manifests below against a
+ * `PerfRun`'s recorded phase names and fail the moment the two drift.
+ */
+export interface MirrorPhase {
+  // The `measure()` / `measureSync()` label. Console-facing, not for display.
+  readonly id: string;
+
+  // What a progress list shows. The side panel it renders in is narrow and
+  // there are ~30 rows across both tiers, so these are short human labels
+  // ('Dep sets') rather than the raw table names the ids carry
+  // ('_dune_depset_add').
+  readonly label: string;
+}
+
+/**
+ * Everything {@link buildNodeMirror} does, in execution order.
+ *
+ * Hand-written, and kept honest by a test rather than by construction. The
+ * alternative - turning the builder into an array of `{name, run}` descriptors
+ * driven by a loop, so the list could not drift - was rejected: the phases hand
+ * locals to one another (`stringTable`, `dirs`, `targets`, `selfDurNs`), so a
+ * descriptor array needs a shared mutable context object and turns a readable
+ * straight-line function into a state machine. A list plus a drift test buys
+ * the same guarantee far more cheaply.
+ *
+ * The ids are built from the same constants the builder measures itself with,
+ * so renaming a table renames both halves at once; what the test catches is a
+ * phase being *added*, removed or reordered.
+ */
+export const NODE_MIRROR_PHASES: readonly MirrorPhase[] = [
+  // Not literally in buildNodeMirror: these two are measured inside
+  // buildLifecycleTiming / buildProcessSlices, which it calls first. They are
+  // node-tier work and cost node-tier time, so they are listed here and the
+  // builder reports their start on their behalf.
+  {id: LIFECYCLE_TIMING_PHASE, label: 'Timing'},
+  {id: PROCESS_INDEX_PHASE, label: 'Processes'},
+  {id: `sql: ${DIR_TABLE} census`, label: 'Directory census'},
+  {id: `sql: insert ${STRING_TABLE}`, label: 'Strings'},
+  {id: `sql: insert ${RAW_NODE_TABLE}`, label: 'Nodes'},
+  {id: `sql: insert ${RAW_RULE_TABLE}`, label: 'Rules'},
+  {id: `sql: insert ${RAW_DEP_TABLE}`, label: 'Deps'},
+  {id: `sql: insert ${RULE_TARGET_TABLE}`, label: 'Targets'},
+  {id: `sql: index ${RULE_TARGET_TABLE}`, label: 'Target index'},
+  // The rule -> directory map and the rollup over it, from ruleDurationsByDir.
+  // The map table is dropped again as soon as the sum has run.
+  {id: `sql: insert ${RULE_DIR_TABLE}`, label: 'Rule directories'},
+  {id: `sql: sum ${DIR_TABLE} durations`, label: 'Directory durations'},
+  {id: `sql: insert ${RAW_DIR_TABLE}`, label: 'Directories'},
+  {id: `sql: index ${DIR_TABLE} descent`, label: 'Directory index'},
+  {id: `sql: index ${NODE_TABLE} rule ids`, label: 'Rule id index'},
+  {id: 'sql: create node views', label: 'Views'},
+];
+
+/**
+ * Everything {@link buildEdgeMirror} does, in execution order. See
+ * {@link NODE_MIRROR_PHASES} for why this is a list rather than a refactor.
+ *
+ * The reverse-index phase is the one entry that is conditional
+ * (`edgeCount <= REVERSE_INDEX_EDGE_LIMIT`). That limit is the hard cap, so a
+ * build that reaches this list at all runs it; a renderer that wants to be
+ * exact about it would have to know the edge count, which is not worth a field
+ * for a case the builder refuses to reach.
+ */
+export const EDGE_MIRROR_PHASES: readonly MirrorPhase[] = [
+  {id: 'sql: edge census', label: 'Edge census'},
+  {id: 'sql: member offsets', label: 'Member offsets'},
+  {id: `sql: insert ${CORE_TABLE}`, label: 'Dep set cores'},
+  {id: `sql: insert ${CORE_MEMBER_TABLE}`, label: 'Core members'},
+  {id: `sql: insert ${DEPSET_TABLE}`, label: 'Dep sets'},
+  {id: `sql: insert ${DEPSET_ADD_TABLE}`, label: 'Dep set additions'},
+  {id: `sql: insert ${DYN_STAGE_TABLE}`, label: 'Dynamic stages'},
+  {id: `sql: insert ${RAW_EDGE_TABLE}`, label: 'Dep edges'},
+  {id: `sql: insert ${OUT_TABLE}`, label: 'Out edges'},
+  {id: `sql: index ${DYN_STAGE_TABLE}`, label: 'Stage index'},
+  {id: `sql: insert ${FORCED_EDGE_TABLE}`, label: 'Forced edges'},
+  {id: 'sql: index the reverse path', label: 'Reverse index'},
+  {id: 'sql: create edge views', label: 'Views'},
+  {id: 'sql: create relation functions', label: 'Relation functions'},
+];
+
+/**
+ * Opens a phase: reports its start to `onProgress`, then measures it.
+ *
+ * Every measured region in the two builders goes through this rather than
+ * calling {@link measure} directly, so that the manifests above describe
+ * something the build actually announces.
+ */
+function phase<T>(
+  opts: MirrorOptions,
+  name: string,
+  fn: (p: Phase) => Promise<T>,
+): Promise<T> {
+  opts.onProgress?.({phase: name});
+  return measure(opts.perf, name, fn);
+}
+
+// Synchronous {@link phase}.
+function phaseSync<T>(
+  opts: MirrorOptions,
+  name: string,
+  fn: (p: Phase) => T,
+): T {
+  opts.onProgress?.({phase: name});
+  return measureSync(opts.perf, name, fn);
 }
 
 /**
@@ -610,7 +750,7 @@ async function materializeTable(
   source: RowSource,
   opts: MirrorOptions,
 ): Promise<DroppableTable> {
-  await measure(opts.perf, `sql: insert ${name}`, async (p) => {
+  await phase(opts, `sql: insert ${name}`, async (p) => {
     await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
     await engine.query(`CREATE TABLE ${name} (${schema})`);
     const prefix = `INSERT INTO ${name} (${columns.join(', ')}) VALUES `;
@@ -627,10 +767,11 @@ async function materializeTable(
       batch.length = 0;
       await engine.query(sql);
       if (statements % YIELD_EVERY === 0) {
-        opts.onProgress?.(
-          `${name}: ${inserted.toLocaleString()} of ` +
-            `${source.count.toLocaleString()} rows`,
-        );
+        opts.onProgress?.({
+          phase: `sql: insert ${name}`,
+          done: inserted,
+          total: source.count,
+        });
         await yieldToUi();
       }
     };
@@ -894,7 +1035,7 @@ async function ruleDurationsByDir(
     opts,
   );
   try {
-    await measure(opts.perf, `sql: sum ${DIR_TABLE} durations`, async (p) => {
+    await phase(opts, `sql: sum ${DIR_TABLE} durations`, async (p) => {
       const result = await engine.query(`
         SELECT m.dir_id AS dir_id, sum(t.dur_ns) AS dur_ns
         FROM ${TIMING_TABLE} t
@@ -1060,17 +1201,23 @@ export async function buildNodeMirror(
 
   // Timing comes from SQL now, and the views join it, so it has to exist before
   // they're created (and be dropped after them - see the dispose below).
+  //
+  // These two measure themselves (they take a PerfRun, not the options), so
+  // their start is reported here on their behalf rather than through `phase()`
+  // - see NODE_MIRROR_PHASES, which lists them first for the same reason.
+  opts.onProgress?.({phase: LIFECYCLE_TIMING_PHASE});
   const lifecycle = await buildLifecycleTiming(engine, perf);
   // Nothing in the mirror joins this one - the timeline's process track reads
   // it straight by name - but it is built and dropped with the tier so that
   // `nodeMirrorReady` gates it too (see controller.ts).
+  opts.onProgress?.({phase: PROCESS_INDEX_PHASE});
   const processes: SqlProcessSlices = await buildProcessSlices(engine, perf);
 
   // The directory census runs first, ahead of every insert: it is a pure pass
   // over the graph (no engine), and `_dune_node.dir_id` comes out of it. Only
   // the census moves up - RAW_DIR_TABLE itself is still built last, because its
   // duration rollup has to read the timing table.
-  const dirs = measureSync(perf, `sql: ${DIR_TABLE} census`, (p) => {
+  const dirs = phaseSync(opts, `sql: ${DIR_TABLE} census`, (p) => {
     const census = censusDirs(graph);
     p.rows(census.tree.size);
     return census;
@@ -1140,7 +1287,7 @@ export async function buildNodeMirror(
   // `dune_dep.path` (the documented "what build-dep is this output" query) is
   // otherwise a cross product. Plain (non-PERFETTO) indexes on a plain table;
   // dropped automatically when their table is dropped.
-  await measure(perf, `sql: index ${RULE_TARGET_TABLE}`, async (p) => {
+  await phase(opts, `sql: index ${RULE_TARGET_TABLE}`, async (p) => {
     await engine.query(
       `CREATE INDEX ${RULE_TARGET_TABLE}_node_id ` +
         `ON ${RULE_TARGET_TABLE}(node_id)`,
@@ -1182,7 +1329,7 @@ export async function buildNodeMirror(
   //   expansion, and an index over 19k rows is nothing.
   //
   // Plain indexes on plain tables, so both are dropped with their table.
-  await measure(perf, `sql: index ${DIR_TABLE} descent`, async (p) => {
+  await phase(opts, `sql: index ${DIR_TABLE} descent`, async (p) => {
     await engine.query(
       `CREATE INDEX ${RAW_NODE_TABLE}_dir_id ON ${RAW_NODE_TABLE}(dir_id)`,
     );
@@ -1200,7 +1347,7 @@ export async function buildNodeMirror(
   // lifetime rather than created and dropped around the join, since the view
   // resolves it lazily on every query and this is the only rule id -> node
   // route the mirror has. Dropped with its table.
-  await measure(perf, `sql: index ${NODE_TABLE} rule ids`, async (p) => {
+  await phase(opts, `sql: index ${NODE_TABLE} rule ids`, async (p) => {
     await engine.query(
       `CREATE INDEX ${NODE_ORIG_ID_INDEX} ON ${RAW_NODE_TABLE}(orig_id) ` +
         `WHERE node_id < ${space.ruleCount}`,
@@ -1223,7 +1370,7 @@ export async function buildNodeMirror(
   // join is LEFT: a node whose timing never resolved to a lifecycle instant
   // should still get a row (with NULLs) rather than vanish from the mirror, and
   // a cache-hit rule ran no action at all.
-  await measure(perf, 'sql: create node views', async () => {
+  await phase(opts, 'sql: create node views', async () => {
     // The `forced_by` target is a rule id for a RULE forcer (printed as-is) and
     // a dict id for every other kind that names anything (resolved through the
     // intern table) - so the join is skipped for RULE, whose payload would
@@ -1843,7 +1990,6 @@ export async function buildEdgeMirror(
   nodes: SqlNodeMirror,
   opts: MirrorOptions = {},
 ): Promise<SqlEdgeMirror> {
-  const {perf} = opts;
   // The node-id space the generated statements are written against is the
   // *mirrored* one, which is where the endpoints have to exist.
   const space: NodeSpace = {
@@ -1854,7 +2000,7 @@ export async function buildEdgeMirror(
   // One pass over the CSR: the exact edge count the hard cap is checked against
   // (rather than the CSR's slot count, which includes references to nodes the
   // blob never recorded) and the forced edges.
-  const census = measureSync(perf, 'sql: edge census', (p) => {
+  const census = phaseSync(opts, 'sql: edge census', (p) => {
     const computed = censusEdges(graph);
     p.rows(computed.edgeCount);
     p.note(`${computed.forcedCount.toLocaleString()} forced`);
@@ -1873,8 +2019,8 @@ export async function buildEdgeMirror(
 
   // Where every stored member lands, which is what the header tables' rowid
   // ranges are.
-  const {coreOffsets, setOffsets, depOffsets} = measureSync(
-    perf,
+  const {coreOffsets, setOffsets, depOffsets} = phaseSync(
+    opts,
     'sql: member offsets',
     (p) => {
       const offsets = {
@@ -1982,7 +2128,7 @@ export async function buildEdgeMirror(
   // unlike the reverse-path indexes below: a downward hop would otherwise scan
   // the whole table per rule. Free in practice - no dune trace to hand records
   // a single dynamic dep - but a graph that did would make every walk quadratic.
-  await measure(perf, `sql: index ${DYN_STAGE_TABLE}`, async (p) => {
+  await phase(opts, `sql: index ${DYN_STAGE_TABLE}`, async (p) => {
     await engine.query(
       `CREATE INDEX IF NOT EXISTS ${DYN_STAGE_TABLE}_node_id ` +
         `ON ${DYN_STAGE_TABLE}(node_id)`,
@@ -2014,7 +2160,7 @@ export async function buildEdgeMirror(
   // design would otherwise walk straight into.
   const reverseIndexed = edgeCount <= REVERSE_INDEX_EDGE_LIMIT;
   if (reverseIndexed) {
-    await measure(perf, 'sql: index the reverse path', async (p) => {
+    await phase(opts, 'sql: index the reverse path', async (p) => {
       const index = async (table: string, column: string) => {
         await engine.query(
           `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
@@ -2044,12 +2190,12 @@ export async function buildEdgeMirror(
   // The internal (src, dst) view the full-relation scans read, and the public
   // typed view. Both spell out the same five arms - see {@link edgeArms} for
   // why the walks do *not* read either of them.
-  await measure(perf, 'sql: create edge views', async () => {
+  await phase(opts, 'sql: create edge views', async () => {
     await engine.query(allEdgeView());
     await engine.query(edgeView());
   });
 
-  await measure(perf, 'sql: create relation functions', async () => {
+  await phase(opts, 'sql: create relation functions', async () => {
     // graph_reachable_bfs! lives in this stdlib module.
     await engine.query('INCLUDE PERFETTO MODULE graphs.search');
     // Parameterized transitive-relationship functions + list-macro wrappers.

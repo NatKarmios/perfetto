@@ -134,6 +134,21 @@ export class PerfRun {
   }
 
   /**
+   * The phases recorded so far, in the order they first ran - the same order
+   * the dump prints them in.
+   *
+   * Exposed so a declared list of phases can be checked against what the code
+   * actually runs: sql_graph.ts's NODE_MIRROR_PHASES / EDGE_MIRROR_PHASES are
+   * hand-written (the builders pass locals between phases, so they can't be a
+   * driven-by-a-loop descriptor array), and this is what stops them drifting
+   * when a `measure()` is added or renamed. Not for display - these are
+   * console-facing diagnostic names.
+   */
+  get phaseNames(): readonly string[] {
+    return this.order;
+  }
+
+  /**
    * Start a phase. The caller owns the returned handle and must `end()` it -
    * prefer `phase()`/`phaseSync()`, which do that (and cope with
    * exceptions) for you. Only use this directly when the measured region can't
