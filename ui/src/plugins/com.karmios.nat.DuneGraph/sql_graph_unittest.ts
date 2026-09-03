@@ -432,7 +432,7 @@ describe('sql_graph process view', () => {
 
   it('names the duration dur_ns, so the query tab prints it as one', async () => {
     // `slice.dur` verbatim, which is already nanoseconds; the name is what
-    // query_tab.ts's DURATION_COLS matches on.
+    // query_results.ts's DURATION_COLS matches on.
     expect(await processView()).toContain('s.dur AS dur_ns');
   });
 

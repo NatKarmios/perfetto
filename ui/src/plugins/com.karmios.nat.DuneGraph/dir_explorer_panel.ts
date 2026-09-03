@@ -136,7 +136,7 @@ interface DirExplorerPanelAttrs {
   readonly controller: DuneGraphController;
   // For `trace.engine`. Everything else comes through the controller, but the
   // queries here are the pane's own rather than the mirror's, so they are issued
-  // directly the way query_tab.ts issues its own.
+  // directly the way query_results.ts issues its own.
   readonly trace: Trace;
 }
 

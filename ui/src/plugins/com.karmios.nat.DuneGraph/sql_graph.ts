@@ -1127,14 +1127,14 @@ function dirView(): string {
  * does; `ts` / `dur_ns` come off the same row, which makes the join a
  * primary-key probe per process slice rather than something the view has to
  * store. The duration is named `dur_ns` rather than `dur` so the query tab
- * prints it as a duration (see `DURATION_COLS` in query_tab.ts) - it is
+ * prints it as a duration (see `DURATION_COLS` in query_results.ts) - it is
  * `slice.dur` verbatim, which is already nanoseconds.
  *
  * `node_id` is typed `LONG` and not `JOINID(dune_node.node_id)`, for the same
  * reason `dune_node.dir_id` is: the mirror doesn't declare its own
  * cross-references as id types. It still chip-renders in the Dune query tab,
  * which resolves a node-bearing column by *name* (see `CHIP_COLS` in
- * query_tab.ts).
+ * query_results.ts).
  *
  * Two things about the node join:
  *

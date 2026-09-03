@@ -22,7 +22,7 @@ import type {PathTreeGroup, PathTreeRow} from './path_tree';
  * Graph-membership interactivity shared by both `PathTreeView` trees - the
  * current-selection panel's Dependants/Dependencies lists
  * (`selection_info_panel.ts`) and the query tab's results tree
- * (`query_tab.ts`). Unlike `node_display.ts` / `path_tree.ts` /
+ * (`query_results.ts`). Unlike `node_display.ts` / `path_tree.ts` /
  * `path_tree_view.ts`, this depends on `DuneGraphController` and the `Button`
  * widget, since it's specifically the add/remove wiring glued onto a tree
  * leaf/group rather than generic display or tree structure.

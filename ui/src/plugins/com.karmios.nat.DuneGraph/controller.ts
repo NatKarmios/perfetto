@@ -846,7 +846,7 @@ export class DuneGraphController {
   // Whether the cheap SQL tier (`dune_node` and the per-kind detail tables) is
   // queryable right now. Anything that puts those table names into SQL has to
   // check first - they simply don't exist until the mirror is built (see
-  // graph_track.ts, query_tab.ts).
+  // graph_track.ts, query_results.ts).
   get nodeMirrorReady(): boolean {
     return this.nodeMirror !== undefined;
   }

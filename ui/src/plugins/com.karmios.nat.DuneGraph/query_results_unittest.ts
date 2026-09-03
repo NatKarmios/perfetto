@@ -17,8 +17,8 @@ import type {Row, SqlValue} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
 import {dep, rule, testGraph} from './graph_test_helper';
-import type {TreeLeafEntry} from './query_tab';
-import {buildNodeTreeItems, formatExtraParts, sliceLink} from './query_tab';
+import type {TreeLeafEntry} from './query_results';
+import {buildNodeTreeItems, formatExtraParts, sliceLink} from './query_results';
 import type {PathTreeItem} from './path_tree';
 
 // Projects a `PathTreeItem<TreeLeafEntry>` down to a plain, easy-to-assert-on
