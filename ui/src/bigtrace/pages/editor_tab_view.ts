@@ -27,7 +27,7 @@ import {InMemoryDataSource} from '../../components/widgets/datagrid/in_memory_da
 import {getBigtraceEndpoint} from '../settings/endpoint_storage';
 import {BigtraceAsyncDataSource} from '../query/bigtrace_async_data_source';
 import {setHistoryActiveTab} from '../query/query_history';
-import {formatPerfettoSql} from '../query/sql_formatter';
+import {formatPerfettoSql} from '../../components/query_table/sql_formatter';
 import {BigtraceQueryClient} from '../query/bigtrace_query_client';
 import type {QueryRunner} from '../query/query_runner';
 import {

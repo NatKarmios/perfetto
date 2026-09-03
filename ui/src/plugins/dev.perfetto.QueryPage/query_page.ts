@@ -13,10 +13,9 @@
 // limitations under the License.
 
 import m from 'mithril';
-import {Engine} from 'syntaqlite';
-import {assetSrc} from '../../base/assets';
 import {Icons} from '../../base/semantic_icons';
 import type {QueryResponse} from '../../components/query_table/queries';
+import {formatPerfettoSql} from '../../components/query_table/sql_formatter';
 import {QueryHistoryComponent} from '../../components/widgets/query_history';
 import type {Setting} from '../../public/settings';
 import type {Trace} from '../../public/trace';
@@ -96,28 +95,6 @@ export interface QueryPageAttrs {
 }
 
 export class QueryPage implements m.ClassComponent<QueryPageAttrs> {
-  // Lazily-initialized SQL formatter engine, scoped to this component instance.
-  private formatterEnginePromise?: Promise<Engine>;
-
-  private getFormatterEngine(): Promise<Engine> {
-    if (this.formatterEnginePromise === undefined) {
-      const engine = new Engine({
-        runtimeJsPath: assetSrc('assets/syntaqlite-runtime.js'),
-        runtimeWasmPath: assetSrc('assets/syntaqlite-runtime.wasm'),
-      });
-      this.formatterEnginePromise = (async () => {
-        await engine.load();
-        const binding = await engine.loadDialectFromUrl(
-          assetSrc('assets/syntaqlite-perfetto.wasm'),
-          'syntaqlite_perfetto_dialect_template',
-        );
-        engine.setDialectPointer(binding.ptr);
-        return engine;
-      })();
-    }
-    return this.formatterEnginePromise;
-  }
-
   view({attrs}: m.CVnode<QueryPageAttrs>) {
     const {editorTabs, activeTabId} = attrs;
     const sidebarVisible = attrs.sidebarVisibleSetting.get();
@@ -391,18 +368,9 @@ export class QueryPage implements m.ClassComponent<QueryPageAttrs> {
   }
 
   private async formatSql(attrs: QueryPageAttrs, tabId: string, text: string) {
-    try {
-      const engine = await this.getFormatterEngine();
-      const formatted = engine.format(text, {
-        lineWidth: 80,
-        indentWidth: 2,
-        keywordCase: 'upper',
-        semicolons: true,
-      });
-      attrs.onEditorContentUpdate?.(tabId, formatted);
-      m.redraw();
-    } catch (e) {
-      console.error('SQL formatting failed', e);
-    }
+    const formatted = await formatPerfettoSql(text);
+    if (formatted === undefined) return;
+    attrs.onEditorContentUpdate?.(tabId, formatted);
+    m.redraw();
   }
 }
