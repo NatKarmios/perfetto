@@ -127,7 +127,13 @@ $indent-guide-offset: 12px;
   }
 
   &--align-right {
-    .pf-grid-cell__menu-button {
+    // The actions are reordered before the content, so pack both against the
+    // right hand edge of the cell.
+    justify-content: flex-end;
+
+    .pf-grid-cell__actions {
+      // The actions now sit to the left of the content, so it's the content's
+      // leading padding that needs absorbing, not its trailing padding.
       margin-left: 0;
       margin-right: calc(-1 * var(--pf-cell-padding-inline));
       order: 2;
@@ -135,6 +141,9 @@ $indent-guide-offset: 12px;
 
     .pf-grid-cell__content {
       order: 3;
+      // Don't grow, otherwise the content fills the cell and strands the
+      // actions over at its left hand edge.
+      flex-grow: 0;
       text-align: right;
     }
   }
