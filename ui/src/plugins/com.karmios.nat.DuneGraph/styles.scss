@@ -947,6 +947,83 @@
   }
 }
 
+// The full-page Dune query surface: a strip of editor tabs (each an editor over
+// a `.pf-dune-query` results view) beside the history sidebar. All of this is
+// height plumbing - nothing here sizes itself, so every link in the chain from
+// the page down to the editor has to be told to fill its parent.
+.pf-dune-query-page {
+  height: 100%;
+  font-family: var(--pf-font-compact);
+  position: relative;
+
+  // The page/sidebar split, when the sidebar is showing.
+  > .pf-split-panel {
+    height: 100%;
+  }
+
+  &__editor-tabs {
+    height: 100%;
+
+    // Below the tab strip, which is a fixed 32px.
+    .pf-tabs__content {
+      height: calc(100% - 32px);
+    }
+
+    // A tab's own editor/results split.
+    .pf-split-panel {
+      height: 100%;
+    }
+  }
+
+  &__editor-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+
+    // `contain: strict` is load-bearing, not a hint: without it CodeMirror's
+    // own measuring fights the flex parent and the editor grows without bound
+    // (see b/388579546).
+    .pf-editor {
+      flex: 1;
+      contain: strict;
+      min-height: 3rem;
+    }
+  }
+
+  &__toolbar {
+    border-bottom: 1px solid var(--pf-color-border);
+  }
+
+  // The "graph not loaded" callout: message and its load button on one line.
+  &__graph-state {
+    .pf-callout__content {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+  }
+
+  // Pushes the trailing tab-strip control (the sidebar toggle) to the far
+  // right, past the "+" button.
+  &__tab-spacer {
+    flex: 1;
+  }
+
+  &__history {
+    height: 100%;
+    overflow: auto;
+  }
+
+  &__hotkeys {
+    display: inline-flex;
+    color: gray;
+    font-style: italic;
+    font-size: smaller;
+    user-select: none;
+  }
+}
+
 // The Dune SQL omnibox mode reuses the core `--query-mode` look (wide black
 // monospace box) and only recolours the text + icon orange (vs the core green).
 // The compound selector outranks `.pf-omnibox--query-mode input` regardless of

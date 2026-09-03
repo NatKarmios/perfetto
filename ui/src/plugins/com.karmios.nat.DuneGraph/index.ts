@@ -27,6 +27,7 @@ import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
 import {DirExplorerPanel} from './dir_explorer_panel';
 import {DuneGraphPanel} from './panel';
+import {DuneQueryPage} from './query_page';
 import {DuneQueryTab} from './query_tab';
 import {dumpPerfRuns} from './perf';
 import './styles.scss';
@@ -35,6 +36,9 @@ const PLUGIN_ID = 'com.karmios.nat.DuneGraph';
 const SIDE_PANEL_URI = `${PLUGIN_ID}#Nodes`;
 const EXPLORER_URI = `${PLUGIN_ID}#Explorer`;
 const QUERY_TAB_URI = `${PLUGIN_ID}#Query`;
+// Route of the full-page query surface; '#!' + this is the fragment the sidebar
+// entry links to and the command navigates to.
+const QUERY_PAGE_ROUTE = '/dune_query';
 // Omnibox trigger for the Dune-graph SQL mode (':' and '>' are already taken).
 const QUERY_TRIGGER = '@';
 
@@ -206,6 +210,36 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#QueryGraph`,
       name: 'Dune: query graph',
       callback: () => trace.omnibox.activateRegisteredMode(QUERY_TRIGGER),
+    });
+
+    // The same SQL, given a whole page: several queries kept side by side, each
+    // with its own editor and results, plus the history sidebar and the
+    // graph-load state shown before a query is run rather than as an error
+    // after it. Alongside the drawer tab above, not instead of it - the '@'
+    // mode is the fast one-off lookup next to the timeline you are reading,
+    // this is where a session of exploring the graph happens. Built once here
+    // and rendered from the route because the page's tabs and their results
+    // have to survive navigating away and back (see query_page.ts).
+    const queryPage = new DuneQueryPage(trace, controller);
+    trace.pages.registerPage({
+      route: QUERY_PAGE_ROUTE,
+      render: () => queryPage.render(),
+    });
+
+    trace.sidebar.addMenuItem({
+      section: 'current_trace',
+      text: 'Dune Query (SQL)',
+      href: `#!${QUERY_PAGE_ROUTE}`,
+      icon: 'database',
+      // Immediately after the core "Query (SQL)" entry (21), which is the thing
+      // it is a variant of, and before "Metrics" (22).
+      sortOrder: 21.5,
+    });
+
+    trace.commands.registerCommand({
+      id: `${PLUGIN_ID}#QueryPage`,
+      name: 'Dune: open query page',
+      callback: () => trace.navigate(`#!${QUERY_PAGE_ROUTE}`),
     });
 
     // Deliberately NOT awaited, and deliberately not a load: onTraceLoad is on
