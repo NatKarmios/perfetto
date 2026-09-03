@@ -43,6 +43,7 @@ import {Section} from '../../widgets/section';
 import {Tree, TreeNode} from '../../widgets/tree';
 import {LONG, NUM, STR, STR_NULL} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
+import type {NodeId} from './graph';
 import type {GraphTrackKind} from './graph_track';
 import {basename, decorateNode, formatDurNs} from './node_display';
 
@@ -64,6 +65,11 @@ interface Member {
   readonly kind: GraphTrackKind;
   readonly rowId: number;
   readonly label: string;
+  // The node's untrimmed label, as a tooltip: a dep path's build-root prefix is
+  // folded away in `label` (see `decorateDepPath`) and this list has no icon to
+  // hold it, so the whole thing goes here instead. Absent for a process, whose
+  // label is a program name rather than a node's.
+  readonly title?: string;
   // A process's duration, shown because a rule that spawned several is usually
   // being read for which one was slow. Perfetto's -1 (a slice that never
   // finished) is left out rather than formatted as a negative time.
@@ -102,27 +108,23 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
     const family = this.controller.familyMembersOf(this.kind, this.row.id);
     if (family === undefined) return;
     const {graph} = this.controller;
+    // A node member's row id *is* its node id for all three kinds, so a member
+    // is entirely determined by the kind it stands for and the node behind it.
+    const nodeMember = (kind: GraphTrackKind, node: NodeId): Member => ({
+      kind,
+      rowId: node,
+      label: decorateNode(graph, node).text,
+      title: graph.labelOf(node),
+    });
     const members: Member[] = [];
     if (family.dep !== undefined) {
-      members.push({
-        kind: 'dep',
-        rowId: family.dep,
-        label: decorateNode(graph, family.dep).text,
-      });
+      members.push(nodeMember('dep', family.dep));
     }
     if (family.hasRule) {
-      members.push({
-        kind: 'rule',
-        rowId: family.rule,
-        label: decorateNode(graph, family.rule).text,
-      });
+      members.push(nodeMember('rule', family.rule));
     }
     if (family.hasAction) {
-      members.push({
-        kind: 'action',
-        rowId: family.rule,
-        label: decorateNode(graph, family.rule).text,
-      });
+      members.push(nodeMember('action', family.rule));
     }
     for (const p of await this.processLabels(family.processes)) {
       members.push(p);
@@ -201,11 +203,14 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
         members.map((member) => {
           const current =
             member.kind === this.kind && member.rowId === this.row.id;
+          // The label's own tooltip sits on an inner span, so it wins over the
+          // link's "Select on the timeline" when the text itself is hovered.
+          const label = m('span', {title: member.title}, member.label);
           return m(TreeNode, {
             left: member.kind,
             right: [
               current
-                ? m('span', member.label)
+                ? label
                 : m(
                     Anchor,
                     {
@@ -214,7 +219,7 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
                       onclick: () =>
                         this.controller.goToRow(member.kind, member.rowId),
                     },
-                    member.label,
+                    label,
                   ),
               member.dur !== undefined &&
                 m('span.pf-dune-graph__status-dur', formatDurNs(member.dur)),

@@ -52,7 +52,6 @@ import {LONG, NUM, NUM_NULL, STR} from '../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../trace_processor/sql_utils';
 import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
-import {decorateNode} from './node_display';
 import {PROCESS_TABLE} from './process_sql';
 import {GraphTrackDetailsPanel} from './row_details_panel';
 
@@ -310,6 +309,9 @@ function sliceName(
   if (kind === 'process') return row.name;
   const node = controller.nodeForNodeId(row.id);
   if (node === undefined) return row.name;
-  // Same text as everywhere else, minus the icon a canvas can't draw.
-  return decorateNode(controller.graph, node).text;
+  // The node's *untrimmed* label. Everywhere else a path's build-root prefix is
+  // folded into a leading icon whose tooltip still names it (see
+  // `decorateDepPath`), but a canvas can't draw that icon - so the slice keeps
+  // the whole path rather than dropping a prefix with no way to recover it.
+  return controller.graph.labelOf(node);
 }

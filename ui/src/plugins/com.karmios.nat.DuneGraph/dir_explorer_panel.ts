@@ -85,6 +85,8 @@ import {MenuDivider, MenuItem, MenuTitle, PopupMenu} from '../../widgets/menu';
 import {
   DEP_RESOLUTIONS,
   DEP_STATUSES,
+  FAILED_OUTCOMES,
+  FAILED_STATUSES,
   FORCED_BY_KINDS,
   RULE_OUTCOMES,
 } from './graph';
@@ -119,13 +121,6 @@ const DURATION_THRESHOLDS: ReadonlyArray<readonly [label: string, ns: bigint]> =
     ['≥ 1s', 1_000_000_000n],
     ['≥ 10s', 10_000_000_000n],
   ];
-
-// What "failed" selects, across both kinds: dune's two real rule failures and a
-// dep whose own build failed. A cancelled or unfinished node is not a failure
-// (an interrupted or truncated build is not a broken one), matching
-// `FAILED_OUTCOME_CODES` in sql_graph.ts.
-const FAILED_OUTCOMES = ['failed-deps', 'failed-action'] as const;
-const FAILED_STATUSES = ['failed'] as const;
 
 /** The two kinds, in the order the pane lists them. */
 const KINDS: readonly NodeKind[] = ['rule', 'dep'];

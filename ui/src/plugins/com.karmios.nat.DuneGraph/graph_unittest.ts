@@ -438,3 +438,116 @@ describe('edges', () => {
     expect(g.names(descendants(g.graph, g.id('r2')))).toEqual(['x', 'y', 'z']);
   });
 });
+
+describe('buildRoots', () => {
+  const roots = (g: TestGraph) => [...g.graph.buildRoots].sort();
+
+  // The shape a real monorepo trace has: most rules in `_build/<context>/`, a
+  // large minority under the `.actions` role one level deeper.
+  it('derives a prefix per context, role or not', () => {
+    const g = testGraph([
+      rule('1', {dir: '_build/default/src/dag'}),
+      rule('2', {dir: '_build/default/bin'}),
+      rule('3', {dir: '_build/.actions/default/src/dag'}),
+      rule('4', {dir: '_build/.actions/default/bin'}),
+      rule('5', {dir: '_build/install/default/lib'}),
+    ]);
+
+    expect(roots(g)).toEqual([
+      '_build/.actions/default',
+      '_build/default',
+      '_build/install/default',
+    ]);
+  });
+
+  // The build dir's name is derived, not assumed: `--build-dir` renames it,
+  // and a context need not be called `default`.
+  it('assumes neither the build dir nor the context name', () => {
+    const g = testGraph([
+      rule('1', {dir: 'out/prod/src'}),
+      rule('2', {dir: 'out/.actions/prod/src'}),
+    ]);
+
+    expect(roots(g)).toEqual(['out/.actions/prod', 'out/prod']);
+  });
+
+  // Nothing recurs one level deeper, so there is no context to find and no
+  // prefix any path is allowed to lose.
+  it('derives nothing from a single-level layout', () => {
+    const g = testGraph([
+      rule('1', {dir: '_build/default/src'}),
+      rule('2', {dir: '_build/default/bin'}),
+      rule('3', {dir: 'src'}),
+      rule('4', {dir: '.'}),
+      rule('5'),
+    ]);
+
+    expect(roots(g)).toEqual([]);
+  });
+
+  // A package dir sharing a context's name doesn't extend the prefix past the
+  // context: the shortest match wins.
+  it('stops at the first context in a dir', () => {
+    const g = testGraph([
+      rule('1', {dir: '_build/default/default/src'}),
+      rule('2', {dir: '_build/.actions/default/src'}),
+    ]);
+
+    expect(roots(g)).toEqual(['_build/.actions/default', '_build/default']);
+  });
+
+  it('tolerates a trailing slash on a dir', () => {
+    const g = testGraph([
+      rule('1', {dir: '_build/default/src/'}),
+      rule('2', {dir: '_build/.actions/default/src/'}),
+    ]);
+
+    expect(roots(g)).toEqual(['_build/.actions/default', '_build/default']);
+  });
+});
+
+describe('healthOf', () => {
+  // Every outcome a rule can end with, and the health each maps to.
+  it('maps a rule outcome to its health', () => {
+    const g = testGraph([
+      rule('executed', {outcome: 'executed'}),
+      rule('local', {outcome: 'local-cache-hit'}),
+      rule('shared', {outcome: 'shared-cache-hit'}),
+      rule('bad-deps', {outcome: 'failed-deps'}),
+      rule('bad-action', {outcome: 'failed-action'}),
+      rule('killed', {outcome: 'cancelled'}),
+      rule('truncated', {outcome: 'unfinished'}),
+    ]);
+    const health = (name: string) => g.graph.healthOf(g.id(name));
+
+    expect(health('executed')).toEqual('ok');
+    expect(health('local')).toEqual('ok');
+    expect(health('shared')).toEqual('ok');
+    expect(health('bad-deps')).toEqual('failed');
+    expect(health('bad-action')).toEqual('failed');
+    expect(health('killed')).toEqual('cancelled');
+    expect(health('truncated')).toEqual('unfinished');
+  });
+
+  it("reads a dep's status first, and its resolution only as a fallback", () => {
+    const g = testGraph([
+      dep('fine.ml', {isSource: true}),
+      // A failed or cancelled dep is also one dune couldn't resolve; the status
+      // is what says which, so it wins over the resolution.
+      dep('broken.ml', {status: 'failed', unknown: true}),
+      dep('killed.ml', {status: 'cancelled', unknown: true}),
+      // `ok` status, but the span never ended - only the resolution says so.
+      dep('truncated.ml', {unfinished: true}),
+      // `unknown` on its own is not a state: statusOf already reported nothing
+      // wrong, so nothing is marked.
+      dep('unresolved.ml', {unknown: true}),
+    ]);
+    const health = (name: string) => g.graph.healthOf(g.id(name));
+
+    expect(health('fine.ml')).toEqual('ok');
+    expect(health('broken.ml')).toEqual('failed');
+    expect(health('killed.ml')).toEqual('cancelled');
+    expect(health('truncated.ml')).toEqual('unfinished');
+    expect(health('unresolved.ml')).toEqual('ok');
+  });
+});

@@ -238,6 +238,7 @@ import type {BuildGraph, NodeId, NodeTiming} from './graph';
 import {
   DEP_RESOLUTIONS,
   DEP_STATUSES,
+  FAILED_OUTCOMES,
   FORCED_BY_KINDS,
   RULE_OUTCOMES,
 } from './graph';
@@ -874,13 +875,12 @@ function ruleTargetRows(graph: BuildGraph): RowSource {
 // The directory tier (part of the node tier: `dune_dir`, see the file header).
 // ---------------------------------------------------------------------------
 
-// Which rule outcomes `n_failed` counts: dune's two real failures. `cancelled`
-// and `unfinished` are not failures (an interrupted or truncated build is not a
-// broken one) and a cache hit is a success.
-const FAILED_OUTCOME_CODES: ReadonlySet<number> = new Set([
-  RULE_OUTCOMES.indexOf('failed-deps'),
-  RULE_OUTCOMES.indexOf('failed-action'),
-]);
+// Which rule outcomes `n_failed` counts, as codes: the shared FAILED_OUTCOMES
+// list, resolved once so the counting loop below can test a code rather than
+// the word behind it.
+const FAILED_OUTCOME_CODES: ReadonlySet<number> = new Set(
+  FAILED_OUTCOMES.map((outcome) => RULE_OUTCOMES.indexOf(outcome)),
+);
 
 // The columns of RAW_DIR_TABLE, in insert order. Named once because the schema,
 // the INSERT and the view all have to agree on them.

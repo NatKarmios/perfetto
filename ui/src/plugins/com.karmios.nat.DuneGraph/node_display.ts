@@ -22,16 +22,11 @@ import type {
   BuildGraph,
   DepResolutionKind,
   DepStatus,
+  NodeHealth,
   NodeId,
   NodeKind,
   RuleOutcome,
 } from './graph';
-
-// Matches a leading `_build/<dir>` prefix, capturing `_build/<dir>` so it can be
-// folded away into the icon tooltip. The trailing `/` is optional: a path can
-// end at the context dir (rare) or continue straight into an `@alias` rather
-// than a `/`.
-const BUILD_PREFIX = /^(_build\/[^/@]+)\/?/;
 
 /**
  * Where a node files into a `path_tree.ts` tree: a dep's id is itself a path,
@@ -173,23 +168,76 @@ export function formatDurNs(durNs: number): string {
   return Duration.humanise(BigInt(Math.round(durNs)));
 }
 
+// The marker for each non-`ok` {@link NodeHealth}. `ok` has no entry: it is the
+// overwhelming majority of nodes (on a monorepo trace, ~99.8% of deps), so the
+// unmarked chip is the common case and the marker the exception.
+//
+// `unfinished` deliberately gets neither a failure colour nor a "pending"-style
+// icon: the span simply never ended, which is missing information (a truncated
+// trace) rather than a build state dune reported - unlike `cancelled`, which
+// is dune's own report that the node was torn down with the build.
+const HEALTH_MARKERS: Record<
+  Exclude<NodeHealth, 'ok'>,
+  {readonly icon: string; readonly title: string}
+> = {
+  failed: {icon: 'error', title: 'failed'},
+  cancelled: {icon: 'cancel', title: 'cancelled'},
+  unfinished: {
+    icon: 'question_mark',
+    title: "unfinished — the node's span never ended (truncated trace)",
+  },
+};
+
+// The state marker shown beside a kind chip, or nothing at all for a healthy
+// node. See {@link HEALTH_MARKERS}.
+function healthMarker(health: NodeHealth): m.Children {
+  if (health === 'ok') return undefined;
+  const {icon, title} = HEALTH_MARKERS[health];
+  return m(Icon, {
+    icon,
+    title,
+    className: classNames(
+      'pf-dune-graph__health-icon',
+      `pf-dune-graph__health-icon--${health}`,
+    ),
+  });
+}
+
 /**
- * A node's kind as a small coloured chip - the one visual marker that says
- * "dep" or "rule" wherever a node is listed: the current-selection panel's
- * header and dependency lists, the query tab's cells and tree leaves, and any
- * DataGrid showing a node-id column (see node_cell.ts).
+ * A node's kind as a small coloured chip, plus a marker for how the node ended
+ * - the one visual marker that says "dep" or "rule" wherever a node is listed:
+ * the current-selection panel's header and dependency lists, the query tab's
+ * cells and tree leaves, and any DataGrid showing a node-id column (see
+ * node_cell.ts).
+ *
+ * The chip's colour stays the *kind* encoding: health rides alongside as a
+ * separate icon (and dims the chip for the two "didn't really finish" states)
+ * rather than recolouring it, which would cost the reader the dep/rule
+ * distinction on exactly the rows that need reading most carefully.
  *
  * Takes the kind rather than a node, since a dependency *reference* has a kind
- * even when the graph never recorded a node for it.
+ * even when the graph never recorded a node for it - and no health at all,
+ * which is what the `ok` default means for such a caller.
  */
-export function kindChip(kind: NodeKind): m.Children {
-  return m(
-    'span',
-    {
-      class: classNames('pf-dune-graph__chip', `pf-dune-graph__chip--${kind}`),
-    },
-    kind,
-  );
+export function kindChip(
+  kind: NodeKind,
+  health: NodeHealth = 'ok',
+): m.Children {
+  return [
+    m(
+      'span',
+      {
+        class: classNames(
+          'pf-dune-graph__chip',
+          `pf-dune-graph__chip--${kind}`,
+          (health === 'cancelled' || health === 'unfinished') &&
+            'pf-dune-graph__chip--muted',
+        ),
+      },
+      kind,
+    ),
+    healthMarker(health),
+  ];
 }
 
 /**
@@ -209,34 +257,47 @@ export function decorateNode(
   const label = graph.labelOf(node);
   return graph.isRule(node)
     ? {icon: undefined, text: label}
-    : decorateDepPath(label);
+    : decorateDepPath(label, graph.buildRoots);
 }
 
 /**
  * How a dep path is shown: a leading icon that encodes where the path lives, plus
  * the (possibly trimmed) display text.
  *
- * - A `_build/<dir>` path (optionally followed by `/…` or `@alias`) drops the
- *   `_build/<dir>/` prefix and gets a `build` icon whose tooltip is the
- *   stripped prefix.
+ * - A path under one of `buildRoots` (see {@link BuildGraph.buildRoots}) drops
+ *   that prefix and gets a `build` icon whose tooltip is the stripped prefix.
+ *   The rest may start with `/…` (stripped along with the prefix) or run
+ *   straight into an `@alias`, and may be empty for a path that *is* a root.
  * - An absolute path (`/…`) is shown verbatim with no icon.
  * - Anything else is shown verbatim with a `code` icon tooltipped "Source".
  *
+ * A path matching no root keeps its full text rather than having a plausible
+ * prefix guessed off it: shown in full it is never wrong, only wider.
+ *
  * @returns the rendered leading `icon` (or `undefined`) and the display `text`.
  */
-export function decorateDepPath(path: string): {
+export function decorateDepPath(
+  path: string,
+  buildRoots: readonly string[],
+): {
   icon: m.Children;
   text: string;
 } {
-  const build = BUILD_PREFIX.exec(path);
-  if (build !== null) {
+  for (const root of buildRoots) {
+    if (!path.startsWith(root)) continue;
+    const rest = path.slice(root.length);
+    // The next character has to be a boundary, or this is a longer sibling of
+    // the root rather than something inside it.
+    if (rest !== '' && !rest.startsWith('/') && !rest.startsWith('@')) {
+      continue;
+    }
     return {
       icon: m(Icon, {
         icon: 'build',
-        title: build[1],
+        title: root,
         className: 'pf-dune-graph__path-icon',
       }),
-      text: path.slice(build[0].length),
+      text: rest.startsWith('/') ? rest.slice(1) : rest,
     };
   }
   if (path.startsWith('/')) {

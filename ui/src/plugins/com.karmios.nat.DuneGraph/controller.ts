@@ -545,7 +545,7 @@ export class DuneGraphController {
           kind === 'process'
             ? selection.eventId
             : await this.originSliceIdOf(kind, selection.eventId);
-        if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
+        if (sliceId !== undefined) await this.goToSlice(sliceId);
       }
     }
   }
@@ -946,7 +946,7 @@ export class DuneGraphController {
       return;
     }
     const sliceId = await this.sliceIdOf(node);
-    if (sliceId !== undefined) await this.selectOnOriginalTrack(sliceId);
+    if (sliceId !== undefined) await this.goToSlice(sliceId);
   }
 
   /**
@@ -973,7 +973,7 @@ export class DuneGraphController {
         return;
       }
     }
-    await this.selectOnOriginalTrack(sliceId);
+    await this.goToSlice(sliceId);
   }
 
   // Select a row of one of the Dune workspace's tracks - the half of
@@ -990,10 +990,19 @@ export class DuneGraphController {
     });
   }
 
-  // Resolve `sliceId` back to whatever real track it originated from and
-  // select it there - the half of goToNode()/onWorkspaceChanged() used
-  // outside the "Dune graph" workspace.
-  private async selectOnOriginalTrack(sliceId: number): Promise<void> {
+  /**
+   * Resolve `sliceId` back to whatever real track it originated from and
+   * select it there - the half of goToNode()/onWorkspaceChanged() used outside
+   * the "Dune graph" workspace.
+   *
+   * Also what a bare slice link uses (the query tab's `slice_id` cells), for a
+   * slice that maps to no node of the graph: without a node there is nothing
+   * for our tracks to project, so the real track is the only place to go. Note
+   * that this reveals *and* scrolls, which selecting through `trace.selection`
+   * directly would not: while the Dune workspace is showing, the slice's real
+   * track isn't in it, so the scroll would silently no-op.
+   */
+  async goToSlice(sliceId: number): Promise<void> {
     const match = (
       await this.trace.selection.resolveSqlEvents('slice', [sliceId])
     )[0];

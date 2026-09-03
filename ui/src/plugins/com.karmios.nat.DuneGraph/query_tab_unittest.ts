@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import m from 'mithril';
 import type {Row, SqlValue} from '../../trace_processor/query_result';
+import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
 import {dep, rule, testGraph} from './graph_test_helper';
 import type {TreeLeafEntry} from './query_tab';
-import {buildNodeTreeItems, formatExtraParts} from './query_tab';
+import {buildNodeTreeItems, formatExtraParts, sliceLink} from './query_tab';
 import type {PathTreeItem} from './path_tree';
 
 // Projects a `PathTreeItem<TreeLeafEntry>` down to a plain, easy-to-assert-on
@@ -230,5 +232,88 @@ describe('formatExtraParts', () => {
     expect(formatExtraParts(['a', 'b', 'c'], row, 1, formatValue)).toEqual([
       'c=5',
     ]);
+  });
+});
+
+// Everything `sliceLink` touches on the controller. Both jumps are recorded
+// rather than performed - they're queries in the real controller, and the point
+// of each anchor is which of the two it asks for.
+interface FakeController {
+  readonly controller: DuneGraphController;
+  readonly visitedNodes: NodeId[];
+  readonly visitedSlices: number[];
+}
+
+function fakeController(): FakeController {
+  const visitedNodes: NodeId[] = [];
+  const visitedSlices: number[] = [];
+  const controller = {
+    graph,
+    goToNode: async (node: NodeId) => {
+      visitedNodes.push(node);
+    },
+    goToSlice: async (sliceId: number) => {
+      visitedSlices.push(sliceId);
+    },
+  } as unknown as DuneGraphController;
+  return {controller, visitedNodes, visitedSlices};
+}
+
+// Renders a cell into a detached element, as the DataGrid (or the tree view)
+// would: what matters is the markup, not the shape of the mithril tree.
+function render(children: m.Children): HTMLElement {
+  const root = document.createElement('div');
+  m.render(root, children);
+  return root;
+}
+
+// Clicks the cell's link, if it has one.
+function clickLink(root: HTMLElement): void {
+  root.querySelector('a')?.dispatchEvent(new MouseEvent('click'));
+}
+
+describe('sliceLink', () => {
+  const node = g.id('a/b/dep1.ml');
+
+  it('links a node-backed slice id through its node', () => {
+    const {controller, visitedNodes, visitedSlices} = fakeController();
+    const root = render(sliceLink(controller, node, 7, '7'));
+
+    expect(root.textContent).toContain('7');
+    clickLink(root);
+    expect(visitedNodes).toEqual([node]);
+    expect(visitedSlices).toEqual([]);
+  });
+
+  it('links a slice id of no node straight to the slice', () => {
+    const {controller, visitedNodes, visitedSlices} = fakeController();
+    const root = render(sliceLink(controller, undefined, 7, '7'));
+
+    expect(root.textContent).toContain('7');
+    clickLink(root);
+    expect(visitedSlices).toEqual([7]);
+    expect(visitedNodes).toEqual([]);
+  });
+
+  it('links a bigint slice id too', () => {
+    const {controller, visitedSlices} = fakeController();
+    const root = render(sliceLink(controller, undefined, 7n, '7'));
+    clickLink(root);
+    expect(visitedSlices).toEqual([7]);
+  });
+
+  it('leaves a NULL cell as inert text', () => {
+    const {controller} = fakeController();
+    const root = render(sliceLink(controller, undefined, null, ''));
+    expect(root.querySelector('a')).toBeNull();
+    expect(root.textContent).toBe('');
+  });
+
+  it('leaves a non-numeric cell as inert text', () => {
+    // Nothing `resolveSqlEvents` could find, so a link would visibly do nothing.
+    const {controller} = fakeController();
+    const root = render(sliceLink(controller, undefined, 'not-an-id', 'x'));
+    expect(root.querySelector('a')).toBeNull();
+    expect(root.textContent).toBe('x');
   });
 });

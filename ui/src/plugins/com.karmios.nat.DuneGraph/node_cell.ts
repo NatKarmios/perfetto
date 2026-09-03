@@ -18,7 +18,9 @@
  *
  * - Node-based (`nodeAnchor`, `renderNodeChip`): what the query tab's table and
  *   tree modes both draw, given a node they have already resolved. Only the
- *   anchor is shared out; the chip is reached through the value-based layer.
+ *   anchors are shared out (`sliceAnchor` being the node-less twin, for a
+ *   slice that belongs to no node); the chip is reached through the
+ *   value-based layer.
  * - Value-based (`renderNodeCell` / `nodeCellLabel` / `renderNodeCellActions`):
  *   the same thing for a DataGrid cell whose value *is* a `dune_node.node_id`
  *   (optionally relabelled - see {@link NodeChipOptions}),
@@ -94,6 +96,32 @@ export function nodeAnchor(
 }
 
 /**
+ * A bare slice id as the same link, for a slice that is *not* one of our
+ * nodes' - a `slice_id` cell whose id maps to no node, or any id at all while
+ * the graph isn't loaded. No chip and no toggle, since there is no node to
+ * colour or to add; just the jump.
+ *
+ * The controller does the jumping rather than `trace.selection` directly: while
+ * the Dune workspace is showing, the slice's real track isn't in it, so the
+ * scroll would silently no-op (see `controller.goToSlice`).
+ */
+export function sliceAnchor(
+  controller: DuneGraphController,
+  sliceId: number,
+  label: string,
+): m.Children {
+  return m(
+    Anchor,
+    {
+      icon: Icons.UpdateSelection,
+      title: 'Go to slice on the timeline',
+      onclick: () => void controller.goToSlice(sliceId),
+    },
+    label,
+  );
+}
+
+/**
  * Overrides for how a node's chip is labelled.
  *
  * Only for a caller that already knows a shorter, unambiguous label *because of
@@ -126,7 +154,7 @@ function renderNodeChip(
   const {icon, text} = decorateNode(graph, node);
   return m(
     'span.pf-dune-graph__node-cell',
-    kindChip(graph.kindOf(node)),
+    kindChip(graph.kindOf(node), graph.healthOf(node)),
     icon,
     nodeAnchor(controller, node, opts.label ?? text, opts.title),
   );

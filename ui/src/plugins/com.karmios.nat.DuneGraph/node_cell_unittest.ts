@@ -50,9 +50,27 @@ import {
   renderNodeCellActions,
 } from './node_cell';
 
-// A dep and a rule are enough: the cell only reads a node's kind and label (and
-// a dep's label is a path, so it exercises the leading build/code icon too).
-const g = testGraph([dep('a/b/dep1.ml'), rule('42', {dir: 'a/b'})]);
+// A dep and a rule are enough: the cell only reads a node's kind, health and
+// label (and a dep's label is a path, so it exercises the leading build/code
+// icon too). Both are healthy, which is what almost every real node is - a bare
+// `dep(...)` would resolve to `unfinished` and pick up a state marker, so the
+// dep says it's a source file.
+const g = testGraph([
+  dep('a/b/dep1.ml', {isSource: true}),
+  rule('42', {dir: 'a/b'}),
+]);
+
+// The four health states a chip can carry (see `healthOf` in graph.ts), one
+// node each. Separate from `g` so the tests above stay on the common,
+// marker-less case.
+const health = testGraph([
+  dep('ok.ml', {isSource: true}),
+  dep('failed.ml', {status: 'failed'}),
+  dep('cancelled.ml', {status: 'cancelled'}),
+  // Nothing said about it: its span never ended.
+  dep('unfinished.ml'),
+  rule('7', {outcome: 'failed-action'}),
+]);
 
 // Everything node_cell.ts touches on the controller. `goToNode` is recorded
 // rather than performed: it is a query in the real controller, and the point of
@@ -163,6 +181,54 @@ describe('renderNodeCell', () => {
   test('renders NULL as an empty cell', () => {
     const {controller} = fakeController();
     expect(render(renderNodeCell(controller, null)).textContent).toBe('');
+  });
+});
+
+describe('health markers', () => {
+  // The marker's modifier class, or undefined when the chip carries none.
+  function markerOf(name: string): string | undefined {
+    const {controller} = fakeController(health.graph);
+    const root = render(renderNodeCell(controller, health.id(name)));
+    const icon = root.querySelector('.pf-dune-graph__health-icon');
+    return icon?.className
+      .split(' ')
+      .find((c) => c.startsWith('pf-dune-graph__health-icon--'));
+  }
+
+  test('leaves a healthy node unmarked', () => {
+    expect(markerOf('ok.ml')).toBeUndefined();
+  });
+
+  test('marks a failed dep and a failed rule', () => {
+    expect(markerOf('failed.ml')).toBe('pf-dune-graph__health-icon--failed');
+    expect(markerOf('7')).toBe('pf-dune-graph__health-icon--failed');
+  });
+
+  test('marks a cancelled node', () => {
+    expect(markerOf('cancelled.ml')).toBe(
+      'pf-dune-graph__health-icon--cancelled',
+    );
+  });
+
+  test('marks a node whose span never ended', () => {
+    expect(markerOf('unfinished.ml')).toBe(
+      'pf-dune-graph__health-icon--unfinished',
+    );
+  });
+
+  // The kind chip keeps its kind colour throughout - only the two "didn't
+  // really finish" states dim it.
+  test('dims the chip only for cancelled and unfinished', () => {
+    function muted(name: string): boolean {
+      const {controller} = fakeController(health.graph);
+      const root = render(renderNodeCell(controller, health.id(name)));
+      const chip = root.querySelector('.pf-dune-graph__chip');
+      return chip?.classList.contains('pf-dune-graph__chip--muted') ?? false;
+    }
+    expect(muted('ok.ml')).toBe(false);
+    expect(muted('failed.ml')).toBe(false);
+    expect(muted('cancelled.ml')).toBe(true);
+    expect(muted('unfinished.ml')).toBe(true);
   });
 });
 

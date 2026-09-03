@@ -139,7 +139,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     return m(
       '.pf-dune-graph__info',
       this.renderHeader(controller, node),
-      this.renderDir(node),
+      this.renderDir(controller, node),
       this.renderAction(node),
       this.renderForcedBy(controller, node, dependants),
       m(
@@ -218,7 +218,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       '.pf-dune-graph__info-header',
       m(
         'span.pf-dune-graph__info-main',
-        kindChip(node.kind),
+        kindChip(node.kind, controller.graph.healthOf(node.nodeId)),
         icon,
         m(
           'span.pf-dune-graph__info-title',
@@ -316,11 +316,14 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
 
   // A rule's context directory (`dune.dir`), as a muted line under the header.
   // Absent for deps and for rules that didn't record one.
-  private renderDir(node: GraphNode): m.Children {
+  private renderDir(
+    controller: DuneGraphController,
+    node: GraphNode,
+  ): m.Children {
     if (node.kind !== 'rule') return undefined;
     const dir = node.dir;
     if (dir === undefined) return undefined;
-    const {icon, text} = decorateDepPath(dir);
+    const {icon, text} = decorateDepPath(dir, controller.graph.buildRoots);
     return m(
       '.pf-dune-graph__dir',
       {title: dir},
@@ -474,7 +477,12 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           title: 'Forced edge',
           className: 'pf-dune-graph__forced-icon',
         }),
-      kindChip(ref.kind),
+      // A reference the blob never recorded a node for has no health to show;
+      // leaving it unmarked is the honest rendering.
+      kindChip(
+        ref.kind,
+        ref.node === undefined ? 'ok' : controller.graph.healthOf(ref.node),
+      ),
       ref.chip !== undefined &&
         m(
           'span.pf-dune-graph__ref-chip',
@@ -569,6 +577,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     controller: DuneGraphController,
     p: ProcessDetails,
   ): m.Children {
+    const buildRoots = controller.graph.buildRoots;
     return m(
       '.pf-dune-graph__proc-body',
       // Ordered by how often it is what you came for: how long it took, what
@@ -577,10 +586,12 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       p.durNs !== undefined &&
         this.renderProcField('duration', formatDurNs(p.durNs)),
       // The program's full path, decorated the way every other path in this
-      // panel is (a `_build/` prefix folded into an icon tooltip).
-      p.prog !== undefined && this.renderProcField('prog', decorated(p.prog)),
+      // panel is (a build-root prefix folded into an icon tooltip).
+      p.prog !== undefined &&
+        this.renderProcField('prog', decorated(p.prog, buildRoots)),
       this.renderProcArgs(p),
-      p.dir !== undefined && this.renderProcField('dir', decorated(p.dir)),
+      p.dir !== undefined &&
+        this.renderProcField('dir', decorated(p.dir, buildRoots)),
       p.exitCode !== undefined &&
         this.renderProcField('exit', String(p.exitCode)),
       m(
@@ -748,8 +759,8 @@ function commandLine(p: ProcessDetails): string {
 }
 
 // A path as the rest of the panel renders one: the leading build/code icon with
-// any `_build/<dir>/` prefix folded into its tooltip, then the remainder.
-function decorated(path: string): m.Children {
-  const {icon, text} = decorateDepPath(path);
+// any build-root prefix folded into its tooltip, then the remainder.
+function decorated(path: string, buildRoots: readonly string[]): m.Children {
+  const {icon, text} = decorateDepPath(path, buildRoots);
   return [icon, text];
 }

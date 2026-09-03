@@ -131,6 +131,30 @@ export const RESOLUTION_UNFINISHED = DEP_RESOLUTIONS.indexOf('unfinished');
 export const STATUS_OK = DEP_STATUSES.indexOf('ok');
 
 /**
+ * What counts as a failure, for a rule and for a dep respectively - the single
+ * source of truth behind {@link BuildGraph.healthOf}, the dir explorer's
+ * failure filter and `n_failed` in sql_graph.ts.
+ *
+ * Only dune's two real failures qualify. A `cancelled` or `unfinished` node is
+ * not a failure: an interrupted or truncated build is not a broken one.
+ */
+export const FAILED_OUTCOMES: readonly RuleOutcome[] = [
+  'failed-deps',
+  'failed-action',
+];
+export const FAILED_STATUSES: readonly DepStatus[] = ['failed'];
+
+/**
+ * How a node ended, as the one word both kinds can be asked for - see
+ * {@link BuildGraph.healthOf}, which is the only thing that should produce one.
+ *
+ * `cancelled` is dune's own report that the node was torn down with the rest of
+ * the build; `unfinished` is the absence of a report at all (a span that never
+ * ended, i.e. a truncated trace), not a build state.
+ */
+export type NodeHealth = 'ok' | 'failed' | 'cancelled' | 'unfinished';
+
+/**
  * Every column that holds a node reference (an edge target, a forcer) encodes
  * three things in one int32:
  *
@@ -532,6 +556,31 @@ export class BuildGraph {
     return dictId === undefined ? undefined : this.path(dictId);
   }
 
+  /**
+   * The build-output prefixes a displayed path may drop, derived from this
+   * graph's rule dirs - see {@link deriveBuildRoots} for what counts as one and
+   * `node_display.ts:decorateDepPath` for what it does with them.
+   *
+   * Derived once and cached, since every path a panel renders asks for it.
+   */
+  private buildRootsCache?: readonly string[];
+
+  get buildRoots(): readonly string[] {
+    return (this.buildRootsCache ??= deriveBuildRoots(this.ruleDirs()));
+  }
+
+  // Every distinct rule context dir. Only {@link buildRoots} wants this: a
+  // monorepo trace's 6.5k rules share ~350 dirs, so the set is small even
+  // though the scan is over every rule.
+  private ruleDirs(): ReadonlySet<string> {
+    const dirs = new Set<string>();
+    for (let id = 0; id < this.ruleCount; id++) {
+      const dir = this.dirOf(id);
+      if (dir !== undefined) dirs.add(dir);
+    }
+    return dirs;
+  }
+
   // The stored codes behind {@link outcomeOf} / {@link resolutionOf}: an index
   // into RULE_OUTCOMES / DEP_RESOLUTIONS. The SQL mirror stores these rather
   // than the words and maps them back in its views (see sql_graph.ts).
@@ -568,6 +617,35 @@ export class BuildGraph {
   statusOf(id: NodeId): DepStatus {
     if (this.isRule(id)) return 'ok';
     return DEP_STATUSES[this.statusCodeOf(id)] ?? 'ok';
+  }
+
+  /**
+   * How this node ended, in the one vocabulary both kinds share - what anything
+   * that marks a node as failed/cancelled/unfinished should ask, rather than
+   * picking apart {@link BuildGraph.outcomeOf} / {@link BuildGraph.statusOf} /
+   * {@link BuildGraph.resolutionOf} itself.
+   *
+   * A rule says it all in its outcome. A dep needs two fields: `statusOf`
+   * returning `ok` does *not* on its own mean the dep is fine - a dep whose
+   * span never ended has nothing recorded to fail, and reports `ok` there while
+   * its resolution is `unfinished`. That fallback is the whole reason this
+   * isn't a single-field lookup.
+   *
+   * A resolution of `unknown` is deliberately not a state of its own: it means
+   * dune couldn't tell what the dep resolved to *because* its build failed or
+   * was cancelled, a cause `statusOf` has already reported.
+   */
+  healthOf(id: NodeId): NodeHealth {
+    if (this.isRule(id)) {
+      const outcome = this.outcomeOf(id);
+      if (FAILED_OUTCOMES.includes(outcome)) return 'failed';
+      if (outcome === 'cancelled') return 'cancelled';
+      return outcome === 'unfinished' ? 'unfinished' : 'ok';
+    }
+    const status = this.statusOf(id);
+    if (FAILED_STATUSES.includes(status)) return 'failed';
+    if (status === 'cancelled') return 'cancelled';
+    return this.resolutionOf(id) === 'unfinished' ? 'unfinished' : 'ok';
   }
 
   /**
@@ -983,6 +1061,59 @@ export function plural(n: number, noun: string): string {
 export function joinDir(dir: string | undefined, rel: string): string {
   if (dir === undefined || dir === '' || dir === '.') return rel;
   return dir.endsWith('/') ? `${dir}${rel}` : `${dir}/${rel}`;
+}
+
+/**
+ * The build-output prefixes worth folding away when a path is displayed, given
+ * every rule context dir in a graph. Backs {@link BuildGraph.buildRoots}.
+ *
+ * Dune lays its build dir out as `<build>/<context>/<pkg>` and, for the actions
+ * and install trees, `<build>/<role>/<context>/<pkg>` - so the interesting
+ * prefix ends at the *context*, one segment deeper for the roles. The context
+ * is the name that appears both directly under the build dir and again one
+ * level down under a sibling of it (`default`, in both `_build/default/src` and
+ * `_build/.actions/default/src`), which is enough to spot it without
+ * hardcoding either `_build` or `default` - neither of which a `--build-dir`
+ * build or a non-default context would give us.
+ *
+ * Only prefixes actually observed are returned: a path matching none of them is
+ * shown in full, which is never wrong, only wider.
+ */
+function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
+  // Names seen one and two levels under each build root. Kept per root so a
+  // rule dir that isn't in a build tree at all can only ever produce a context
+  // for its own first segment.
+  const depth1 = new Map<string, Set<string>>();
+  const depth2 = new Map<string, Set<string>>();
+  const add = (into: Map<string, Set<string>>, root: string, name: string) => {
+    const names = into.get(root);
+    if (names === undefined) into.set(root, new Set([name]));
+    else names.add(name);
+  };
+  // Empty segments dropped, so a dir written `_build/default/` or `.` behaves
+  // as `_build/default` / nothing at all (see joinDir's tolerance of both).
+  const split = [...dirs].map((dir) => dir.split('/').filter((s) => s !== ''));
+  for (const segs of split) {
+    if (segs.length < 2) continue;
+    add(depth1, segs[0], segs[1]);
+    if (segs.length > 2) add(depth2, segs[0], segs[2]);
+  }
+  const roots = new Set<string>();
+  for (const segs of split) {
+    if (segs.length < 2) continue;
+    const isContext = (name: string) =>
+      (depth1.get(segs[0])?.has(name) ?? false) &&
+      (depth2.get(segs[0])?.has(name) ?? false);
+    // Shortest prefix ending at a context, so a role-less dir stops at the
+    // context and never at a package dir that happens to share its name. No
+    // two prefixes can nest: a dir whose depth-1 name is a context stops
+    // there, so the deeper form is only ever produced under a non-context.
+    if (isContext(segs[1])) roots.add(`${segs[0]}/${segs[1]}`);
+    else if (segs.length > 2 && isContext(segs[2])) {
+      roots.add(`${segs[0]}/${segs[1]}/${segs[2]}`);
+    }
+  }
+  return [...roots];
 }
 
 /**

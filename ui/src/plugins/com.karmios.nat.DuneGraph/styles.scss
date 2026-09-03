@@ -678,6 +678,32 @@
       background: var(--pf-color-warning);
       color: var(--pf-color-text-on-warning);
     }
+
+    // Cancelled/unfinished: the kind hue has to stay - it's the only thing
+    // saying "dep" vs "rule" - so the chip is dimmed rather than recoloured,
+    // matching the muted marker beside it.
+    &--muted {
+      opacity: 0.6;
+    }
+  }
+
+  // How a node ended, beside its kind chip (see `kindChip` in node_display.ts).
+  // Absent for the overwhelming majority of nodes, which are healthy.
+  &__health-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+    vertical-align: middle;
+
+    &--failed {
+      color: var(--pf-color-danger);
+    }
+
+    // Neither is a failure: a cancelled node was torn down with the build, an
+    // unfinished one only lacks an end to its span. Both read as absence.
+    &--cancelled,
+    &--unfinished {
+      color: var(--pf-color-text-muted);
+    }
   }
 
   &__row-label {

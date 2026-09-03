@@ -42,6 +42,7 @@ import {
   nodeCellLabel,
   renderNodeCell,
   renderNodeCellActions,
+  sliceAnchor,
 } from './node_cell';
 import {
   forcedByText,
@@ -110,6 +111,30 @@ const EXTRAS_OPTIONS = [
   {key: 'all', label: 'All columns'},
 ] as const;
 type ExtrasMode = (typeof EXTRAS_OPTIONS)[number]['key'];
+
+/**
+ * A `slice_id` cell as a link into the timeline, shared by table and tree mode.
+ * Three cases, in order of how much we know about the id:
+ *
+ * - it maps to a graph node (`node`): link through the node, which is the
+ *   richer path - `goToNode` selects on whichever of our tracks *projects* the
+ *   node while the Dune workspace is showing, where the real track isn't.
+ * - it doesn't, but it is a number: any slice at all, joined in from the trace
+ *   or belonging to a node the current graph doesn't have. Link straight to the
+ *   slice.
+ * - NULL, or not a number: inert text. There is no slice to go to, and a link
+ *   that resolves to nothing would visibly do nothing when clicked.
+ */
+export function sliceLink(
+  controller: DuneGraphController,
+  node: NodeId | undefined,
+  value: SqlValue,
+  label: string,
+): m.Children {
+  if (node !== undefined) return nodeAnchor(controller, node, label);
+  if (typeof value !== 'number' && typeof value !== 'bigint') return label;
+  return sliceAnchor(controller, Number(value), label);
+}
 
 // One tree-mode leaf: the node-bearing cell's value, the node it resolves to
 // (absent for a dangling id), a representative source row (for the "extra
@@ -467,15 +492,36 @@ export class DuneQueryTab implements Tab {
     const {node, value} = entry;
     return m(
       '.pf-dune-query__tree-row',
-      node !== undefined && kindChip(this.controller.graph.kindOf(node)),
+      node !== undefined &&
+        kindChip(
+          this.controller.graph.kindOf(node),
+          this.controller.graph.healthOf(node),
+        ),
       m(
         'span.pf-dune-graph__ref-label',
         prefix !== '' && m('span.pf-dune-graph__ref-prefix', prefix),
-        node !== undefined ? nodeAnchor(this.controller, node, label) : label,
+        this.renderTreeLabel(col, entry, label),
       ),
       this.renderTreeExtras(response, entry),
       this.renderNodeToggle(col, value),
     );
+  }
+
+  // A tree leaf's label: the same link table mode's cell gets. A dangling value
+  // links to its slice only when it *is* a slice id - a `node_id`/`src`/`dst`
+  // that resolved to no node names no slice either, so it stays plain text.
+  private renderTreeLabel(
+    col: string,
+    entry: TreeLeafEntry,
+    label: string,
+  ): m.Children {
+    const {node, value} = entry;
+    if (col === SLICE_ID_COL) {
+      return sliceLink(this.controller, node, value, label);
+    }
+    return node === undefined
+      ? label
+      : nodeAnchor(this.controller, node, label);
   }
 
   // Muted "×N" (when duplicates were merged) plus, when enabled, the row's
@@ -789,13 +835,11 @@ export class DuneQueryTab implements Tab {
     return hidden;
   }
 
-  // The slice_id value as a link that jumps to the slice on the timeline (when
-  // it resolves to a graph node), else the plain value.
+  // The slice_id value as a link that jumps to the slice on the timeline.
   private renderSliceCell(value: SqlValue): m.Children {
     const node = this.nodeForValue(SLICE_ID_COL, value);
     const text = value === null ? '' : String(value);
-    if (node === undefined) return text;
-    return nodeAnchor(this.controller, node, text);
+    return sliceLink(this.controller, node, value, text);
   }
 
   // ＋/－ toggle for a node cell: adds or removes that node, reflecting current
