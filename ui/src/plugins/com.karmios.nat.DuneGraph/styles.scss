@@ -880,6 +880,21 @@
   flex-direction: column;
   height: 100%;
 
+  // Let the toolbar (the core `DataGridToolbar`, whether it comes from our own
+  // tree-mode copy or from the DataGrid) spill onto a second line rather than
+  // squeezing the SQL echo away: the right-hand controls wrap under the
+  // row-count/SQL group once `__sql`'s min-width can't be honoured.
+  .pf-data-grid__toolbar-content {
+    flex-wrap: wrap;
+  }
+
+  .pf-data-grid__toolbar-left {
+    flex-wrap: wrap;
+    // Wide enough for the row count plus a usable slice of SQL; below this the
+    // right-hand controls wrap to their own line instead.
+    flex-basis: 24rem;
+  }
+
   &__grid {
     flex: 1;
     min-height: 0;
@@ -888,6 +903,13 @@
   // Echo of the SQL that produced the results, inline in the toolbar row (in a
   // StackAuto filler). Single line, ellipsised, full text on hover, on a grey
   // background.
+  // The `StackAuto` filler the echo sits in. Carries the echo's floor: the
+  // filler is the flex item, so `min-width` has to live here to be honoured
+  // (`.pf-stack-auto`'s `overflow: hidden` zeroes its automatic minimum).
+  &__sql-slot {
+    min-width: 12rem;
+  }
+
   &__sql {
     display: block;
     padding: 2px 8px;

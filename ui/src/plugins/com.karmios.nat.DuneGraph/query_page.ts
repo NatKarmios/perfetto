@@ -185,7 +185,9 @@ export class DuneQueryPage {
       id: shortUuid(),
       title: title ?? nextTabTitle(this.state.tabs),
       editorText: query ?? '',
-      results: new DuneQueryResults(this.trace, this.controller),
+      results: new DuneQueryResults(this.trace, this.controller, () =>
+        this.trace.navigate('#!/viewer'),
+      ),
     };
     this.state = addTab(this.state, tab);
     if (autoExecute === true) void this.execute(tab, tab.editorText);

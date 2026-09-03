@@ -28,8 +28,10 @@ import {escapePath} from '../../components/widgets/datagrid/datagrid_schema';
 import type {Column} from '../../components/widgets/datagrid/model';
 import {InMemoryDataSource} from '../../components/widgets/datagrid/in_memory_data_source';
 import {DataGridToolbar} from '../../components/widgets/datagrid/datagrid_toolbar';
-import {Button, ButtonGroup} from '../../widgets/button';
-import {MenuItem, PopupMenu} from '../../widgets/menu';
+import {AddDebugTrackMenu} from '../../components/tracks/add_debug_track_menu';
+import {Button} from '../../widgets/button';
+import {Popup, PopupPosition} from '../../widgets/popup';
+import {MenuDivider, MenuItem, MenuTitle, PopupMenu} from '../../widgets/menu';
 import {Callout} from '../../widgets/callout';
 import {EmptyState} from '../../widgets/empty_state';
 import {Spinner} from '../../widgets/spinner';
@@ -296,6 +298,11 @@ export class DuneQueryResults {
   constructor(
     private readonly trace: Trace,
     private readonly controller: DuneGraphController,
+    // Run after a debug track is added, for a surface that isn't the viewer -
+    // the full-page query surface uses it to navigate to the timeline, where
+    // the new pinned track actually is. The drawer tab is already there, so it
+    // leaves this unset.
+    private readonly onAddDebugTrack?: () => void,
   ) {}
 
   // The little a wrapping surface needs to title itself, without handing it
@@ -585,91 +592,78 @@ export class DuneQueryResults {
   // table mode (as `DataGrid`'s `toolbarItemsRight`) and tree mode (in our own
   // `DataGridToolbar`) so switching views doesn't move any other control.
   private renderToolbarRight(response: QueryResponse): m.Children {
-    if (this.nodeBearingCols(response).length === 0) return undefined;
-    const isTree = this.view === 'tree';
+    // The debug-track button doesn't care about graph nodes - a result with no
+    // node-bearing column is exactly the ad-hoc query you'd most want to plot -
+    // so it sits outside the node-column guard the other controls are behind.
+    if (this.nodeBearingCols(response).length === 0) {
+      return this.renderDebugTrackButton(response);
+    }
     return [
-      this.renderViewToggle(),
-      isTree && this.renderExpandCollapseButtons(response),
-      isTree && this.renderTreeOptionsMenu(response),
+      this.renderViewMenu(response),
       this.renderGraphMenu(response),
+      this.renderDebugTrackButton(response),
     ];
   }
 
-  private renderViewToggle(): m.Children {
+  // The core "Add debug track" affordance, reused verbatim from the standard
+  // query page: `AddDebugTrackMenu` needs nothing but the trace and the
+  // result's shape, both of which we already hold.
+  private renderDebugTrackButton(response: QueryResponse): m.Children {
+    return m(
+      Popup,
+      {
+        trigger: m(Button, {label: 'Add debug track', icon: 'add_chart'}),
+        position: PopupPosition.Top,
+      },
+      m(AddDebugTrackMenu, {
+        trace: this.trace,
+        query: response.lastStatementSql,
+        availableColumns: response.columns,
+        onAdd: this.onAddDebugTrack,
+      }),
+    );
+  }
+
+  // Table/tree mode and every tree-only control, under one "View" dropdown,
+  // split into a section per mode. The tree section is always rendered - its
+  // controls just grey out in table mode - so the menu keeps the same shape
+  // (and the tree options stay discoverable) whichever mode we're in.
+  private renderViewMenu(response: QueryResponse): m.Children {
     const isTree = this.view === 'tree';
     return m(
-      ButtonGroup,
-      m(Button, {
+      PopupMenu,
+      {
+        trigger: m(Button, {
+          label: 'View',
+          icon: isTree ? 'account_tree' : 'table_view',
+          rightIcon: Icons.ContextMenu,
+        }),
+      },
+      m(MenuTitle, {label: 'Table'}),
+      m(MenuItem, {
         label: 'Table',
         icon: 'table_view',
         active: !isTree,
-        tooltip: 'Show results as a flat table',
+        title: 'Show results as a flat table',
         onclick: () => {
           this.view = 'table';
         },
       }),
-      m(Button, {
+      m(MenuDivider),
+      m(MenuTitle, {label: 'Tree'}),
+      m(MenuItem, {
         label: 'Tree',
         icon: 'account_tree',
         active: isTree,
-        tooltip: 'Group results by a node column into a directory tree',
+        title: 'Group results by a node column into a directory tree',
         onclick: () => {
           this.view = 'tree';
         },
       }),
-    );
-  }
-
-  // A "Group by: <current>" submenu nested in Tree options; only shown when
-  // the result has more than one node-bearing column (e.g. a
-  // `dune_edge`-shaped result offers `src`/`dst`).
-  private renderGroupBySubmenu(response: QueryResponse): m.Children {
-    const cols = this.nodeBearingCols(response);
-    if (cols.length <= 1) return undefined;
-    const current = this.groupColFor(response);
-    return m(
-      MenuItem,
-      {label: `Group by: ${current}`, icon: 'view_column'},
-      cols.map((col) =>
-        m(MenuItem, {
-          label: col,
-          icon: col === current ? 'check' : undefined,
-          onclick: () => {
-            this.groupCol = col;
-          },
-        }),
-      ),
-    );
-  }
-
-  private renderExpandCollapseButtons(response: QueryResponse): m.Children {
-    return [
-      m(Button, {
-        icon: 'unfold_more',
-        tooltip: 'Expand all groups',
-        onclick: () => this.collapsed.clear(),
-      }),
-      m(Button, {
-        icon: 'unfold_less',
-        tooltip: 'Collapse all groups',
-        onclick: () => {
-          const col = this.groupColFor(response);
-          this.collapsed = new Set(
-            collectGroupKeys(this.buildTree(response, col), TREE_KEY_PREFIX),
-          );
-        },
-      }),
-    ];
-  }
-
-  private renderTreeOptionsMenu(response: QueryResponse): m.Children {
-    return m(
-      PopupMenu,
-      {trigger: m(Button, {icon: 'tune', title: 'Tree options'})},
-      this.renderGroupBySubmenu(response),
+      this.renderGroupBySubmenu(response, !isTree),
       m(
         MenuItem,
-        {label: 'Extra columns', icon: 'view_column'},
+        {label: 'Extra columns', icon: 'view_column', disabled: !isTree},
         EXTRAS_OPTIONS.map(({key, label}) =>
           m(MenuItem, {
             label,
@@ -683,11 +677,54 @@ export class DuneQueryResults {
       m(MenuItem, {
         label: 'Merge duplicate nodes',
         icon: this.mergeDuplicates ? 'check_box' : 'check_box_outline_blank',
+        disabled: !isTree,
         closePopupOnClick: false,
         onclick: () => {
           this.mergeDuplicates = !this.mergeDuplicates;
         },
       }),
+      m(MenuItem, {
+        label: 'Expand all groups',
+        icon: 'unfold_more',
+        disabled: !isTree,
+        onclick: () => this.collapsed.clear(),
+      }),
+      m(MenuItem, {
+        label: 'Collapse all groups',
+        icon: 'unfold_less',
+        disabled: !isTree,
+        onclick: () => {
+          const col = this.groupColFor(response);
+          this.collapsed = new Set(
+            collectGroupKeys(this.buildTree(response, col), TREE_KEY_PREFIX),
+          );
+        },
+      }),
+    );
+  }
+
+  // A "Group by: <current>" submenu nested in the View menu's tree section;
+  // only shown when the result has more than one node-bearing column (e.g. a
+  // `dune_edge`-shaped result offers `src`/`dst`).
+  private renderGroupBySubmenu(
+    response: QueryResponse,
+    disabled: boolean,
+  ): m.Children {
+    const cols = this.nodeBearingCols(response);
+    if (cols.length <= 1) return undefined;
+    const current = this.groupColFor(response);
+    return m(
+      MenuItem,
+      {label: `Group by: ${current}`, icon: 'view_column', disabled},
+      cols.map((col) =>
+        m(MenuItem, {
+          label: col,
+          icon: col === current ? 'check' : undefined,
+          onclick: () => {
+            this.groupCol = col;
+          },
+        }),
+      ),
     );
   }
 
@@ -703,6 +740,7 @@ export class DuneQueryResults {
       ),
       m(
         StackAuto,
+        {className: 'pf-dune-query__sql-slot'},
         m('code.pf-dune-query__sql', {title: response.query}, response.query),
       ),
     ];
