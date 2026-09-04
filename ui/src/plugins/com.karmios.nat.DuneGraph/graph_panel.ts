@@ -24,8 +24,60 @@ import {decorateNode} from './node_display';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
 
+/**
+ * A node set for the panel to draw that is *not* the controller's own graph
+ * selection - what the Data Explorer's node graph chart hands it (see
+ * node_graph_chart.ts).
+ *
+ * Only the node set is injected. Everything else the panel reads off the
+ * controller stays there, because nothing else genuinely differs between the
+ * two surfaces: the edges come from the same graph, "Hide rules" is a property
+ * of how a Dune graph is drawn rather than of who asked for it, and clicking a
+ * dot means the same thing wherever the dot is. What does differ is that the
+ * two toolbar actions that act on the *selection* - "Timeline" and "Clear" -
+ * would act on something other than what is on screen, so they are dropped
+ * whenever this is present (see {@link GraphPanel.renderToolbar}).
+ *
+ * `nodes` is never empty: a caller with nothing to draw has a better thing to
+ * say about why than "no nodes selected for the graph yet", and says it instead
+ * of mounting the panel.
+ */
+export interface GraphPanelNodes {
+  /**
+   * The nodes to draw - the "selection" as far as this panel is concerned.
+   * Edge contraction walks all of it (so a hidden rule between two deps still
+   * joins them up) and the hide-rules filter is applied on top.
+   */
+  readonly nodes: readonly NodeId[];
+
+  /**
+   * How many nodes there were before any cap was applied, so the toolbar can
+   * say "400 of 3,912 nodes" rather than claim the capped set is the whole
+   * answer. Equal to `nodes.length` when nothing was dropped.
+   */
+  readonly total: number;
+
+  /**
+   * A number that changes whenever `nodes` does: the panel's relayout key, in
+   * place of `controller.graphVersion` (which moves for the *selection*, and so
+   * is neither necessary nor sufficient here).
+   *
+   * Monotonic across every producer rather than per-producer, since the panel
+   * outlives the thing that fed it: a chart whose query changes builds a fresh
+   * source and hands the same mithril component instance its first result, and
+   * two sources' "first result" must not carry the same number.
+   */
+  readonly version: number;
+}
+
 interface GraphPanelAttrs {
   readonly controller: DuneGraphController;
+
+  /**
+   * The nodes to draw. Omitted by the side panel, which draws the controller's
+   * own graph selection - see {@link GraphPanelNodes}.
+   */
+  readonly nodes?: GraphPanelNodes;
 }
 
 interface Point {
@@ -53,19 +105,28 @@ function clampZoom(zoom: number): number {
 }
 
 /**
- * Renders the induced subgraph over the controller's selected nodes as a
- * layered SVG diagram: pan by dragging, zoom with the wheel, click a node to
- * jump to its slice. The layout is recomputed only when the selected set
- * changes; a new selection is shown at a fixed 1:1 scale (one layout unit per
- * CSS pixel), centred on the content - pan/zoom then just move the viewport,
- * and resizing the pane reveals more or less of the graph rather than
- * rescaling it. "Fit" is the one explicit way to zoom to the content.
+ * Renders the induced subgraph over a set of nodes as a layered SVG diagram:
+ * pan by dragging, zoom with the wheel, click a node to jump to its slice. The
+ * layout is recomputed only when that set changes; a new one is shown at a
+ * fixed 1:1 scale (one layout unit per CSS pixel), centred on the content -
+ * pan/zoom then just move the viewport, and resizing the pane reveals more or
+ * less of the graph rather than rescaling it. "Fit" is the one explicit way to
+ * zoom to the content.
+ *
+ * The set is the controller's graph selection unless one is handed over in
+ * `attrs.nodes`, which is what the Data Explorer's node graph chart does - see
+ * {@link GraphPanelNodes} for what does and doesn't change with it.
  */
 export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
-  // controller.graphVersion as of the last layout, so we only relayout/recentre
-  // when the selection actually changes (not on every pan/zoom redraw). -1
-  // never matches a real version, so the first render always lays out.
+  // The node set's version as of the last layout, so we only relayout/recentre
+  // when the set actually changes (not on every pan/zoom redraw):
+  // controller.graphVersion for the selection, or the injected set's own
+  // version. -1 never matches either, so the first render always lays out.
   private sig = -1;
+  // controller.hideRules as of the last layout. Redundant for the selection -
+  // toggling it bumps graphVersion, so `sig` already catches it - but not for
+  // an injected set, whose version knows nothing about the toggle.
+  private sigHideRules = false;
   private layout: GraphLayout = {nodes: [], edges: [], width: 0, height: 0};
   // Layout units per CSS pixel: 1 == 1:1, larger == zoomed out.
   private zoom = 1;
@@ -96,7 +157,7 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 
   view({attrs}: m.CVnode<GraphPanelAttrs>): m.Children {
     const {controller} = attrs;
-    const nodes = controller.selectedNodes;
+    const nodes = attrs.nodes?.nodes ?? controller.selectedNodes;
 
     if (nodes.length === 0) {
       return m(EmptyState, {
@@ -105,17 +166,18 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       });
     }
 
-    // Rules are hidden but not removed from the selection: their edges are
-    // contracted through (see inducedEdges' isHidden param) rather than
-    // dropped, so a dep resolving to a hidden rule that depends on another dep
-    // is drawn as a direct edge between the two deps. visibleNodes (on the
-    // controller, so the timeline track sees the same set) does the filtering.
-    const visible = controller.visibleNodes;
-    this.ensureLayout(controller, nodes, visible);
+    // Rules are hidden but not removed from the set: their edges are contracted
+    // through (see inducedEdges' isHidden param) rather than dropped, so a dep
+    // resolving to a hidden rule that depends on another dep is drawn as a
+    // direct edge between the two deps. The filter lives on the controller (so
+    // the timeline track sees the same set) rather than here; for the graph
+    // selection this is exactly `controller.visibleNodes`.
+    const visible = controller.visibleIn(nodes);
+    this.ensureLayout(attrs, nodes, visible);
 
     return m(
       '.pf-dune-graph__graph',
-      this.renderToolbar(controller, nodes.length, visible.length),
+      this.renderToolbar(attrs, nodes.length, visible.length),
       m(
         '.pf-dune-graph__graph-canvas',
         visible.length === 0
@@ -129,18 +191,26 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 
   private renderToolbar(
-    controller: DuneGraphController,
-    total: number,
+    attrs: GraphPanelAttrs,
+    drawn: number,
     visibleCount: number,
   ): m.Children {
-    const hiddenCount = total - visibleCount;
+    const {controller} = attrs;
+    const hiddenCount = drawn - visibleCount;
+    // What was asked for, against what is being drawn. The two differ only for
+    // an injected set that was capped, so the side panel's label is unchanged:
+    // `total === drawn` collapses this back to "N nodes".
+    const total = attrs.nodes?.total ?? drawn;
     const countLabel =
-      hiddenCount > 0
-        ? `${plural(total, 'node')} (${hiddenCount} hidden)`
-        : plural(total, 'node');
+      total > drawn
+        ? `${drawn} of ${plural(total, 'node')}`
+        : plural(drawn, 'node');
     return m(
       '.pf-dune-graph__graph-toolbar',
-      m('span.pf-dune-graph__graph-count', countLabel),
+      m(
+        'span.pf-dune-graph__graph-count',
+        hiddenCount > 0 ? `${countLabel} (${hiddenCount} hidden)` : countLabel,
+      ),
       m(Button, {label: 'Fit', icon: 'fit_screen', onclick: () => this.fit()}),
       m(Button, {
         label: 'Hide rules',
@@ -148,16 +218,23 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
         active: controller.hideRules,
         onclick: () => controller.toggleHideRules(),
       }),
-      m(Button, {
-        label: 'Timeline',
-        icon: 'timeline',
-        onclick: () => controller.showTimeline(),
-      }),
-      m(Button, {
-        label: 'Clear',
-        icon: 'clear',
-        onclick: () => controller.clearGraph(),
-      }),
+      // Both of these act on the graph *selection*, which is what is on screen
+      // only when nothing was injected. Offered against an injected set they
+      // would silently be about some other set of nodes - "Timeline" would show
+      // the side panel's, and "Clear" would empty it from a card that is not
+      // drawing it - so they are simply not there.
+      attrs.nodes === undefined &&
+        m(Button, {
+          label: 'Timeline',
+          icon: 'timeline',
+          onclick: () => controller.showTimeline(),
+        }),
+      attrs.nodes === undefined &&
+        m(Button, {
+          label: 'Clear',
+          icon: 'clear',
+          onclick: () => controller.clearGraph(),
+        }),
     );
   }
 
@@ -239,16 +316,25 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 
   // Relayout + refit only when the visible node set (or the hide-rules
-  // toggle) changes. controller.graphVersion is bumped by every mutation that
-  // can change either, so it's a cheaper and more complete invalidation key
-  // than re-joining the node set every render.
+  // toggle) changes. For the graph selection controller.graphVersion is bumped
+  // by every mutation that can change either, so it's a cheaper and more
+  // complete invalidation key than re-joining the node set every render; an
+  // injected set brings its own version, which says nothing about the toggle,
+  // so that is compared separately. (For the selection the toggle check is
+  // redundant - toggling bumps graphVersion - which is why this stays exactly
+  // as sensitive as it was for the side panel.)
   private ensureLayout(
-    controller: DuneGraphController,
+    attrs: GraphPanelAttrs,
     nodes: readonly NodeId[],
     visible: readonly NodeId[],
   ): void {
-    if (controller.graphVersion === this.sig) return;
-    this.sig = controller.graphVersion;
+    const {controller} = attrs;
+    const version = attrs.nodes?.version ?? controller.graphVersion;
+    if (version === this.sig && controller.hideRules === this.sigHideRules) {
+      return;
+    }
+    this.sig = version;
+    this.sigHideRules = controller.hideRules;
     // inducedEdges walks the full selection so it can traverse through hidden
     // rules; layoutGraph only ever sees the visible nodes.
     const isHiddenRule = controller.hideRules

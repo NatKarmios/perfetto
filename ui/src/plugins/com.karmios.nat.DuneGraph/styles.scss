@@ -1070,3 +1070,20 @@
     color: var(--pf-color-text-muted);
   }
 }
+
+// The graph pane rendered as a Data Explorer chart (see node_graph_chart.ts).
+// Same problem and same answer as `.pf-dune-dir-chart` above: the pane sizes
+// itself against its parent (`.pf-dune-graph__graph` is `flex: 1; min-height:
+// 0`), and a chart card gives its content no definite height to resolve
+// against, so this wrapper supplies one. Matched to the directory chart's so
+// that two Dune cards side by side in a dashboard line up.
+.pf-dune-node-chart {
+  height: 320px;
+  display: flex;
+  flex-direction: column;
+
+  // The states that stand in for the pane - the load offer, the column prompt,
+  // the refusal - are centred blocks rather than flex children that want the
+  // whole card, and would otherwise be stretched by the column above.
+  justify-content: center;
+}

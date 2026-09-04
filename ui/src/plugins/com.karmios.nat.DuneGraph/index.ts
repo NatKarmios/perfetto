@@ -26,6 +26,7 @@ import {
 import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
 import {registerDirExplorerChart} from './dir_explorer_chart';
+import {registerNodeGraphChart} from './node_graph_chart';
 import {DirExplorerPanel} from './dir_explorer_panel';
 import {SqlDirExplorerSource} from './dir_explorer_source';
 import {DuneGraphPanel} from './panel';
@@ -103,6 +104,11 @@ export default class implements PerfettoPlugin {
     // this trace's lifetime for the same reason as the renderer above - see
     // dir_explorer_chart.ts.
     registerDirExplorerChart(trace, controller);
+
+    // And the graph pane below as a second one, over the nodes a query names
+    // rather than over the ones clicked into the side panel's selection. Same
+    // registration lifetime, for the same reason - see node_graph_chart.ts.
+    registerNodeGraphChart(trace, controller);
 
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,

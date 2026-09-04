@@ -1284,29 +1284,53 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
 }
 
 /**
- * The prompt shown in place of the tree when the node tier has not been built.
+ * What {@link renderMirrorNotLoaded} is standing in for, so the prompt names the
+ * thing the caller could not draw rather than a generic table.
+ */
+export interface MirrorDependant {
+  /** The absent surface's own icon, so the prompt still looks like its card. */
+  readonly icon: string;
+  readonly title: string;
+  /** What is missing and where it would have come from. */
+  readonly note: string;
+}
+
+// The directory tree's, which is what this prompt was written for and stays the
+// default so the two tree surfaces need not repeat themselves.
+const DIR_TREE_DEPENDANT: MirrorDependant = {
+  icon: 'account_tree',
+  title: 'Directory tree not loaded',
+  note:
+    "The build's directories come from the graph's node tables, which have " +
+    'not been built for this trace yet.',
+};
+
+/**
+ * The prompt shown in place of a surface whose node tier has not been built.
  *
  * `dune_dir` is part of that tier, so there is no hierarchy to draw until it is
- * up - true of the side panel tab and of the chart alike, which is why this is
- * exported rather than inlined: the chart cannot mount the pane to get the
- * prompt (the pane needs a source, and a source that cannot read anything yet is
- * not one), and a second copy of an offer to load the graph would be the third.
+ * up - true of the side panel tab and of the directory chart alike, which is why
+ * this is exported rather than inlined: the chart cannot mount the pane to get
+ * the prompt (the pane needs a source, and a source that cannot read anything
+ * yet is not one), and a second copy of an offer to load the graph would be the
+ * third. The node graph chart (node_graph_chart.ts) is the fourth surface that
+ * needs the same offer for a different reason, which is what the parameter is
+ * for.
  *
- * The offer itself is the same one panel.ts makes, so that any of the three
- * surfaces is usable on its own rather than sending the user to another one
- * first.
+ * The offer itself is the same one panel.ts makes, so that any of the surfaces
+ * is usable on its own rather than sending the user to another one first.
+ *
+ * @param controller The controller whose load the button starts.
+ * @param what What could not be drawn; defaults to the directory tree.
  */
 export function renderMirrorNotLoaded(
   controller: DuneGraphController,
+  what: MirrorDependant = DIR_TREE_DEPENDANT,
 ): m.Children {
   return m(
     EmptyState,
-    {icon: 'account_tree', title: 'Directory tree not loaded'},
-    m(
-      '.pf-dune-graph__load-note',
-      "The build's directories come from the graph's node tables, which " +
-        'have not been built for this trace yet.',
-    ),
+    {icon: what.icon, title: what.title},
+    m('.pf-dune-graph__load-note', what.note),
     m(Button, {
       label: 'Load graph',
       icon: 'play_arrow',

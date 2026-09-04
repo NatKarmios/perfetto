@@ -353,7 +353,24 @@ export class DuneGraphController {
   // selection, minus rules while hideRules is on. Rules are contracted, not
   // removed from the underlying selection - see graph.ts's inducedEdges().
   get visibleNodes(): readonly NodeId[] {
-    const nodes = this.selectedNodes;
+    return this.visibleIn(this.selectedNodes);
+  }
+
+  /**
+   * The same hide-rules filter as `visibleNodes` above, over a node set that
+   * isn't the graph selection.
+   *
+   * "Hide rules" is a property of how a Dune graph is *drawn*, not of what is
+   * selected, which is why the flag lives on the controller rather than in a
+   * panel. So a surface drawing some other node set - the Data Explorer's node
+   * graph chart, whose nodes come from its query (see node_graph_chart.ts) -
+   * has to apply it too, and applies exactly this one rather than a second copy
+   * that could drift from the timeline track's.
+   *
+   * @param nodes The set to filter. Returned as-is while rules are shown, so
+   *   this costs nothing in the common case.
+   */
+  visibleIn(nodes: readonly NodeId[]): readonly NodeId[] {
     return this.hideRulesFlag
       ? nodes.filter((id) => !this.graph.isRule(id))
       : nodes;

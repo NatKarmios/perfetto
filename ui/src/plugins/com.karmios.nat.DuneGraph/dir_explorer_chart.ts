@@ -32,8 +32,8 @@
  * reads it as the column holding a `dune_node.node_id`, which is what maps a row
  * to a place in the tree. The chart picker's generic default rarely picks it, so
  * a chart dropped on a Dune query offers to switch to the right column rather
- * than silently joining on a path string and drawing nothing (see
- * {@link resolveNodeColumn}).
+ * than silently joining on a path string and drawing nothing - which is shared
+ * with the node graph chart, and so lives in chart_node_column.ts.
  *
  * ## Clicking a directory narrows everything else
  *
@@ -48,18 +48,16 @@
 import m from 'mithril';
 import {assertUnreachable} from '../../base/assert';
 import type {Trace} from '../../public/trace';
-import type {ColumnInfo} from '../dev.perfetto.DataExplorer/query_builder/column_info';
 import type {ChartConfig} from '../dev.perfetto.DataExplorer/query_builder/nodes/visualisation_node';
 import type {
   ChartLoaderEntry,
   ChartRenderContext,
 } from '../dev.perfetto.DataExplorer/query_builder/charts/chart_renderers';
 import {registerChartType} from '../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
-import {Button} from '../../widgets/button';
 import {Callout} from '../../widgets/callout';
 import {EmptyState} from '../../widgets/empty_state';
-import {Intent} from '../../widgets/common';
 import {Spinner} from '../../widgets/spinner';
+import {renderNodeColumnPrompt, resolveNodeColumn} from './chart_node_column';
 import type {DuneGraphController} from './controller';
 import {ChartDirExplorerSource} from './dir_chart_source';
 import type {DirEntry} from './dir_explorer';
@@ -86,18 +84,6 @@ export const DIR_TREE_CHART_TYPE = 'dune-dir-tree';
  * is a different question from which column named them.
  */
 const DIR_ID_COLUMN = 'dir_id';
-
-/**
- * Column names whose value is a `dune_node.node_id`, in the order to prefer
- * them.
- *
- * The same three the query tab treats as node-bearing (`query_results.ts`'s
- * `CHIP_COLS`, and its `GROUP_COL_PRIORITY` order), because a query written for
- * one surface should not need rewriting for the other: `node_id` off `dune_node`
- * and the detail tables, `src` / `dst` off `dune_edge` and the relation
- * functions.
- */
-const NODE_ID_COLUMNS: readonly string[] = ['node_id', 'src', 'dst'];
 
 /**
  * Registers the directory-tree chart type for as long as `trace` lives.
@@ -194,7 +180,7 @@ function renderChartBody(
 
   const suggestion = resolveNodeColumn(config.column, ctx.node.sourceCols);
   if (suggestion !== undefined) {
-    return renderColumnPrompt(ctx, config, suggestion);
+    return renderNodeColumnPrompt(ctx, config, suggestion, 'account_tree');
   }
 
   // No loader entry means the host has no results table yet (it creates loaders
@@ -255,58 +241,6 @@ function renderChartBody(
       controller,
       source,
       onFilterToDir: dirFilterHandler(ctx, source),
-    }),
-  );
-}
-
-/**
- * The column that should hold node ids but isn't the one configured, or
- * undefined when the configured one will do.
- *
- * The chart picker's default column is chosen generically - the first
- * non-numeric column, which on a Dune query is usually a label or a path - so a
- * chart dropped on a query would otherwise join on a string, match nothing and
- * show an empty tree. This is the offer to fix that, and it is an offer rather
- * than a silent substitution because the column picker is the config's own and
- * quietly ignoring it is what this chart used to do.
- *
- * A configured column that is one of the known node id names is taken as
- * deliberate. So is one that isn't, when the query offers no better - a query
- * may well have aliased its node id to something else, and only its author
- * knows.
- */
-function resolveNodeColumn(
-  column: string,
-  cols: ReadonlyArray<ColumnInfo>,
-): string | undefined {
-  if (NODE_ID_COLUMNS.includes(column)) return undefined;
-  const names = new Set(cols.map((c) => c.name));
-  return NODE_ID_COLUMNS.find((c) => names.has(c));
-}
-
-// The offer to point the chart at a column that actually holds node ids. The
-// click is the config popup's own `updateChart`, so it persists exactly as
-// picking the column there would - and rebuilding the loader on the new column
-// is then the host's business rather than ours.
-function renderColumnPrompt(
-  ctx: ChartRenderContext,
-  config: ChartConfig,
-  suggestion: string,
-): m.Children {
-  return m(
-    EmptyState,
-    {icon: 'account_tree', title: 'Pick the node id column'},
-    m(
-      '.pf-dune-graph__load-note',
-      `This chart maps each row to a Dune node, so it needs the column ` +
-        `holding a dune_node.node_id. "${config.column}" is not one, but ` +
-        `"${suggestion}" is.`,
-    ),
-    m(Button, {
-      label: `Use ${suggestion}`,
-      icon: 'check',
-      intent: Intent.Primary,
-      onclick: () => ctx.node.updateChart(config.id, {column: suggestion}),
     }),
   );
 }

@@ -106,6 +106,7 @@
  */
 
 import {getErrorMessage} from '../../base/errors';
+import {quoteIdentifier} from '../../components/widgets/datagrid/sql_utils';
 import type {Engine} from '../../trace_processor/engine';
 import {NUM, STR} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
@@ -464,7 +465,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
       SELECT n.dir_id AS dir_id, n.kind AS kind, count(*) AS cnt
       FROM dune_node n
       JOIN (
-        SELECT DISTINCT ${quoteIdent(this.nodeColumn)} AS node_id
+        SELECT DISTINCT ${quoteIdentifier(this.nodeColumn)} AS node_id
         FROM (${this.query})
       ) q ON q.node_id = n.node_id
       GROUP BY 1, 2
@@ -484,8 +485,14 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   // Not de-duplicated: `IN` is a set test, so duplicates change nothing and
   // sorting them out would cost the member queries the very thing starting from
   // `dir_id` bought them.
+  //
+  // `quoteIdentifier`, because the column name comes from a chart's config -
+  // persisted in dashboards, typed by a user - and so is not something to
+  // interpolate raw. Note that this is *identifier* quoting and has nothing to
+  // do with `sqlValue`'s string-literal quoting, which sits next to it in the
+  // same module; conflating the two is a bug in both directions.
   private inputIds(): string {
-    return `SELECT ${quoteIdent(this.nodeColumn)} FROM (${this.query})`;
+    return `SELECT ${quoteIdentifier(this.nodeColumn)} FROM (${this.query})`;
   }
 }
 
@@ -528,16 +535,4 @@ function childIndex(
     else siblings.push(dir.id);
   }
   return out;
-}
-
-/**
- * A column name as a SQL identifier.
- *
- * The name comes from a chart's config, which is persisted in dashboards and
- * typed by a user, so it is not something to interpolate raw. Note that this
- * is identifier quoting, and has nothing to do with `sqlValue`'s string-literal
- * quoting - conflating the two is a bug in both directions.
- */
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
 }

@@ -1,0 +1,290 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * The graph pane (graph_panel.ts) in both of the modes it now has: over the
+ * controller's graph selection, which is what the side panel mounts, and over a
+ * node set handed to it, which is what the Data Explorer's node graph chart
+ * mounts (see node_graph_chart.ts).
+ *
+ * The pane grew the second mode rather than being rewritten for it, so what is
+ * worth pinning is exactly the seam between them:
+ *
+ * - the selection mode is unchanged - same dots, same count, same four buttons -
+ *   because the side panel is a landed surface and this was meant to be
+ *   invisible to it;
+ * - an injected set draws *its* nodes and not the selection's, which is the
+ *   whole feature;
+ * - "Timeline" and "Clear" act on the selection, so they are gone in the
+ *   injected mode: offered there they would be about nodes that are not on
+ *   screen;
+ * - the cap is reported by the toolbar's own count ("2 of 40 nodes"), since
+ *   that is the one place a count is already shown;
+ * - "Hide rules" still works in both, because it is a property of how a Dune
+ *   graph is drawn rather than of who asked for one - and it has to relayout in
+ *   the injected mode, where the set's own version knows nothing about it.
+ */
+
+import m from 'mithril';
+import {beforeEach, describe, expect, test} from 'vitest';
+import type {DuneGraphController} from './controller';
+import type {NodeId} from './graph';
+import {GraphPanel} from './graph_panel';
+import type {GraphPanelNodes} from './graph_panel';
+import {dep, rule, testGraph} from './graph_test_helper';
+
+// r1 depends on a and b; c hangs off b. Two rules and three deps, which is
+// enough for a hide-rules contraction and for an injected set that is a proper
+// subset of the selection.
+const g = testGraph([
+  rule('r1', {staticDeps: ['a', 'b']}),
+  dep('a'),
+  dep('b', {resolvedRule: 'r2'}),
+  rule('r2', {staticDeps: ['c']}),
+  dep('c'),
+]);
+
+/**
+ * Everything the pane reads off the controller. The graph and the hide-rules
+ * filter are the real ones (the filter is `visibleIn`, verbatim from
+ * controller.ts) so that the two modes are filtered by the same code the
+ * timeline track is.
+ */
+function fakeController(over: {readonly selection?: readonly NodeId[]} = {}) {
+  const state = {
+    selection: over.selection ?? [],
+    hideRules: false,
+    graphVersion: 0,
+    visited: [] as NodeId[],
+    timelines: 0,
+    cleared: 0,
+  };
+  const controller = {
+    graph: g.graph,
+    get selectedNodes() {
+      return state.selection;
+    },
+    get visibleNodes() {
+      return controller.visibleIn(state.selection);
+    },
+    visibleIn: (nodes: readonly NodeId[]) =>
+      state.hideRules ? nodes.filter((id) => !g.graph.isRule(id)) : nodes,
+    get hideRules() {
+      return state.hideRules;
+    },
+    get graphVersion() {
+      return state.graphVersion;
+    },
+    toggleHideRules: () => {
+      state.hideRules = !state.hideRules;
+      state.graphVersion++;
+    },
+    nodeForSelection: () => undefined,
+    goToNode: async (node: NodeId) => {
+      state.visited.push(node);
+    },
+    showTimeline: () => {
+      state.timelines++;
+    },
+    clearGraph: () => {
+      state.cleared++;
+    },
+  };
+  return {controller: controller as unknown as DuneGraphController, state};
+}
+
+let root: HTMLElement;
+
+beforeEach(() => {
+  root = document.createElement('div');
+});
+
+function render(attrs: {
+  readonly controller: DuneGraphController;
+  readonly nodes?: GraphPanelNodes;
+}): void {
+  m.render(root, m(GraphPanel, attrs));
+}
+
+// A circle carries its node id only as mithril's `key`, which never reaches the
+// DOM, so what a test can see of a dot is its kind. That is enough to tell the
+// fixture's rules from its deps, which is what every assertion below needs.
+function dots(): {readonly rules: number; readonly deps: number} {
+  return {
+    rules: root.querySelectorAll('.pf-dune-graph__dot--rule').length,
+    deps: root.querySelectorAll('.pf-dune-graph__dot--dep').length,
+  };
+}
+
+function dotCount(): number {
+  return root.querySelectorAll('circle').length;
+}
+
+function edgeCount(): number {
+  return root.querySelectorAll('line').length;
+}
+
+// Button labels, with the leading icon glyph (an `<i.pf-icon>` whose text is
+// the material icon's name) taken back off.
+function buttons(): string[] {
+  return Array.from(root.querySelectorAll('button')).map(label);
+}
+
+function label(button: Element): string {
+  const icon = button.querySelector('.pf-icon')?.textContent ?? '';
+  return (button.textContent ?? '').slice(icon.length);
+}
+
+function count(): string {
+  return root.querySelector('.pf-dune-graph__graph-count')?.textContent ?? '';
+}
+
+function injected(
+  nodes: readonly NodeId[],
+  over: Partial<GraphPanelNodes> = {},
+): GraphPanelNodes {
+  return {nodes, total: nodes.length, version: 1, ...over};
+}
+
+describe('the graph pane over the graph selection', () => {
+  test('says so when nothing is selected', () => {
+    const {controller} = fakeController();
+    render({controller});
+
+    expect(root.textContent).toContain('No nodes selected for the graph yet');
+  });
+
+  test('draws the selection and counts it', () => {
+    const {controller} = fakeController({
+      selection: [g.id('r1'), g.id('a'), g.id('b')],
+    });
+    render({controller});
+
+    expect(dotCount()).toBe(3);
+    expect(count()).toBe('3 nodes');
+    // r1 -> a and r1 -> b, induced over the selection.
+    expect(edgeCount()).toBe(2);
+  });
+
+  test('offers the four toolbar actions it always did', () => {
+    const {controller} = fakeController({selection: [g.id('a')]});
+    render({controller});
+
+    expect(buttons()).toEqual(['Fit', 'Hide rules', 'Timeline', 'Clear']);
+  });
+
+  test('acts on the selection through the last two of them', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    const found = (want: string) =>
+      Array.from(root.querySelectorAll('button')).find(
+        (b) => label(b) === want,
+      );
+    found('Timeline')?.click();
+    found('Clear')?.click();
+
+    expect(state.timelines).toBe(1);
+    expect(state.cleared).toBe(1);
+  });
+
+  test('hides rules and contracts their edges through', () => {
+    // b resolves to r2, which depends on c. Hiding r2 must leave b -> c rather
+    // than dropping the pair of edges.
+    const {controller, state} = fakeController({
+      selection: [g.id('b'), g.id('r2'), g.id('c')],
+    });
+    render({controller});
+    expect(dotCount()).toBe(3);
+
+    state.hideRules = true;
+    state.graphVersion++;
+    render({controller});
+
+    expect(dotCount()).toBe(2);
+    expect(count()).toBe('3 nodes (1 hidden)');
+    expect(edgeCount()).toBe(1);
+  });
+});
+
+describe('the graph pane over an injected node set', () => {
+  test('draws the set it was given, not the selection', () => {
+    // The selection is one rule; the injected set is two deps. Nothing of the
+    // selection may appear.
+    const {controller} = fakeController({selection: [g.id('r1')]});
+    render({controller, nodes: injected([g.id('a'), g.id('b')])});
+
+    expect(dots()).toEqual({rules: 0, deps: 2});
+  });
+
+  test('drops the two actions that are about the selection', () => {
+    const {controller} = fakeController({selection: [g.id('r1')]});
+    render({controller, nodes: injected([g.id('a')])});
+
+    expect(buttons()).toEqual(['Fit', 'Hide rules']);
+  });
+
+  test('says how many of how many when the set was capped', () => {
+    const {controller} = fakeController();
+    render({
+      controller,
+      nodes: injected([g.id('a'), g.id('b')], {total: 40}),
+    });
+
+    expect(count()).toBe('2 of 40 nodes');
+  });
+
+  test('still counts plainly when nothing was dropped', () => {
+    const {controller} = fakeController();
+    render({controller, nodes: injected([g.id('a'), g.id('b')])});
+
+    expect(count()).toBe('2 nodes');
+  });
+
+  test('relays out when the set changes but the selection does not', () => {
+    const {controller} = fakeController();
+    render({controller, nodes: injected([g.id('a'), g.id('b')])});
+    expect(dotCount()).toBe(2);
+
+    // A new load: same controller, same graphVersion, different nodes.
+    render({controller, nodes: injected([g.id('a')], {version: 2})});
+
+    expect(dotCount()).toBe(1);
+  });
+
+  test('relays out when rules are hidden under it', () => {
+    // The injected version does not move for a toggle, so the pane has to watch
+    // the toggle itself - otherwise the hidden rule stays on screen.
+    const {controller, state} = fakeController();
+    const nodes = injected([g.id('b'), g.id('r2'), g.id('c')]);
+    render({controller, nodes});
+    expect(dotCount()).toBe(3);
+
+    state.hideRules = true;
+    state.graphVersion++;
+    render({controller, nodes});
+
+    expect(dots()).toEqual({rules: 0, deps: 2});
+    expect(count()).toBe('3 nodes (1 hidden)');
+  });
+
+  test('jumps to a node when its dot is clicked', () => {
+    const {controller, state} = fakeController();
+    render({controller, nodes: injected([g.id('a')])});
+    root
+      .querySelector('circle')
+      ?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+
+    expect(state.visited).toEqual([g.id('a')]);
+  });
+});
