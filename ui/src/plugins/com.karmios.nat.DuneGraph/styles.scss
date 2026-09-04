@@ -1039,3 +1039,12 @@
     color: #ffa657;
   }
 }
+
+// The directory Explorer rendered as a Data Explorer chart (see
+// dir_explorer_chart.ts). `.pf-dune-graph` is `height: 100%`, which needs a
+// definite height to resolve against; a chart card gives its content none, so
+// this wrapper supplies one and the tree scrolls inside it the way it does in
+// the side panel.
+.pf-dune-dir-chart {
+  height: 320px;
+}

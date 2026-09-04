@@ -25,7 +25,9 @@ import {
 } from './controller';
 import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
+import {registerDirExplorerChart} from './dir_explorer_chart';
 import {DirExplorerPanel} from './dir_explorer_panel';
+import {SqlDirExplorerSource} from './dir_explorer_source';
 import {DuneGraphPanel} from './panel';
 import {DuneQueryPage} from './query_page';
 import {DuneQueryTab} from './query_tab';
@@ -95,6 +97,13 @@ export default class implements PerfettoPlugin {
     // node_cell.ts.
     registerNodeColumnRenderer(trace, controller);
 
+    // Offers the directory Explorer below as a Data Explorer chart type, so it
+    // can be dropped into a visualisation node or a dashboard alongside the
+    // charts summarising the same build. Registered per-trace and scoped to
+    // this trace's lifetime for the same reason as the renderer above - see
+    // dir_explorer_chart.ts.
+    registerDirExplorerChart(trace, controller);
+
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,
       title: 'Dune',
@@ -106,11 +115,16 @@ export default class implements PerfettoPlugin {
     // at it (see dir_explorer_panel.ts). A second tab rather than a third area
     // of the first one - a directory tree wants the whole height of the panel,
     // and it has nothing to do with what is currently selected.
+    //
+    // The source is built once rather than per render: the pane treats a new
+    // source object as new data and drops everything it has cached, so handing
+    // it a fresh one each frame would collapse the tree every frame.
+    const dirSource = new SqlDirExplorerSource(trace.engine, controller);
     trace.sidePanel.registerTab({
       uri: EXPLORER_URI,
       title: 'Explorer',
       icon: 'account_tree',
-      render: () => m(DirExplorerPanel, {controller, trace}),
+      render: () => m(DirExplorerPanel, {controller, source: dirSource}),
     });
 
     // Whenever the selected node changes - clicked in the Explorer tree, on the

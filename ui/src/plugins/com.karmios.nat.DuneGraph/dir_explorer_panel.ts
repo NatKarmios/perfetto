@@ -19,11 +19,16 @@
  * The other two views of the graph both start from a node - the selection panel
  * from whatever is selected on the timeline, the query tab from a query. This
  * one starts from the build's shape, which is the thing you want when you don't
- * yet know which node you're looking for. It reads `dune_dir` and `dune_node`
- * out of the SQL mirror (see dir_explorer.ts for the queries) rather than the
- * in-memory graph, because the mirror is where the directory hierarchy exists
- * at all: `BuildGraph` knows each node's directory *string*, and the tree over
- * those strings is interned during the node-tier build and then discarded.
+ * yet know which node you're looking for.
+ *
+ * Where the rows come from is the `source` attr rather than anything in here
+ * (see dir_explorer_source.ts), because this pane is mounted twice: as the side
+ * panel's Explorer tab, over the SQL mirror, and as a Data Explorer chart, over
+ * a query's rows. The side panel's source reads `dune_dir` and `dune_node` out
+ * of the mirror (see dir_explorer.ts for the queries) rather than the in-memory
+ * graph, because the mirror is where the directory hierarchy exists at all:
+ * `BuildGraph` knows each node's directory *string*, and the tree over those
+ * strings is interned during the node-tier build and then discarded.
  *
  * ## Why this owns its tree state rather than using `LazyTreeNode`
  *
@@ -61,24 +66,17 @@ import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
 import {Intent} from '../../widgets/common';
 import {Spinner} from '../../widgets/spinner';
-import type {Trace} from '../../public/trace';
 import type {DuneGraphController} from './controller';
 import type {DirEntry, MemberEntry} from './dir_explorer';
 import type {MemberFilter} from './dir_explorer';
 import {
   INLINE_MEMBER_LIMIT,
   MEMBER_PAGE,
-  allDirs,
-  childDirs,
   compileFilter,
-  dirMemberIds,
-  dirMembers,
   filterActive,
   fingerprint,
-  matchingCounts,
-  matchingRuleDirs,
-  rootDirs,
 } from './dir_explorer';
+import type {DirExplorerSource} from './dir_explorer_source';
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../widgets/text_input';
 import {MenuDivider, MenuItem, MenuTitle, PopupMenu} from '../../widgets/menu';
@@ -134,22 +132,29 @@ const KIND_LABEL: Record<NodeKind, string> = {
 
 interface DirExplorerPanelAttrs {
   readonly controller: DuneGraphController;
-  // For `trace.engine`. Everything else comes through the controller, but the
-  // queries here are the pane's own rather than the mirror's, so they are issued
-  // directly the way query_results.ts issues its own.
-  readonly trace: Trace;
+  /**
+   * Where the tree's rows come from (see dir_explorer_source.ts).
+   *
+   * Required rather than defaulted to the SQL mirror, for two reasons. A
+   * default would have to be built here, which means this file importing the
+   * engine and the queries again - the coupling the seam exists to remove. And
+   * a mount that forgot to pass its own source would not fail: it would quietly
+   * show the whole mirror's tree instead of the rows it was given, which is
+   * worse than a type error.
+   */
+  readonly source: DirExplorerSource;
 }
 
 // One directory's child directories, once asked for.
 interface ChildState {
-  dirs?: DirEntry[];
+  dirs?: readonly DirEntry[];
   loading: boolean;
   error?: string;
 }
 
 // The pages of one (directory, kind-filter) member list read so far.
 interface MemberState {
-  rows: MemberEntry[];
+  rows: readonly MemberEntry[];
   // No further page to ask for: the last read came back short, so the list is
   // complete and "show more" is not offered.
   atEnd: boolean;
@@ -182,7 +187,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // Keyed by `memberKey`: a directory plus which kinds are being asked for.
   private readonly members = new Map<string, MemberState>();
 
-  private roots?: DirEntry[];
+  private roots?: readonly DirEntry[];
   private rootsLoading = false;
   private rootsError?: string;
 
@@ -202,16 +207,20 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   private filterLoading = false;
   private filterError?: string;
 
-  // The mirror the caches above were read out of. A reload renumbers every node
-  // and rebuilds `dune_dir` from scratch, so everything held here is stale.
-  // `mirrorVersion` rather than `graphVersion`: the latter moves on every ＋/－
-  // click, which would collapse the whole tree every time a node was added.
+  // The source the caches above were read out of, and which version of it. Both
+  // are the identity of "what these rows mean": a graph reload renumbers every
+  // node and rebuilds `dune_dir` from scratch (which the SQL source reports as
+  // a new `mirrorVersion`), and being re-mounted against a *different* source
+  // replaces the tree wholesale even where neither side's counter moved.
+  // Version numbers are per source, so the two checks are not redundant.
+  private cachedSource?: DirExplorerSource;
   private cachedVersion?: number;
 
   view({attrs}: m.CVnode<DirExplorerPanelAttrs>): m.Children {
-    const {controller} = attrs;
-    if (controller.mirrorVersion !== this.cachedVersion) {
-      this.cachedVersion = controller.mirrorVersion;
+    const {source} = attrs;
+    if (source !== this.cachedSource || source.version !== this.cachedVersion) {
+      this.cachedSource = source;
+      this.cachedVersion = source.version;
       this.reset();
     }
     return m(
@@ -589,19 +598,19 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     if (this.filterLoading) return;
     this.filterLoading = true;
     this.filterError = undefined;
-    const {engine} = attrs.trace;
+    const {source} = attrs;
     void (async () => {
       // The directories the path matched come first: the rule counts are keyed
       // off them, since a rule carries no path of its own to test.
-      const dirsP = allDirs(engine);
+      const dirsP = source.allDirs();
       const ruleDirs =
         filter.path === undefined
           ? undefined
-          : await matchingRuleDirs(engine, filter.path);
+          : await source.matchingRuleDirs(filter.path);
       const [dirs, ruleCounts, depCounts] = await Promise.all([
         dirsP,
-        matchingCounts(engine, 'rule', filter, ruleDirs),
-        matchingCounts(engine, 'dep', filter),
+        source.matchingCounts('rule', filter, ruleDirs),
+        source.matchingCounts('dep', filter),
       ]);
       const tree = new FilteredTree(dirs, ruleCounts, depCounts);
       this.filter = filter;
@@ -834,8 +843,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         attrs.controller,
         count,
         () =>
-          dirMemberIds(
-            attrs.trace.engine,
+          attrs.source.dirMemberIds(
             dir.id,
             kinds,
             this.filter,
@@ -1159,7 +1167,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   private loadRoots(attrs: DirExplorerPanelAttrs): void {
     if (this.rootsLoading) return;
     this.rootsLoading = true;
-    void rootDirs(attrs.trace.engine)
+    void attrs.source
+      .rootDirs()
       .then((dirs) => {
         this.roots = dirs;
       })
@@ -1177,7 +1186,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     if (existing?.loading === true) return;
     const state: ChildState = {loading: true};
     this.children.set(id, state);
-    void childDirs(attrs.trace.engine, id)
+    void attrs.source
+      .childDirs(id)
       .then((dirs) => {
         state.dirs = dirs;
       })
@@ -1209,15 +1219,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // Both kinds wanted means no kind filter at all, which is one query rather
     // than two and is what `dirMembers` takes `undefined` for.
     const kind = kinds.length === 1 ? kinds[0] : undefined;
-    void dirMembers(
-      attrs.trace.engine,
-      id,
-      kind,
-      MEMBER_PAGE,
-      offset,
-      this.filter,
-      dirPathMatches,
-    )
+    void attrs.source
+      .dirMembers(id, kind, MEMBER_PAGE, offset, this.filter, dirPathMatches)
       .then((rows) => {
         state.rows = offset === 0 ? rows : [...state.rows, ...rows];
         // A short page is the last page. Asking for the count separately would
