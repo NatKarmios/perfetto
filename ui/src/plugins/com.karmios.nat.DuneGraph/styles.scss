@@ -1047,4 +1047,26 @@
 // the side panel.
 .pf-dune-dir-chart {
   height: 320px;
+  // A column, because the tree can be preceded by a note about the row cap. The
+  // pane takes what is left rather than its own 320px.
+  display: flex;
+  flex-direction: column;
+
+  &__pane {
+    flex: 1;
+    // Without this the pane's own scroll container cannot shrink below its
+    // content and the note is pushed out of the card.
+    min-height: 0;
+  }
+
+  // The row cap having bitten: said once, above the tree, rather than repeated
+  // on the rows it silently shortened.
+  &__note {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    font-size: 11px;
+    color: var(--pf-color-text-muted);
+  }
 }

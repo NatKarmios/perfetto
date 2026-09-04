@@ -143,6 +143,24 @@ interface DirExplorerPanelAttrs {
    * worse than a type error.
    */
   readonly source: DirExplorerSource;
+
+  /**
+   * Narrow whatever else is looking at these rows to one directory, or
+   * undefined where there is nothing to narrow.
+   *
+   * Absent in the side panel: the tree is the whole surface there, and the
+   * pane's own filter bar is how it is narrowed. Present in a Data Explorer
+   * chart, where the tree is one card among several over one query and the
+   * dashboard's brush filters are what the other cards follow (see
+   * dir_explorer_chart.ts). Only the directory is passed - which rows that
+   * means, and which column carries them, is the caller's business and not
+   * something this pane could know.
+   *
+   * Deliberately a button on the row rather than the row's own click: that
+   * click expands the directory, and re-filtering a dashboard every time
+   * someone opens a directory to look inside it is not what they asked for.
+   */
+  readonly onFilterToDir?: (dir: DirEntry) => void;
 }
 
 // One directory's child directories, once asked for.
@@ -255,12 +273,18 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    */
   private renderToolbar(attrs: DirExplorerPanelAttrs): m.Children {
     if (!attrs.controller.nodeMirrorReady) return undefined;
+    // A row-driven source has already been narrowed by the query behind it, and
+    // narrowing it further means re-querying the mirror, which it cannot do (see
+    // `DirExplorerSource.rowDriven`). Both halves of the filter UI go rather
+    // than sitting there doing nothing. Collapse all stays: it is about the
+    // tree's shape rather than its contents.
+    const filterable = !attrs.source.rowDriven;
     return m(
       '.pf-dune-graph__toolbar',
-      this.renderFilterBar(attrs),
+      filterable && this.renderFilterBar(attrs),
       m(
         '.pf-dune-graph__toolbar-buttons',
-        this.renderFilterMenu(attrs),
+        filterable && this.renderFilterMenu(attrs),
         m(Button, {
           label: 'Collapse all',
           icon: 'unfold_less',
@@ -590,7 +614,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * next.
    */
   private apply(attrs: DirExplorerPanelAttrs, filter: MemberFilter): void {
-    if (!filterActive(filter)) {
+    // An empty filter is "no filter" for a hierarchy source, which is the lazy
+    // descent and no tree at all. For a row-driven one it is the *only* filter
+    // there is - the rows already are the selection - so it takes this path
+    // like any other and the tree gets built from the source's counts.
+    if (!filterActive(filter) && !attrs.source.rowDriven) {
       this.clearFilter();
       attrs.controller.requestRedraw();
       return;
@@ -647,27 +675,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   private renderBody(attrs: DirExplorerPanelAttrs): m.Children {
     const {controller} = attrs;
     // `dune_dir` is built as part of the node tier, so there is nothing to show
-    // until that is up. The offer to load it is the same one panel.ts makes,
-    // repeated here so this tab is usable on its own rather than sending the
-    // user to the other one first.
-    if (!controller.nodeMirrorReady) {
-      return m(
-        EmptyState,
-        {icon: 'account_tree', title: 'Directory tree not loaded'},
-        m(
-          '.pf-dune-graph__load-note',
-          "The build's directories come from the graph's node tables, which " +
-            'have not been built for this trace yet.',
-        ),
-        m(Button, {
-          label: 'Load graph',
-          icon: 'play_arrow',
-          intent: Intent.Primary,
-          disabled: controller.busy,
-          onclick: () => void controller.load(),
-        }),
-      );
-    }
+    // until that is up - see `renderMirrorNotLoaded` for the offer to build it.
+    if (!controller.nodeMirrorReady) return renderMirrorNotLoaded(controller);
     if (this.filterError !== undefined) {
       return m(Callout, {icon: 'error'}, this.filterError);
     }
@@ -684,6 +693,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         .roots()
         .map((row) => ({dir: row.dir, from: row.pathFrom}))
         .filter(({dir}) => this.visibleSubtree(dir));
+    } else if (attrs.source.rowDriven) {
+      // The tree a row-driven source needs, built the same way an applied
+      // filter's is and with the same guards: `apply` marks itself busy
+      // synchronously, so the renders before it lands do not re-issue it, and a
+      // failure sets `filterError`, which returns above rather than here.
+      this.apply(attrs, this.filter);
+      return this.spinnerRow('Reading directories…');
     } else {
       const roots = this.roots;
       if (roots === undefined) {
@@ -730,6 +746,23 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     return KINDS.some(
       (k) => this.show[k] && this.shownSubtreeCount(dir, k) > 0,
     );
+  }
+
+  /**
+   * Whether the rows on screen are a subset of what the directories hold.
+   *
+   * The tree's existence rather than `filterActive(this.filter)`, and the two
+   * are not the same question any more: a row-driven source is narrowed by the
+   * query behind it with no filter typed at all (see
+   * `DirExplorerSource.rowDriven`). In the side panel they coincide exactly -
+   * the tree exists precisely while a filter is applied - so this changes
+   * nothing there.
+   *
+   * What it gates is the honesty of the counts: which numbers may be shown bare
+   * and which have to be qualified by the total they were drawn from.
+   */
+  private narrowed(): boolean {
+    return this.tree !== undefined;
   }
 
   /**
@@ -805,7 +838,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         }),
         m('span.pf-dune-explorer__dir-name', dirLabel(dir, parentPath)),
         m('span.pf-dune-tree__group-count', this.renderCounts(dir, open)),
-        this.renderBulk(attrs, dir, kinds, memberCount),
+        this.renderBulk(attrs, dir, kinds, memberCount, attrs.onFilterToDir),
       ),
       open &&
         m(
@@ -824,33 +857,50 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * and a row generally knows only its member *count* (off `dune_dir`) when it
    * is drawn - which is all a label needs. See `bulkNodeActions`.
    *
-   * Omitted entirely, box and all, when there is nothing to act on: the box is
-   * a padded flex container, so an empty one is visible as a gap.
+   * Omitted entirely, box and all, when there is nothing to act on and nothing
+   * to narrow to: the box is a padded flex container, so an empty one is
+   * visible as a gap.
+   *
+   * `onFilterToDir` rides in the same box when the mount offers one, and only
+   * on the directory row - a bucket is one kind of one directory, and the thing
+   * being narrowed to is the directory.
    */
   private renderBulk(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
     kinds: readonly NodeKind[],
     count: number,
+    narrowTo?: (dir: DirEntry) => void,
   ): m.Children {
-    if (count === 0) return undefined;
+    if (count === 0 && narrowTo === undefined) return undefined;
     const where = dir.path === '' ? TOP_LEVEL_LABEL : dir.path;
     return m(
       'span.pf-dune-tree__group-actions',
       // The buttons are not part of the row's collapse toggle.
       {onclick: (e: Event) => e.stopPropagation()},
-      bulkNodeActions(
-        attrs.controller,
-        count,
-        () =>
-          attrs.source.dirMemberIds(
-            dir.id,
-            kinds,
-            this.filter,
-            this.dirPathMatches(dir),
-          ),
-        `directly in ${where}`,
-      ),
+      // Offered whatever this directory holds *directly*, unlike the bulk pair:
+      // narrowing is to the subtree, and a directory of pure scaffolding with
+      // 5,000 rows below it is exactly the one worth narrowing to.
+      narrowTo !== undefined &&
+        m(Button, {
+          icon: 'filter_alt',
+          compact: true,
+          title: `Narrow everything else to ${where} and below`,
+          onclick: () => narrowTo(dir),
+        }),
+      count > 0 &&
+        bulkNodeActions(
+          attrs.controller,
+          count,
+          () =>
+            attrs.source.dirMemberIds(
+              dir.id,
+              kinds,
+              this.filter,
+              this.dirPathMatches(dir),
+            ),
+          `directly in ${where}`,
+        ),
     );
   }
 
@@ -880,7 +930,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     const count = (k: NodeKind, noun: string) => {
       const n = shown(k);
       const of = total(k);
-      return filterActive(this.filter) && n !== of
+      return this.narrowed() && n !== of
         ? `${n.toLocaleString()} of ${plural(of, noun)}`
         : plural(n, noun);
     };
@@ -891,19 +941,15 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     if (this.show.rule && rules > 0) parts.push(count('rule', 'rule'));
     if (this.show.dep && deps > 0) parts.push(count('dep', 'dep'));
     // The failure count and the duration are stored rollups over *all* members,
-    // so neither can be narrowed to the matches. Dropped while filtering rather
-    // than shown as an unqualified number next to qualified ones.
-    if (!filterActive(this.filter) && this.show.rule && failed > 0) {
+    // so neither can be narrowed to the rows on screen. Dropped whenever those
+    // are a subset rather than shown as an unqualified number next to qualified
+    // ones.
+    if (!this.narrowed() && this.show.rule && failed > 0) {
       parts.push(m('span.pf-dune-explorer__failed', `${failed} failed`));
     }
     // Timing is rule spans only (see sql_graph.ts), so it belongs to the rules
     // and goes when they do.
-    if (
-      !filterActive(this.filter) &&
-      !open &&
-      this.show.rule &&
-      dir.totalDurNs > 0n
-    ) {
+    if (!this.narrowed() && !open && this.show.rule && dir.totalDurNs > 0n) {
       parts.push(formatDurNs(Number(dir.totalDurNs)));
     }
     if (parts.length === 0) return undefined;
@@ -1235,6 +1281,40 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         attrs.controller.requestRedraw();
       });
   }
+}
+
+/**
+ * The prompt shown in place of the tree when the node tier has not been built.
+ *
+ * `dune_dir` is part of that tier, so there is no hierarchy to draw until it is
+ * up - true of the side panel tab and of the chart alike, which is why this is
+ * exported rather than inlined: the chart cannot mount the pane to get the
+ * prompt (the pane needs a source, and a source that cannot read anything yet is
+ * not one), and a second copy of an offer to load the graph would be the third.
+ *
+ * The offer itself is the same one panel.ts makes, so that any of the three
+ * surfaces is usable on its own rather than sending the user to another one
+ * first.
+ */
+export function renderMirrorNotLoaded(
+  controller: DuneGraphController,
+): m.Children {
+  return m(
+    EmptyState,
+    {icon: 'account_tree', title: 'Directory tree not loaded'},
+    m(
+      '.pf-dune-graph__load-note',
+      "The build's directories come from the graph's node tables, which " +
+        'have not been built for this trace yet.',
+    ),
+    m(Button, {
+      label: 'Load graph',
+      icon: 'play_arrow',
+      intent: Intent.Primary,
+      disabled: controller.busy,
+      onclick: () => void controller.load(),
+    }),
+  );
 }
 
 /**

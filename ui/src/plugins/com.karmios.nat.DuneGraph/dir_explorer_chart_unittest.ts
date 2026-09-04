@@ -16,8 +16,14 @@
  * The directory-tree chart type (dir_explorer_chart.ts), taken from the two
  * ends a bug could come in at: the Data Explorer's registry, which has to be
  * able to find the type and put it in the picker, and the descriptor itself,
- * whose `render` and `defaultLabel` are only ever called by that registry - so
+ * whose `createLoader` and `render` are only ever called by that registry - so
  * nothing else would notice them being malformed.
+ *
+ * The states around the tree get the same attention as the tree, because they
+ * are what a misconfigured chart shows and each of them is a different thing to
+ * fix: no graph loaded, a primary column that holds no node ids, no results
+ * table yet, a query whose rows name no nodes, and the row cap having bitten.
+ * The alternative to all five is an empty tree, which says none of it.
  *
  * The registration lifecycle gets the same treatment as the node column
  * renderer's (node_cell_unittest.ts): registering a chart type twice throws, so
@@ -27,9 +33,10 @@
  */
 
 import m from 'mithril';
-import {describe, expect, test} from 'vitest';
+import {afterEach, describe, expect, test} from 'vitest';
 import {DisposableStack} from '../../base/disposable_stack';
 import type {Trace} from '../../public/trace';
+import type {Engine} from '../../trace_processor/engine';
 import type {ChartConfig} from '../dev.perfetto.DataExplorer/query_builder/nodes/visualisation_node';
 import {renderChartConfigPopup} from '../dev.perfetto.DataExplorer/query_builder/charts/chart_config_popup';
 import type {
@@ -44,13 +51,25 @@ import {
   getDefaultChartLabel,
   isValidChartType,
 } from '../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
+import type {SqlValue} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
+import {CHART_ROW_CAP} from './dir_chart_source';
 import {registerDirExplorerChart} from './dir_explorer_chart';
 
 // The type id as the registry sees it. Spelt out rather than imported: it is
 // persisted in dashboards, so a test that moved with it would not notice it
 // changing under one.
 const CHART_TYPE = 'dune-dir-tree';
+
+// Registrations are global, so an assertion that throws before its `unload()`
+// would poison every test after it. Registered ones are collected here instead
+// and dropped between tests.
+let live: DisposableStack | undefined;
+
+afterEach(() => {
+  live?.dispose();
+  live = undefined;
+});
 
 // A trace stub that is nothing but its trash, which is all a registration
 // needs. Unloading a trace disposes that stack, so `unload()` is what the trace
@@ -63,35 +82,57 @@ function fakeTrace() {
   };
 }
 
-// Everything the pane reads off the controller before the mirror exists: it
-// renders its "not loaded" prompt and asks nothing else of it. Deliberately the
-// unloaded state - a chart added before the graph is loaded is the common case,
-// and it is the one render path here that needs no trace processor.
-function fakeController(): DuneGraphController {
+// Register for the duration of one test, whatever it throws at. The chart
+// closes over this controller, so it is the one the pane inside it reads.
+function register(controller = fakeController()) {
+  const {trace, unload} = fakeTrace();
+  registerDirExplorerChart(trace, controller);
+  live = new DisposableStack();
+  live.defer(unload);
+}
+
+// The mirror as a chart with something to draw needs it.
+function loadedController() {
+  return fakeController({nodeMirrorReady: true});
+}
+
+// Everything the chart and the pane read off the controller. Defaults to the
+// *unloaded* mirror, since a chart added before the graph is loaded is the
+// common case and the one render path that needs no trace processor.
+function fakeController(over: Partial<DuneGraphController> = {}) {
   return {
-    mirrorVersion: 0,
+    mirrorVersion: 1,
     nodeMirrorReady: false,
     busy: false,
+    requestRedraw: () => {},
+    ...over,
   } as unknown as DuneGraphController;
 }
 
-// A results node with a couple of columns, as a visualisation node dropped on
-// a real query would have. The chart ignores them; the config popup does not.
-function fakeNode(): ChartColumnProvider {
+// A results node with a couple of columns, as a visualisation node dropped on a
+// real query would have. `cols` is what the chart reads for the node id column
+// and for whether a directory click has a `dir_id` to filter on.
+function fakeNode(
+  cols: readonly string[] = ['path', 'dur'],
+  brushes: Array<{column: string; values: SqlValue[]}> = [],
+  updates: Array<Partial<ChartConfig>> = [],
+): ChartColumnProvider {
+  const sourceCols = cols.map((name) => ({name}));
   return {
-    sourceCols: [{name: 'path'}, {name: 'dur'}],
-    getChartableColumns: () => [{name: 'path'}, {name: 'dur'}],
+    sourceCols,
+    getChartableColumns: () => sourceCols,
     clearChartFiltersForColumn: () => {},
-    setBrushSelection: () => {},
+    setBrushSelection: (column: string, values: SqlValue[]) =>
+      brushes.push({column, values}),
     addRangeFilter: () => {},
-    updateChart: () => {},
+    updateChart: (_id: string, u: Partial<ChartConfig>) => updates.push(u),
     removeChart: () => {},
     attrs: {chartConfigs: [config()]},
   } as unknown as ChartColumnProvider;
 }
 
-function config(): ChartConfig {
-  return {id: 'chart-1', column: 'path', chartType: CHART_TYPE};
+function config(column = 'path'): ChartConfig {
+  return {id: 'chart-1', column, chartType: CHART_TYPE};
 }
 
 function renderIntoDom(children: m.Children): HTMLElement {
@@ -100,10 +141,88 @@ function renderIntoDom(children: m.Children): HTMLElement {
   return root;
 }
 
+// A stub engine answering the source's two queries: the mirror's directories,
+// and the join of the chart's input onto `dune_node`.
+function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
+  const dirs = [
+    {
+      id: 0,
+      parent_id: undefined,
+      name: 'lib',
+      path: 'lib',
+      depth: 0,
+      n_rules: 1,
+      n_deps: 0,
+      n_failed: 0,
+      t_rules: 1,
+      t_deps: 0,
+      t_failed: 0,
+      total_dur_ns: 0n,
+    },
+  ];
+  return {
+    query: async (q: string) => {
+      const rows = q.includes('FROM dune_dir') ? dirs : nodes;
+      let i = 0;
+      const it = {
+        valid: () => i < rows.length,
+        next: () => {
+          i++;
+        },
+      };
+      return {
+        iter: () =>
+          new Proxy(it, {
+            get: (target, prop) => {
+              if (prop in target) return target[prop as keyof typeof target];
+              return (rows[i] as Record<string, unknown> | undefined)?.[
+                prop as string
+              ];
+            },
+          }),
+      };
+    },
+  } as unknown as Engine;
+}
+
+/**
+ * The chart as the host drives it: create the loader, render, let the load land,
+ * render again.
+ *
+ * The two renders are the point - the first one starts the query and the second
+ * one is the only one that can show what it found.
+ */
+async function renderChart(opts: {
+  node: ChartColumnProvider;
+  config: ChartConfig;
+  nodes?: ReadonlyArray<Record<string, unknown>>;
+}): Promise<HTMLElement> {
+  const def = getChartTypeDefinition(CHART_TYPE);
+  const entry: ChartLoaderEntry = {key: 'k'};
+  const ctx = {node: opts.node} as unknown as ChartRenderContext;
+  def?.createLoader(
+    stubEngine(opts.nodes ?? []),
+    'SELECT * FROM results_1',
+    opts.config,
+    entry,
+  );
+  const root = document.createElement('div');
+  m.render(root, def?.render(ctx, opts.config, entry));
+  await new Promise((r) => setTimeout(r, 0));
+  m.render(root, def?.render(ctx, opts.config, entry));
+  await new Promise((r) => setTimeout(r, 0));
+  m.render(root, def?.render(ctx, opts.config, entry));
+  return root;
+}
+
+// One row of the input join, as the source's reader wants it.
+function nodeRow(over: Record<string, unknown> = {}) {
+  return {dir_id: 0, node_id: 1, kind: 'rule', label: 'lib:foo', ...over};
+}
+
 describe('registerDirExplorerChart', () => {
   test('makes the chart type resolvable and puts it in the picker', () => {
-    const {trace, unload} = fakeTrace();
-    registerDirExplorerChart(trace, fakeController());
+    register();
 
     expect(isValidChartType(CHART_TYPE)).toBe(true);
     const def = getChartTypeDefinition(CHART_TYPE);
@@ -113,52 +232,27 @@ describe('registerDirExplorerChart', () => {
 
     const picker = renderIntoDom(renderChartTypePickerGrid(() => {}));
     expect(picker.textContent).toContain('Dune Directories');
-
-    unload();
   });
 
   test('offers no pickers beyond the two the popup always shows', () => {
-    const {trace, unload} = fakeTrace();
-    registerDirExplorerChart(trace, fakeController());
+    register();
 
-    // The chart configures nothing, so every capability flag is off. The
-    // popup's own type and primary-column rows are unconditional and stay.
+    // The chart aggregates and bins nothing, so every capability flag is off.
+    // The popup's own type row and primary-column row are unconditional - and
+    // the primary column is named for what this chart reads it as.
     const popup = renderIntoDom(
       renderChartConfigPopup({node: fakeNode()}, config(), () => {}),
     );
     const labels = Array.from(popup.querySelectorAll('label')).map(
       (el) => el.querySelector('span')?.textContent,
     );
-    expect(labels).toEqual(['Chart Type', 'Column']);
-
-    unload();
-  });
-
-  test('renders the directory pane', () => {
-    const {trace, unload} = fakeTrace();
-    registerDirExplorerChart(trace, fakeController());
-
-    const ctx = {trace, node: fakeNode()} as unknown as ChartRenderContext;
-    const entry: ChartLoaderEntry = {key: ''};
-    const root = renderIntoDom(
-      getChartTypeDefinition(CHART_TYPE)?.render(ctx, config(), entry),
-    );
-
-    expect(root.querySelector('.pf-dune-dir-chart')).not.toBeNull();
-    expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
-    // The unloaded controller's prompt, i.e. the pane really did render.
-    expect(root.textContent).toContain('Directory tree not loaded');
-
-    unload();
+    expect(labels).toEqual(['Chart Type', 'Node id column']);
   });
 
   test('labels a chart of this type without reading its config', () => {
-    const {trace, unload} = fakeTrace();
-    registerDirExplorerChart(trace, fakeController());
+    register();
 
     expect(getDefaultChartLabel(config())).toBe('Dune directory tree');
-
-    unload();
   });
 
   test('drops the registration when the trace goes away', () => {
@@ -174,5 +268,139 @@ describe('registerDirExplorerChart', () => {
       registerDirExplorerChart(second.trace, fakeController()),
     ).not.toThrow();
     second.unload();
+  });
+});
+
+describe('the directory chart', () => {
+  test('offers to load the graph when the mirror is not built', async () => {
+    register();
+    const root = await renderChart({node: fakeNode(), config: config()});
+
+    expect(root.querySelector('.pf-dune-dir-chart')).not.toBeNull();
+    expect(root.textContent).toContain('Directory tree not loaded');
+    expect(root.textContent).toContain('Load graph');
+  });
+
+  test('offers the node id column rather than joining on a path', async () => {
+    // The chart picker's default column is chosen generically and on a Dune
+    // query is usually a label or a path; joining on it would match nothing and
+    // draw an empty tree.
+    const updates: Array<Partial<ChartConfig>> = [];
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['path', 'node_id'], [], updates),
+      config: config('path'),
+    });
+
+    expect(root.textContent).toContain('Pick the node id column');
+    Array.from(root.querySelectorAll('button'))
+      .find((b) => b.textContent?.includes('Use node_id'))
+      ?.click();
+    expect(updates).toEqual([{column: 'node_id'}]);
+  });
+
+  test('takes a column it cannot second-guess at its word', async () => {
+    // No `node_id` / `src` / `dst` in the query, so the configured column is
+    // the only candidate there is - a query may well have aliased one.
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['rule_node', 'dur']),
+      config: config('rule_node'),
+      nodes: [nodeRow()],
+    });
+
+    expect(root.textContent).not.toContain('Pick the node id column');
+    expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
+  });
+
+  test('renders the pane over the rows the query returned', async () => {
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id']),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+    });
+
+    expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
+    expect(root.textContent).toContain('lib/');
+    // The pane's own filter UI is gone: the rows are already the selection.
+    expect(root.textContent).not.toContain('Filters');
+  });
+
+  test('says when the query named no nodes at all', async () => {
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id']),
+      config: config('node_id'),
+      nodes: [],
+    });
+
+    expect(root.textContent).toContain('No Dune nodes in these rows');
+    expect(root.querySelector('.pf-dune-explorer')).toBeNull();
+  });
+
+  test('says when the row cap bit', async () => {
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id']),
+      config: config('node_id'),
+      nodes: Array.from({length: CHART_ROW_CAP + 1}, (_, i) =>
+        nodeRow({node_id: i}),
+      ),
+    });
+
+    expect(root.querySelector('.pf-dune-dir-chart__note')).not.toBeNull();
+    expect(root.textContent).toContain(CHART_ROW_CAP.toLocaleString());
+    // Capped, but still a tree over what it did read.
+    expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
+  });
+
+  test('waits for the host to produce a results table', async () => {
+    register(loadedController());
+    const def = getChartTypeDefinition(CHART_TYPE);
+    // No `createLoader` call at all, which is what the host does before the
+    // upstream node has run.
+    const root = renderIntoDom(
+      def?.render(
+        {node: fakeNode(['node_id'])} as unknown as ChartRenderContext,
+        config('node_id'),
+        {key: ''},
+      ),
+    );
+
+    expect(root.textContent).toContain('Waiting for results');
+  });
+
+  test('narrows the rest of the surface to a clicked directory', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id', 'dir_id'], brushes),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+    });
+
+    Array.from(root.querySelectorAll('button'))
+      .find((b) =>
+        (b.getAttribute('title') ?? '').startsWith('Narrow everything else'),
+      )
+      ?.click();
+    // Repeated `=` filters on `dir_id`, which the dashboard renders as
+    // `dir_id IN (...)`.
+    expect(brushes).toEqual([{column: 'dir_id', values: [0]}]);
+  });
+
+  test('withholds the narrowing button when the query has no dir_id', async () => {
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id']),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+    });
+
+    const narrow = Array.from(root.querySelectorAll('button')).find((b) =>
+      (b.getAttribute('title') ?? '').startsWith('Narrow everything else'),
+    );
+    expect(narrow).toBeUndefined();
   });
 });

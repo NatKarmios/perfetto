@@ -45,6 +45,17 @@
  * - **Members are paged, and a short page ends the list.** See
  *   {@link DirExplorerSource.dirMembers}.
  *
+ * ## Two shapes of source, and which half of the pane each drives
+ *
+ * The pane has two modes, and which one it is in is the source's to declare
+ * (see {@link DirExplorerSource.rowDriven}). A source over a *hierarchy* - the
+ * SQL mirror - is descended lazily, a level at a time, and only builds a
+ * `FilteredTree` when the user asks for one. A source over a *selection* - a
+ * chart's input rows - has no lazy descent to offer at all: its per-directory
+ * counts come from the rows it was handed, so it is permanently in the pane's
+ * filtered mode and its {@link DirExplorerSource.rootDirs} /
+ * {@link DirExplorerSource.childDirs} are never called.
+ *
  * ## Versioning
  *
  * Everything the pane holds is derived from the source, so the source has to be
@@ -99,6 +110,37 @@ export interface DirExplorerSource {
   readonly version: number;
 
   /**
+   * Whether this source's rows *are* a selection, rather than a hierarchy to
+   * descend.
+   *
+   * This is the one thing the pane cannot work out for itself, and getting it
+   * wrong is silent either way. The pane's default mode is the lazy descent
+   * ({@link rootDirs} / {@link childDirs}), and it only builds a `FilteredTree`
+   * when its own filter menu says a filter is active. A source whose counts
+   * come from a query's rows is *always* narrowed - the counts are the filter -
+   * so it needs the filtered mode with no filter typed, which is a state the
+   * pane would otherwise never enter.
+   *
+   * Setting this changes three things about the pane, and nothing else:
+   *
+   * - It builds a `FilteredTree` up front, from {@link allDirs} and
+   *   {@link matchingCounts} with an empty filter, and rebuilds it whenever
+   *   {@link DirExplorerSource.version} moves.
+   * - It stops offering its own filter bar and Filters menu. Those narrow by
+   *   re-querying the mirror, which a source that has already materialised its
+   *   rows cannot honour, and a filter that silently does nothing is worse than
+   *   no filter at all. (The dashboard's own brush filters are the narrowing
+   *   affordance there.)
+   * - Its per-row counts read "3 of 1,204 rules" rather than "3 rules", and it
+   *   drops the stored failure count and duration rollups, which describe every
+   *   member of the directory rather than the selected ones.
+   *
+   * True implies {@link matchingCounts} never returns undefined: "all of them"
+   * has no meaning when the rows are the selection.
+   */
+  readonly rowDriven: boolean;
+
+  /**
    * The tree's roots.
    *
    * There is normally more than one, and that is not a degenerate case: a
@@ -147,7 +189,9 @@ export interface DirExplorerSource {
    *
    * That undefined is load-bearing rather than a convenience: it is what lets
    * `FilteredTree` fall back to the stored `n_rules` / `n_deps` and what keeps
-   * a deps-only filter from having to count the rules at all.
+   * a deps-only filter from having to count the rules at all. It is also
+   * exactly what a row-driven source must never return: falling back to the
+   * stored totals there would draw the whole mirror's tree.
    *
    * `ruleDirs` is what {@link matchingRuleDirs} returned, and is passed only
    * for `kind === 'rule'` - it is the path half of a rule's match test.
@@ -217,6 +261,10 @@ export interface DirExplorerSource {
  * which happens without this object being replaced.
  */
 export class SqlDirExplorerSource implements DirExplorerSource {
+  // The whole hierarchy, descended lazily: this is the mode the pane was
+  // written for, and the filtered one is entered only when the user asks.
+  readonly rowDriven = false;
+
   constructor(
     private readonly engine: Engine,
     private readonly controller: DuneGraphController,
