@@ -96,7 +96,7 @@ export interface ChartColumnProvider {
   getChartableColumns(chartType: ChartType): ReadonlyArray<ColumnInfo>;
   clearChartFiltersForColumn(column: string): void;
   setBrushSelection(column: string, values: SqlValue[]): void;
-  addRangeFilter(column: string, min: number, max: number): void;
+  addRangeFilter(column: string, min: SqlValue, max: SqlValue): void;
   updateChart(chartId: string, updates: Partial<Omit<ChartConfig, 'id'>>): void;
   removeChart(chartId: string): void;
   readonly attrs: {readonly chartConfigs: ReadonlyArray<ChartConfig>};
