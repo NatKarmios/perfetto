@@ -22,11 +22,15 @@ import {
 import {
   type ChartColumnProvider,
   type ChartLoaderEntry,
+  type ChartRenderContext,
   buildLoaderCacheKey,
-  createChartLoaders,
   disposeChartLoaders,
-  renderChartByType,
 } from '../query_builder/charts/chart_renderers';
+import {
+  createChartLoaders,
+  getChartableColumns,
+  renderChartByType,
+} from '../query_builder/charts/chart_type_registry';
 import type {ColumnInfo} from '../query_builder/column_info';
 import {
   type DashboardBrushFilter,
@@ -37,7 +41,6 @@ import {
 } from './dashboard_registry';
 import {ResultsPanelEmptyState} from '../query_builder/widgets';
 import type {SqlValue} from '../../../trace_processor/query_result';
-import {isQuantitativeType} from '../../../trace_processor/perfetto_sql_type';
 import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
 
 export interface DashboardChartViewAttrs {
@@ -118,17 +121,7 @@ class DashboardChartAdapter implements ChartColumnProvider {
   }
 
   getChartableColumns(chartType: ChartType): ReadonlyArray<ColumnInfo> {
-    if (
-      chartType === 'histogram' ||
-      chartType === 'line' ||
-      chartType === 'scatter' ||
-      chartType === 'cdf'
-    ) {
-      return this.cols.filter(
-        (col) => col.type !== undefined && isQuantitativeType(col.type),
-      );
-    }
-    return this.cols;
+    return getChartableColumns(chartType, this.cols);
   }
 
   private flushFilters(): void {
@@ -316,7 +309,8 @@ export class DashboardChartView implements m.ClassComponent<DashboardChartViewAt
     }
 
     const entry = this.ensureLoader(attrs, config);
-    const ctx = {
+    const ctx: ChartRenderContext = {
+      trace: attrs.trace,
       node: adapter,
       onFilterChange: () => m.redraw(),
       gridLines: attrs.gridLines,

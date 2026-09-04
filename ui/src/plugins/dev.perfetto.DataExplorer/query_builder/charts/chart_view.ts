@@ -14,19 +14,18 @@
 
 import m from 'mithril';
 import type {Trace} from '../../../../public/trace';
-import {
-  type VisualisationNode,
-  type ChartConfig,
-  getDefaultChartLabel,
-} from '../nodes/visualisation_node';
+import type {VisualisationNode, ChartConfig} from '../nodes/visualisation_node';
 import {
   type ChartLoaderEntry,
   type ChartRenderContext,
   buildLoaderCacheKey,
-  createChartLoaders,
   disposeChartLoaders,
-  renderChartByType,
 } from './chart_renderers';
+import {
+  createChartLoaders,
+  getDefaultChartLabel,
+  renderChartByType,
+} from './chart_type_registry';
 import {renderChartConfigPopup} from './chart_config_popup';
 import {Button} from '../../../../widgets/button';
 import {classNames} from '../../../../base/classnames';
@@ -263,6 +262,7 @@ export class ChartView implements m.ClassComponent<ChartViewAttrs> {
     config: ChartConfig,
   ): m.Child {
     const ctx: ChartRenderContext = {
+      trace: attrs.trace,
       node: attrs.node,
       onFilterChange: attrs.onFilterChange,
     };

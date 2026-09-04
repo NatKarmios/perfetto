@@ -59,10 +59,8 @@ import {ColumnSelector} from '../query_builder/column_selector';
 import type {ColumnInfo} from '../query_builder/column_info';
 import {ResizeHandle} from '../../../widgets/resize_handle';
 import {Card} from '../../../widgets/card';
-import {
-  type ChartType,
-  getDefaultChartLabel,
-} from '../query_builder/nodes/visualisation_node';
+import type {ChartType} from '../query_builder/nodes/visualisation_node';
+import {getDefaultChartLabel} from '../query_builder/charts/chart_type_registry';
 import {Popup, PopupPosition} from '../../../widgets/popup';
 import {renderChartConfigPopup} from '../query_builder/charts/chart_config_popup';
 import {renderChartTypePickerGrid} from '../query_builder/charts/chart_type_picker';
