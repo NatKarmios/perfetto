@@ -56,23 +56,6 @@ export interface DashboardChart {
 }
 
 /**
- * Tree configuration for a grid item: the JSON-serializable subset of the
- * DataGrid's IdBasedTree.
- *
- * The expansion state (IdBasedTree's expandedIds/collapsedIds) is deliberately
- * absent — it is a Set<bigint>, which does not survive JSON. Expansion stays
- * local to the grid component and is not persisted.
- */
-export interface DashboardGridTree {
-  /** Column holding each row's unique ID. */
-  readonly idField: string;
-  /** Column holding the parent row's ID (NULL for roots). */
-  readonly parentIdField: string;
-  /** Column that renders the chevrons and indentation. */
-  readonly treeColumn?: string;
-}
-
-/**
  * A data grid (table) on the dashboard canvas, linked to its data source.
  *
  * Grids are brush *consumers* only: brush selections on their data source
@@ -88,8 +71,6 @@ export interface DashboardGrid {
    * column of the data source.
    */
   readonly columns?: ReadonlyArray<string>;
-  /** When set, rows are displayed as a collapsible id/parent_id tree. */
-  readonly tree?: DashboardGridTree;
   col?: number;
   row?: number;
   colSpan?: number;
@@ -380,17 +361,6 @@ function isStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
-/** True if `value` looks like a DashboardGridTree. */
-function isValidGridTree(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  const tree = value as Record<string, unknown>;
-  return (
-    typeof tree.idField === 'string' &&
-    typeof tree.parentIdField === 'string' &&
-    (tree.treeColumn === undefined || typeof tree.treeColumn === 'string')
-  );
-}
-
 /**
  * Validate that an unknown value looks like a DashboardItem[].
  * Returns undefined if validation fails.
@@ -424,11 +394,19 @@ export function validateDashboardItems(
       if (typeof obj.id !== 'string' || typeof obj.sourceNodeId !== 'string') {
         continue;
       }
-      // The optional column list and tree config are dropped along with the
-      // item if malformed — a grid pointing at nonsense columns would render
-      // as an error, so it is better not to restore it at all.
+      // The optional column list is dropped along with the item if malformed —
+      // a grid pointing at nonsense columns would render as an error, so it is
+      // better not to restore it at all.
       if (obj.columns !== undefined && !isStringArray(obj.columns)) continue;
-      if (obj.tree !== undefined && !isValidGridTree(obj.tree)) continue;
+      // Grids used to have an id/parent_id tree mode; dashboards saved then
+      // still carry its config. Drop the field rather than keeping a dead one
+      // alive through every subsequent save — whatever it says, the grid is
+      // flat now.
+      if (obj.tree !== undefined) {
+        const {tree: _tree, ...rest} = obj;
+        validated.push(rest as unknown as DashboardItem);
+        continue;
+      }
       validated.push(item as DashboardItem);
     } else if (obj.kind === 'label') {
       if (typeof obj.id !== 'string' || typeof obj.text !== 'string') continue;

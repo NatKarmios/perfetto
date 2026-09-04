@@ -311,11 +311,6 @@ describe('deserializeDashboardsFromExport', () => {
             id: 'grid1',
             sourceNodeId: 'node1',
             columns: ['path', 'size'],
-            tree: {
-              idField: 'id',
-              parentIdField: 'parent_id',
-              treeColumn: 'path',
-            },
             col: 0,
             row: 0,
           },
@@ -326,17 +321,26 @@ describe('deserializeDashboardsFromExport', () => {
     expect(result?.[0].items).toEqual(serialized[0].items);
   });
 
-  test('drops grid items with a malformed tree config', () => {
+  test('strips the tree config off a grid saved with one', () => {
+    // Grids had an id/parent_id tree mode once; a dashboard saved then still
+    // carries its config, and comes back as the flat grid it now is.
     const serialized: SerializedDashboard[] = [
       {
         id: 'db1',
         items: [
-          {kind: 'grid', id: 'grid1', sourceNodeId: 'node1', tree: {}},
+          {
+            kind: 'grid',
+            id: 'grid1',
+            sourceNodeId: 'node1',
+            tree: {idField: 'id', parentIdField: 'parent_id'},
+          },
         ] as unknown[],
       },
     ];
     const result = deserializeDashboardsFromExport(serialized);
-    expect(result?.[0].items).toEqual([]);
+    expect(result?.[0].items).toEqual([
+      {kind: 'grid', id: 'grid1', sourceNodeId: 'node1'},
+    ]);
   });
 
   test('handles dashboards with no items field', () => {
@@ -419,7 +423,6 @@ describe('serializeDashboardsForTab', () => {
       id: 'grid1',
       sourceNodeId: 'node1',
       columns: ['path', 'size'],
-      tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 'path'},
       col: 2,
       row: 3,
       colSpan: 12,

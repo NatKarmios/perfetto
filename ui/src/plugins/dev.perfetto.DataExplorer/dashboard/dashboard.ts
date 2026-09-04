@@ -50,11 +50,7 @@ import {
   DashboardChartView,
   createDefaultChartConfig,
 } from './dashboard_chart_view';
-import {
-  DashboardGridView,
-  gridViewKey,
-  suggestGridTree,
-} from './dashboard_grid_view';
+import {DashboardGridView, gridViewKey} from './dashboard_grid_view';
 import {ColumnSelector} from '../query_builder/column_selector';
 import type {ColumnInfo} from '../query_builder/column_info';
 import {ResizeHandle} from '../../../widgets/resize_handle';
@@ -545,98 +541,8 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
             });
           },
         }),
-        m('.pf-dashboard__panel-section-subtitle', 'Tree'),
-        ...this.renderGridTreeSettings(attrs, item, source),
       ]),
     ];
-  }
-
-  /**
-   * Tree controls for the grid config panel: a toggle, plus the id/parent/tree
-   * column pickers when it is on. The toggle is only offered when the source
-   * looks hierarchical (or the grid is already in tree mode).
-   */
-  private renderGridTreeSettings(
-    attrs: DashboardAttrs,
-    grid: DashboardItem & {kind: 'grid'},
-    source: DashboardDataSource,
-  ): m.Child[] {
-    const suggestion = suggestGridTree(source.columns);
-    const tree = grid.tree;
-    if (tree === undefined && suggestion === undefined) {
-      return [
-        m(
-          '.pf-dashboard__add-panel-empty',
-          'This data source has no id / parent id columns to build a tree from.',
-        ),
-      ];
-    }
-
-    const columnNames = source.columns.map((c) => c.name);
-    const picker = (
-      label: string,
-      value: string | undefined,
-      onchange: (value: string | undefined) => void,
-      allowNone?: boolean,
-    ): m.Child =>
-      m('.pf-dashboard__settings-row', [
-        m('label.pf-dashboard__settings-label', label),
-        m(
-          Select,
-          {
-            value: value ?? '',
-            onchange: (e: Event) => {
-              const val = (e.target as HTMLSelectElement).value;
-              onchange(val === '' ? undefined : val);
-            },
-          },
-          [
-            allowNone === true && m('option', {value: ''}, 'First column'),
-            ...columnNames.map((name) => m('option', {value: name}, name)),
-          ],
-        ),
-      ]);
-
-    const rows: m.Child[] = [
-      m(
-        '.pf-dashboard__settings-row',
-        m(Switch, {
-          label: 'Show as tree',
-          checked: tree !== undefined,
-          onchange: (e: Event) => {
-            const checked = (e.target as HTMLInputElement).checked;
-            this.updateGrid(attrs, grid.id, {
-              tree: checked ? (tree ?? suggestion) : undefined,
-            });
-          },
-        }),
-      ),
-    ];
-    if (tree !== undefined) {
-      rows.push(
-        picker('ID column', tree.idField, (value) => {
-          if (value === undefined) return;
-          this.updateGrid(attrs, grid.id, {tree: {...tree, idField: value}});
-        }),
-        picker('Parent ID column', tree.parentIdField, (value) => {
-          if (value === undefined) return;
-          this.updateGrid(attrs, grid.id, {
-            tree: {...tree, parentIdField: value},
-          });
-        }),
-        picker(
-          'Tree column',
-          tree.treeColumn,
-          (value) => {
-            this.updateGrid(attrs, grid.id, {
-              tree: {...tree, treeColumn: value},
-            });
-          },
-          true,
-        ),
-      );
-    }
-    return rows;
   }
 
   // --- Settings panel ---
@@ -938,8 +844,8 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
       m(
         '.pf-dashboard__grid-content',
         m(DashboardGridView, {
-          // The grid reads its columns and tree config once, on mount, so a
-          // config change has to re-create it.
+          // The grid reads its columns once, on mount, so a config change has
+          // to re-create it.
           key: gridViewKey(grid),
           trace: attrs.trace,
           source,
@@ -1804,8 +1710,8 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
       items,
       id,
     );
-    // Columns and tree mode are left unset: the grid starts out flat and shows
-    // every column of the source, and the config panel narrows it down.
+    // Columns are left unset: the grid starts out showing every column of the
+    // source, and the config panel narrows it down.
     items.push({
       kind: 'grid',
       id,

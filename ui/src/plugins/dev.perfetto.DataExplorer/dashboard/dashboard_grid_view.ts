@@ -19,21 +19,15 @@ import {
   escapePath,
 } from '../../../components/widgets/datagrid/datagrid_schema';
 import {resolveColumnRenderers} from '../../../components/widgets/datagrid/column_renderers';
-import type {
-  Column,
-  Filter,
-  IdBasedTree,
-} from '../../../components/widgets/datagrid/model';
+import type {Column, Filter} from '../../../components/widgets/datagrid/model';
 import {SQLDataSource} from '../../../components/widgets/datagrid/sql_data_source';
 import type {Trace} from '../../../public/trace';
-import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
 import type {SqlValue} from '../../../trace_processor/query_result';
 import {ResultsPanelEmptyState} from '../query_builder/widgets';
 import type {
   DashboardBrushFilter,
   DashboardDataSource,
   DashboardGrid,
-  DashboardGridTree,
 } from './dashboard_registry';
 
 export interface DashboardGridViewAttrs {
@@ -45,17 +39,12 @@ export interface DashboardGridViewAttrs {
 
 /**
  * Signature of the parts of a grid item that the DataGrid only reads on first
- * mount (columns and tree config, which it takes as `initialColumns` /
- * `initialTree`). The Dashboard uses this as the view's Mithril key, so editing
- * the configuration re-creates the grid instead of silently doing nothing.
+ * mount (its columns, which it takes as `initialColumns`). The Dashboard uses
+ * this as the view's Mithril key, so editing the configuration re-creates the
+ * grid instead of silently doing nothing.
  */
 export function gridViewKey(grid: DashboardGrid): string {
-  const tree = grid.tree;
-  const treeKey =
-    tree === undefined
-      ? ''
-      : `${tree.idField}\u0000${tree.parentIdField}\u0000${tree.treeColumn ?? ''}`;
-  return `${grid.id}\u0001${grid.columns?.join('\u0000') ?? ''}\u0001${treeKey}`;
+  return `${grid.id}\u0001${grid.columns?.join('\u0000') ?? ''}`;
 }
 
 /**
@@ -110,49 +99,18 @@ export function brushFiltersToGridFilters(
 }
 
 /**
- * Guess a tree configuration for a data source, or undefined when the source
- * does not look hierarchical. Used both to decide whether to offer the tree
- * toggle in the grid's config panel and to prefill it when it is switched on.
- *
- * A source qualifies when it has an `id`-like column and a `parent`-flavoured
- * counterpart (`parent_id`, `parent_node_id`, ...).
- */
-export function suggestGridTree(
-  columns: ReadonlyArray<{name: string; type?: PerfettoSqlType}>,
-): DashboardGridTree | undefined {
-  const names = columns.map((c) => c.name);
-  const parentIdField = names.find(
-    (n) => n === 'parent_id' || (n.startsWith('parent') && n.endsWith('id')),
-  );
-  const idField = names.find((n) => n === 'id');
-  if (idField === undefined || parentIdField === undefined) return undefined;
-
-  // Prefer a string column for the tree column — that is what carries the
-  // human-readable name/path in hierarchical data.
-  const treeColumn =
-    columns.find(
-      (c) =>
-        c.type?.kind === 'string' &&
-        c.name !== idField &&
-        c.name !== parentIdField,
-    )?.name ?? names.find((n) => n !== idField && n !== parentIdField);
-  return {idField, parentIdField, treeColumn};
-}
-
-/**
- * Renders a DataGrid over a dashboard data source, flat or as an id/parent_id
- * tree. Only renders the grid itself — the card wrapper, header, resize handles
- * and drag-and-drop are handled by the Dashboard component.
+ * Renders a DataGrid over a dashboard data source. Only renders the grid itself
+ * — the card wrapper, header, resize handles and drag-and-drop are handled by
+ * the Dashboard component.
  *
  * Table name resolution works exactly as it does for charts: DashboardNode
  * populates the source's `tableName` once the upstream node has been executed,
  * and until then this component triggers execution via
  * `source.requestExecution()` and waits for a redraw.
  *
- * Column visibility, sorting, in-grid filters and tree expansion are all owned
- * by the DataGrid and live only as long as this component: expansion state is a
- * Set<bigint> and cannot be persisted, and the rest follows it for
- * consistency. The persisted item configuration seeds them on mount.
+ * Column visibility, sorting and in-grid filters are all owned by the DataGrid
+ * and live only as long as this component. The persisted item configuration
+ * seeds them on mount.
  */
 export class DashboardGridView implements m.ClassComponent<DashboardGridViewAttrs> {
   private dataSource?: SQLDataSource;
@@ -207,7 +165,6 @@ export class DashboardGridView implements m.ClassComponent<DashboardGridViewAttr
       data: this.ensureDataSource(attrs.trace, source.tableName),
       fillHeight: true,
       initialColumns: buildColumns(grid, source),
-      initialTree: buildTree(grid.tree, sourceColumns),
       // Brush filters are owned by the dashboard's filter bar, so they are
       // appended on every redraw and never kept in localFilters. Removing such
       // a chip from inside the grid therefore has no lasting effect — it comes
@@ -217,8 +174,7 @@ export class DashboardGridView implements m.ClassComponent<DashboardGridViewAttr
         const brushKeys = new Set(brushFilters.map(filterKey));
         this.localFilters = filters.filter((f) => !brushKeys.has(filterKey(f)));
       },
-      // Pivoting is a second, mutually exclusive grouping mechanism; the
-      // dashboard grid exposes the id/parent_id tree instead.
+      // The dashboard grid is a flat table; pivoting is not offered here.
       disablePivotControls: true,
     });
   }
@@ -283,29 +239,4 @@ function buildColumns(
   const names =
     configured.length > 0 ? configured : source.columns.map((c) => c.name);
   return names.map((name) => ({id: name, field: escapePath(name)}));
-}
-
-/**
- * Build the DataGrid tree config, ignoring a stale one whose id/parent columns
- * are no longer in the data source (which would produce a broken query).
- */
-function buildTree(
-  tree: DashboardGridTree | undefined,
-  sourceColumns: ReadonlySet<string>,
-): IdBasedTree | undefined {
-  if (tree === undefined) return undefined;
-  if (
-    !sourceColumns.has(tree.idField) ||
-    !sourceColumns.has(tree.parentIdField)
-  ) {
-    return undefined;
-  }
-  return {
-    idField: escapePath(tree.idField),
-    parentIdField: escapePath(tree.parentIdField),
-    treeColumn:
-      tree.treeColumn !== undefined && sourceColumns.has(tree.treeColumn)
-        ? escapePath(tree.treeColumn)
-        : undefined,
-  };
 }

@@ -12,16 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
-import {
-  brushFiltersToGridFilters,
-  gridViewKey,
-  suggestGridTree,
-} from './dashboard_grid_view';
+import {brushFiltersToGridFilters, gridViewKey} from './dashboard_grid_view';
 import type {DashboardBrushFilter, DashboardGrid} from './dashboard_registry';
-
-const STRING: PerfettoSqlType = {kind: 'string'};
-const INT: PerfettoSqlType = {kind: 'int'};
 
 // --- brushFiltersToGridFilters ---
 
@@ -126,77 +118,7 @@ describe('gridViewKey', () => {
     );
   });
 
-  test('changes when tree mode is toggled', () => {
-    const tree = {idField: 'id', parentIdField: 'parent_id'};
-    expect(gridViewKey({...grid, tree})).not.toBe(gridViewKey(grid));
-  });
-
-  test('changes when a tree field changes', () => {
-    const a = {...grid, tree: {idField: 'id', parentIdField: 'parent_id'}};
-    const b = {...grid, tree: {idField: 'id', parentIdField: 'pid'}};
-    expect(gridViewKey(a)).not.toBe(gridViewKey(b));
-  });
-
-  test('changes when the tree column changes', () => {
-    const base = {idField: 'id', parentIdField: 'parent_id'};
-    expect(gridViewKey({...grid, tree: base})).not.toBe(
-      gridViewKey({...grid, tree: {...base, treeColumn: 'name'}}),
-    );
-  });
-
   test('differs between two grids', () => {
     expect(gridViewKey(grid)).not.toBe(gridViewKey({...grid, id: 'g2'}));
-  });
-});
-
-// --- suggestGridTree ---
-
-describe('suggestGridTree', () => {
-  test('suggests nothing without an id column', () => {
-    expect(
-      suggestGridTree([{name: 'name', type: STRING}, {name: 'dur'}]),
-    ).toBeUndefined();
-  });
-
-  test('suggests nothing without a parent column', () => {
-    expect(suggestGridTree([{name: 'id'}, {name: 'name'}])).toBeUndefined();
-  });
-
-  test('suggests id / parent_id and a string tree column', () => {
-    expect(
-      suggestGridTree([
-        {name: 'id', type: INT},
-        {name: 'parent_id', type: INT},
-        {name: 'name', type: STRING},
-      ]),
-    ).toEqual({idField: 'id', parentIdField: 'parent_id', treeColumn: 'name'});
-  });
-
-  test('recognises other parent column names', () => {
-    expect(
-      suggestGridTree([
-        {name: 'id'},
-        {name: 'parent_node_id'},
-        {name: 'path', type: STRING},
-      ]),
-    ).toEqual({
-      idField: 'id',
-      parentIdField: 'parent_node_id',
-      treeColumn: 'path',
-    });
-  });
-
-  test('falls back to any non-key column when none is a string', () => {
-    expect(
-      suggestGridTree([{name: 'id'}, {name: 'parent_id'}, {name: 'size'}]),
-    ).toEqual({idField: 'id', parentIdField: 'parent_id', treeColumn: 'size'});
-  });
-
-  test('leaves the tree column unset when there is nothing else', () => {
-    expect(suggestGridTree([{name: 'id'}, {name: 'parent_id'}])).toEqual({
-      idField: 'id',
-      parentIdField: 'parent_id',
-      treeColumn: undefined,
-    });
   });
 });

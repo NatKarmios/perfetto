@@ -71,8 +71,11 @@ import {DirExplorerPanel, renderMirrorNotLoaded} from './dir_explorer_panel';
  * survive being reopened without us (the registry renders a placeholder naming
  * the type), so it is prefixed rather than a bare word like the built-ins:
  * whatever else may come to register a chart type, it will not be this.
+ *
+ * Exported for the seeded dashboard (dir_tree_graph.ts), which names the type
+ * in a chart item rather than going through the registry.
  */
-const DIR_TREE_CHART_TYPE = 'dune-dir-tree';
+export const DIR_TREE_CHART_TYPE = 'dune-dir-tree';
 
 /**
  * The column a directory click filters on, and the one the pane's narrowing

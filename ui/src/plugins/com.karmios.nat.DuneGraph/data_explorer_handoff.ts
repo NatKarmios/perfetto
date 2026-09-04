@@ -62,8 +62,9 @@ export const APPENDABLE_SOURCES: ReadonlyArray<ExploreSource> = [
  * Builds the dir-tree graph and dashboard and navigates to the Data Explorer,
  * replacing whatever graph was there.
  *
- * `dune_dir` only exists once the node tier of the SQL mirror has been built
- * (the graph no longer loads with the trace - see controller.ts), so a load is
+ * `dune_node` and the `dune_dir` hierarchy the chart draws it into only exist
+ * once the node tier of the SQL mirror has been built (the graph no longer
+ * loads with the trace - see controller.ts), so a load is
  * part of the action rather than a precondition to complain about: this runs
  * the controller's own `buildNodeMirror` step, whose progress and failure the
  * side panel already reports. `onLoadNeeded` is called just before that wait,

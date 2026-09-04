@@ -672,14 +672,13 @@ describe('validateDashboardItems with grids', () => {
     expect(result?.[0].kind).toBe('grid');
   });
 
-  test('validates a grid with columns and a tree', () => {
+  test('validates a grid with columns and a position', () => {
     const items = [
       {
         kind: 'grid',
         id: 'g1',
         sourceNodeId: 'n1',
         columns: ['path', 'size'],
-        tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 'path'},
         col: 4,
         row: 2,
         colSpan: 12,
@@ -711,28 +710,29 @@ describe('validateDashboardItems with grids', () => {
     expect(validateDashboardItems(items)).toBeUndefined();
   });
 
-  test('rejects a grid whose tree is missing a field', () => {
-    const items = [
-      {kind: 'grid', id: 'g1', sourceNodeId: 'n1', tree: {idField: 'id'}},
-    ];
-    expect(validateDashboardItems(items)).toBeUndefined();
-  });
-
-  test('rejects a grid whose tree is not an object', () => {
-    const items = [{kind: 'grid', id: 'g1', sourceNodeId: 'n1', tree: 'yes'}];
-    expect(validateDashboardItems(items)).toBeUndefined();
-  });
-
-  test('rejects a grid whose treeColumn is not a string', () => {
+  test('keeps a grid saved with the old tree config, minus the tree', () => {
+    // Dashboards persisted while grids had a tree mode still carry it. It has
+    // to survive as a flat grid rather than being dropped, and it must not
+    // come back on the next save.
     const items = [
       {
         kind: 'grid',
         id: 'g1',
         sourceNodeId: 'n1',
-        tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 7},
+        columns: ['path'],
+        tree: {idField: 'id', parentIdField: 'parent_id'},
       },
     ];
-    expect(validateDashboardItems(items)).toBeUndefined();
+    expect(validateDashboardItems(items)).toEqual([
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1', columns: ['path']},
+    ]);
+  });
+
+  test('drops a malformed tree just as silently', () => {
+    const items = [{kind: 'grid', id: 'g1', sourceNodeId: 'n1', tree: 'yes'}];
+    expect(validateDashboardItems(items)).toEqual([
+      {kind: 'grid', id: 'g1', sourceNodeId: 'n1'},
+    ]);
   });
 
   test('accepts a mix of grids and other kinds', () => {
@@ -752,7 +752,6 @@ describe('serialize/validate round-trip', () => {
       id: 'g1',
       sourceNodeId: 'n1',
       columns: ['path', 'size'],
-      tree: {idField: 'id', parentIdField: 'parent_id', treeColumn: 'path'},
       col: 1,
       row: 2,
       colSpan: 10,

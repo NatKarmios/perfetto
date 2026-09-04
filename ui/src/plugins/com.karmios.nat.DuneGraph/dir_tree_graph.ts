@@ -13,35 +13,56 @@
 // limitations under the License.
 
 /**
- * The Data Explorer graph and dashboard that show `dune_dir` as a collapsible
- * directory tree - the JSON half of the hand-off (data_explorer_handoff.ts is
- * the action that applies it). Kept pure and side-effect free so it can be
- * checked against the Data Explorer's own validators in a unit test, which is
- * the only place this JSON can be checked at all: it is data, so a typo in it
- * is not a compile error but a silently dropped node or item.
+ * Two things, both about the build's directories in the Data Explorer:
+ *
+ * - {@link DIR_TREE_SOURCE}, `dune_dir` as a table the user can add to a graph
+ *   and query - its SELECT and its column types. This is what the panel's
+ *   "Directory tree" button appends.
+ * - The graph and dashboard the *command* seeds ({@link dirTreeGraphJson},
+ *   {@link dirTreeDashboards}), which land the user in front of the directory
+ *   tree with nothing to configure. That tree is the `dune-dir-tree` chart
+ *   (dir_explorer_chart.ts), and the chart draws the directories its *input
+ *   rows* fall in - so what the seeded graph selects is not this file's
+ *   directory source at all but node_source.ts's `dune_node`, which is the one
+ *   that has a node id column for the chart to join on.
+ *
+ * data_explorer_handoff.ts is the action that applies either. Kept pure and
+ * side-effect free so it can be checked against the Data Explorer's own
+ * validators in a unit test, which is the only place this JSON can be checked
+ * at all: it is data, so a typo in it is not a compile error but a silently
+ * dropped node or item.
  *
  * The graph itself - a `sql_source` -> `modify_columns` -> `dashboard` chain -
  * is built by explore_source.ts, which is also where the reason for that middle
- * node is written down. This file is the *directory* source: its SELECT, its
- * column types, and the one thing only it has - a seeded dashboard, with the
- * grid in tree mode over the exported source.
+ * node is written down.
  */
 
 import {GRID_COLUMNS} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import type {DashboardItem} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import type {SerializedDashboard} from '../dev.perfetto.DataExplorer/data_explorer_tabs_storage';
+import {DIR_TREE_CHART_TYPE} from './dir_explorer_chart';
 import type {ExploreColumn, ExploreSource} from './explore_source';
 import {exploreSelect, exploreSourceGraph} from './explore_source';
+import {NODE_SOURCE} from './node_source';
 
 // Stable ids for the seeded dashboard and its one item. Stable rather than
 // random so the generated payload is deterministic (and testable); nothing can
 // collide with them because seeding *replaces* the tab's dashboards.
 export const DIR_TREE_DASHBOARD_ID = 'dune_dir_tree';
-const GRID_ITEM_ID = 'dune_dir_grid';
+const CHART_ITEM_ID = 'dune_dir_chart';
 
-// How tall the grid is, in dashboard grid rows. Full width (GRID_COLUMNS) and
+// How tall the chart is, in dashboard grid rows. Full width (GRID_COLUMNS) and
 // deep enough to be a whole screen of tree rather than a card.
-const GRID_ROW_SPAN = 18;
+const CHART_ROW_SPAN = 18;
+
+/**
+ * The column the seeded chart reads as a `dune_node.node_id`, which is how it
+ * maps each row to a place in the tree (see dir_explorer_chart.ts). It has to
+ * be one {@link NODE_SOURCE} exports, and one the chart recognises as
+ * node-bearing - otherwise the card renders its "pick the node id column"
+ * prompt instead of a tree.
+ */
+const CHART_NODE_ID_COLUMN = 'node_id';
 
 // The one directory row with no path: `dune_dir` files anything dune reports at
 // the top level under the empty prefix, and an empty tree cell reads as a bug.
@@ -51,10 +72,9 @@ const GRID_ROW_SPAN = 18;
 const TOP_LEVEL_LABEL = '(top level)';
 
 /**
- * Every column the source node selects, in order. All of them are kept and
- * exported: `id` / `parent_id` because the tree is built from them, the rest
- * because a column the source drops cannot be added to the grid later without
- * editing the graph.
+ * Every column the source selects, in order. All of them are kept and exported:
+ * a column the source drops cannot be added to a grid later without editing the
+ * graph, whereas one it exports is a click away in the grid's column menu.
  *
  * Nothing here is an id *reference*, and nothing may become one by accident:
  * `dune_dir`'s `id` / `parent_id` are *directory* ids, from a table that numbers
@@ -90,9 +110,10 @@ export const DIR_TREE_COLUMNS: ReadonlyArray<ExploreColumn> = [
 ];
 
 /**
- * The build's directories, as a Data Explorer source. Shared by the command
- * that opens a fresh tree and by the panel's button that adds one to the graph
- * the user already has (see explore_source.ts).
+ * The build's directories, as a Data Explorer source - one row per directory,
+ * with its rollups. What the panel's button adds to the user's graph (see
+ * explore_source.ts). Not what the command seeds: the tree it opens is drawn
+ * from nodes, not from these rows (see {@link dirTreeGraphJson}).
  */
 export const DIR_TREE_SOURCE: ExploreSource = {
   from: 'dune_dir',
@@ -106,40 +127,7 @@ export const DIR_TREE_SOURCE: ExploreSource = {
     'group you can query further or export to a dashboard',
 };
 
-/**
- * The columns the grid shows, in display order: the tree column, then the
- * subtree rollups (a collapsed row's interesting number is its subtree's), then
- * the directory's own counts. `id` / `parent_id` / `depth` / `path` /
- * `failed_here` stay hidden - plumbing, or redundant next to the column beside
- * them - but remain in the data source, so the grid's column menu can bring
- * them back.
- */
-export const DIR_TREE_GRID_COLUMNS: ReadonlyArray<string> = [
-  'name',
-  'rules_subtree',
-  'deps_subtree',
-  'failed_subtree',
-  'dur_subtree',
-  'rules_here',
-  'deps_here',
-  'dur_here',
-];
-
-/**
- * The tree configuration: `dune_dir` is shaped for exactly this (see
- * sql_graph.ts), with a NULL `parent_id` on each root.
- */
-export const DIR_TREE_GRID_TREE = {
-  idField: 'id',
-  parentIdField: 'parent_id',
-  // The segment, not the full path: the tree's indentation already carries the
-  // ancestry, and these paths reach depth 19, so repeating every ancestor in
-  // every row makes the column enormous and hard to scan. `path` is still in
-  // the source for anyone who wants to add it back.
-  treeColumn: 'name',
-} as const;
-
-/** The source node's query. */
+/** The directory source's SELECT, as its `sql_source` node carries it. */
 export const DIR_TREE_SQL = exploreSelect(DIR_TREE_SOURCE);
 
 /**
@@ -147,36 +135,43 @@ export const DIR_TREE_SQL = exploreSelect(DIR_TREE_SOURCE);
  * and accepted by `setActiveGraphJson`. This is the *replacing* payload - the
  * one the command hands over, alongside {@link dirTreeDashboards}; the panel's
  * button appends instead (see explore_source.ts).
+ *
+ * A query over `dune_node`, not over `dune_dir`: the chart on the other end is
+ * a view of *rows*, and the rows it can place are ones carrying a node id.
+ * Every node in the build, which is the tree in full - and a query the user can
+ * then narrow in the graph tab, with the tree following it.
  */
 export function dirTreeGraphJson(): string {
   return dirTreeGraph().json;
 }
 
 /**
- * The dashboard to seed alongside the graph: one full-width grid in tree mode
- * over the exported source. Same serialized shape the tab export/import path
- * uses, so `setActiveGraphJson`'s third argument takes it as-is.
+ * The dashboard to seed alongside the graph: one full-width directory-tree
+ * chart over the exported source. Same serialized shape the tab export/import
+ * path uses, so `setActiveGraphJson`'s third argument takes it as-is.
  */
 export function dirTreeDashboards(): SerializedDashboard[] {
-  const grid: DashboardItem = {
-    kind: 'grid',
-    id: GRID_ITEM_ID,
+  const chart: DashboardItem = {
+    kind: 'chart',
     // Points at the *export* node, which is what publishes the data source -
     // taken from the graph rather than written out again, since a dashboard
     // naming a node that isn't there renders nothing and says nothing.
     sourceNodeId: dirTreeGraph().ids.exportNodeId,
-    columns: DIR_TREE_GRID_COLUMNS,
-    tree: DIR_TREE_GRID_TREE,
+    config: {
+      id: CHART_ITEM_ID,
+      column: CHART_NODE_ID_COLUMN,
+      chartType: DIR_TREE_CHART_TYPE,
+    },
     col: 0,
     row: 0,
     colSpan: GRID_COLUMNS,
-    rowSpan: GRID_ROW_SPAN,
+    rowSpan: CHART_ROW_SPAN,
   };
-  return [{id: DIR_TREE_DASHBOARD_ID, items: [grid]}];
+  return [{id: DIR_TREE_DASHBOARD_ID, items: [chart]}];
 }
 
 // The seeded graph, built the same way twice rather than shared as state: it is
 // a pure function of the constants above, so both callers see the same ids.
 function dirTreeGraph() {
-  return exploreSourceGraph(DIR_TREE_SOURCE);
+  return exploreSourceGraph(NODE_SOURCE);
 }

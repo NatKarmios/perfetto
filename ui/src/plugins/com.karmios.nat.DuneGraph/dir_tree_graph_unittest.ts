@@ -20,9 +20,12 @@
  * validation - is silently dropped on load rather than caught by the compiler,
  * and shows up as an empty dashboard the user has to configure by hand.
  *
- * The interesting assertion is the last one: that the exported data source
- * carries its columns *before anything has been executed*, which is the whole
- * reason the graph has a modify_columns node in it.
+ * Two assertions carry more than their weight. That the exported data source
+ * carries its columns *before anything has been executed* is the whole reason
+ * the graph has a modify_columns node in it. And that the seeded chart names a
+ * node id column is what makes it draw a tree at all: the directory chart maps
+ * rows to directories through `dune_node`, so a chart pointed anywhere else
+ * renders its "pick the node id column" prompt instead.
  */
 
 import {registerCoreNodes} from '../dev.perfetto.DataExplorer/query_builder/core_nodes';
@@ -33,15 +36,15 @@ import {
   validateSerializedGraph,
 } from '../dev.perfetto.DataExplorer/json_handler';
 import type {Trace} from '../../public/trace';
+import {DIR_TREE_CHART_TYPE} from './dir_explorer_chart';
 import {
   DIR_TREE_COLUMNS,
-  DIR_TREE_GRID_COLUMNS,
-  DIR_TREE_GRID_TREE,
   DIR_TREE_SQL,
   dirTreeDashboards,
   dirTreeGraphJson,
 } from './dir_tree_graph';
 import {exploreColumnType} from './explore_source';
+import {DUNE_NODE_COLUMNS, NODE_SOURCE} from './node_source';
 
 // The node registry is populated as a side effect of the Data Explorer's own
 // module load; a unit test importing only the loaders has to do it itself.
@@ -55,7 +58,9 @@ const trace = {} as Trace;
 // it - the loaders under test only pass it through - so a bare stub will do.
 const sqlModules = {} as Parameters<typeof deserializeState>[2];
 
-const columnNames = DIR_TREE_COLUMNS.map((c) => c.name);
+// The seeded graph selects nodes, not directories: the chart it feeds places
+// rows by their node id (see dir_tree_graph.ts).
+const columnNames = DUNE_NODE_COLUMNS.map((c) => c.name);
 
 // The generated graph, parsed. Node ids are allocated rather than written out
 // (see explore_source.ts), so every assertion below reads them off the payload
@@ -140,12 +145,13 @@ describe('dirTreeGraphJson', () => {
 
     // The dashboard item points at the export node; this is the source it
     // finds. That it already has columns - with no query having been run - is
-    // what makes the grid render (and then ask for execution) instead of
-    // reporting "No columns" and waiting for a manual run in the query builder.
+    // what makes the card render (and then ask for execution) instead of
+    // reporting "No columns" and waiting for a manual run in the query
+    // builder.
     const exportNodeId = parsedGraph().nodes[2].nodeId;
     const source = dashboardRegistry.getExportedSource(exportNodeId);
     expect(source).toBeDefined();
-    expect(source!.name).toBe('Dune directories');
+    expect(source!.name).toBe(NODE_SOURCE.exportName);
     expect(source!.columns.map((c) => c.name)).toEqual(columnNames);
   });
 });
@@ -174,25 +180,28 @@ describe('dirTreeDashboards', () => {
     // assertion that matters.
     expect(hydrated![0].items).toHaveLength(1);
     const item = hydrated![0].items[0];
-    expect(item.kind).toBe('grid');
-    if (item.kind !== 'grid') return;
+    expect(item.kind).toBe('chart');
+    if (item.kind !== 'chart') return;
     // The item has to name the graph's export node: a dashboard pointing at a
     // node that isn't there renders nothing and says nothing.
     expect(item.sourceNodeId).toBe(
       parsedGraph().nodes.find((n) => n.type === 'dashboard')!.nodeId,
     );
-    expect(item.tree).toEqual(DIR_TREE_GRID_TREE);
-    expect(item.columns).toEqual(DIR_TREE_GRID_COLUMNS);
+    // The registered type, taken from the registration rather than spelt out,
+    // since an unregistered one renders a placeholder naming it.
+    expect(item.config.chartType).toBe(DIR_TREE_CHART_TYPE);
   });
 
-  it('only shows and trees columns the source actually exports', () => {
-    // A grid column the source lost is dropped by the dashboard, and a tree
-    // field it lost turns the tree off entirely - both silently.
-    for (const name of DIR_TREE_GRID_COLUMNS) {
-      expect(columnNames).toContain(name);
-    }
-    expect(columnNames).toContain(DIR_TREE_GRID_TREE.idField);
-    expect(columnNames).toContain(DIR_TREE_GRID_TREE.parentIdField);
-    expect(columnNames).toContain(DIR_TREE_GRID_TREE.treeColumn);
+  it('points the chart at a node id column the source exports', () => {
+    // Two ways for the card to draw no tree, both silent: a column the source
+    // does not export (the dashboard reports "Invalid column" instead), and one
+    // the chart does not read as node ids (it offers to switch instead of
+    // drawing). `node_id` is the first of the three names the chart takes as
+    // node-bearing - see dir_explorer_chart.ts's NODE_ID_COLUMNS.
+    const hydrated = deserializeDashboardsFromExport(dirTreeDashboards());
+    const item = hydrated![0].items[0];
+    if (item.kind !== 'chart') throw new Error('not a chart');
+    expect(item.config.column).toBe('node_id');
+    expect(columnNames).toContain(item.config.column);
   });
 });

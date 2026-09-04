@@ -79,10 +79,11 @@ export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
 ];
 
 /**
- * The build graph's nodes, as a Data Explorer source. No dashboard to go with
- * it: one flat table of nodes has no single obvious presentation the way the
- * directory tree does, and the point of adding it is that the user is already
- * building something to put it in.
+ * The build graph's nodes, as a Data Explorer source. Two ways in: the panel's
+ * "Nodes" button, which adds it to the graph the user is already building and
+ * leaves the presentation to them, and the directory-tree command, whose seeded
+ * graph is this source - the tree it opens is a chart over *rows*, and these
+ * are the rows that carry a node id (see dir_tree_graph.ts).
  */
 export const NODE_SOURCE: ExploreSource = {
   from: DUNE_NODE_TABLE,
