@@ -13,20 +13,24 @@
 // limitations under the License.
 
 /**
- * The chart's row-driven source (dir_chart_source.ts), from the two ends that
- * can be checked without a trace processor: the pure derivation of the pane's
- * channels from a query's rows, and the one query the source issues, captured
- * through a stub engine.
+ * The chart's row-driven source (dir_chart_source.ts), from the end that can be
+ * checked without a trace processor: the three queries it generates, captured
+ * through a stub engine, and what it makes of the rows they come back with.
  *
- * The failures worth pinning are all silent ones:
+ * The SQL is the whole of the interesting part now that nothing is derived
+ * client-side, and the failures worth pinning are all silent ones:
  *
+ * - an *unbounded* query. The chart's input can be every node in the build
+ *   (`SELECT * FROM dune_node` is what the omnibox command seeds), so a query
+ *   whose result size follows the input's - rather than the mirror's directory
+ *   count, or a member page's `LIMIT` - is the bug this file exists to catch.
+ * - a count that counts join rows rather than nodes, which double-counts an
+ *   input naming a node twice (an edge query has a `src` per edge);
  * - a count keyed on the wrong thing, or a `matchingCounts` that returns
  *   undefined, which sends `FilteredTree` to the mirror's stored totals and
  *   draws the whole build instead of the query's rows;
- * - an unbounded input query, which materialises every node in the build in the
- *   browser, or a cap that silently drops rows without saying so;
- * - a member list in the wrong order, which makes "show more" hand back pages
- *   of an unordered result;
+ * - a member query missing its `ORDER BY`, which makes "show more" hand back
+ *   pages of an unordered result;
  * - a source that answers `rootDirs` plausibly, which would put the pane back on
  *   its lazy descent and show the whole tree.
  */
@@ -34,17 +38,12 @@
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../trace_processor/engine';
 import type {DuneGraphController} from './controller';
-import {
-  CHART_ROW_CAP,
-  ChartDirExplorerSource,
-  type ChartMemberRow,
-  indexChartRows,
-} from './dir_chart_source';
+import {ChartDirExplorerSource} from './dir_chart_source';
 
 // A stub engine that records every statement and answers each from `handler`.
 // Rows are read through the real `iter` protocol, so the column names the
 // readers ask for have to be the ones the queries select. (Same shape as
-// dir_explorer_unittest.ts's, plus the dispatch: this source issues two
+// dir_explorer_unittest.ts's, plus the dispatch: this source issues three
 // different queries and they want different rows.)
 function stubEngine(
   handler: (sql: string) => ReadonlyArray<Record<string, unknown>>,
@@ -122,21 +121,40 @@ const DIRS = [
   dirRow({id: 3, parent_id: 1, name: 'bin', path: '_build/default/bin'}),
 ];
 
-function nodeRow(over: Record<string, unknown>) {
-  return {dir_id: 2, node_id: 1, kind: 'dep', label: 'a.ml', ...over};
+// One row of the counts query: a directory, a kind, and how many of the input's
+// nodes of that kind it holds.
+function countRow(dirId: number, kind: string, cnt: number) {
+  return {dir_id: dirId, kind, cnt};
 }
 
-// Which of the two queries a statement is. `allDirs` is the only one reading
-// `dune_dir`; everything else this source issues is the input join.
+// One row of a member query.
+function memberRow(over: Record<string, unknown> = {}) {
+  return {node_id: 1, kind: 'dep', label: 'a.ml', ...over};
+}
+
+// Which of the three queries a statement is. `allDirs` is the only one reading
+// `dune_dir`; the counts query is the only one that aggregates; everything else
+// is a member read.
 function isDirQuery(sql: string): boolean {
   return sql.includes('FROM dune_dir');
 }
 
+function isCountsQuery(sql: string): boolean {
+  return sql.includes('count(*)');
+}
+
 function sourceOver(
-  rows: ReadonlyArray<Record<string, unknown>>,
+  rows: {
+    counts?: ReadonlyArray<Record<string, unknown>>;
+    members?: ReadonlyArray<Record<string, unknown>>;
+  } = {},
   opts: {column?: string; controller?: FakeController} = {},
 ) {
-  const {engine, sql} = stubEngine((q) => (isDirQuery(q) ? DIRS : rows));
+  const {engine, sql} = stubEngine((q) => {
+    if (isDirQuery(q)) return DIRS;
+    if (isCountsQuery(q)) return rows.counts ?? [];
+    return rows.members ?? [];
+  });
   const controller = opts.controller ?? fakeController();
   const source = new ChartDirExplorerSource(
     engine,
@@ -153,69 +171,78 @@ function has(sql: string, fragment: string): boolean {
   return flat(sql).includes(flat(fragment));
 }
 
-describe('indexChartRows', () => {
-  const rows: ChartMemberRow[] = [
-    {dirId: 2, nodeId: 5, kind: 'dep', label: 'b.ml'},
-    {dirId: 2, nodeId: 6, kind: 'rule', label: 'zzz'},
-    {dirId: 2, nodeId: 7, kind: 'dep', label: 'a.ml'},
-    {dirId: 3, nodeId: 8, kind: 'rule', label: 'r'},
-  ];
+describe('ChartDirExplorerSource counts query', () => {
+  test('aggregates per directory and kind rather than reading the rows', async () => {
+    // The point of the whole file: the result size follows `dune_dir` (two rows
+    // per directory at the very worst) rather than the input's, so there is
+    // nothing to cap and the tree is complete however big the query is.
+    const {source, sql} = sourceOver();
+    await source.matchingCounts('rule', {});
 
-  test('counts each kind per directory', () => {
-    const {counts} = indexChartRows(rows);
-    expect([...counts.rule]).toEqual([
-      [2, 1],
-      [3, 1],
-    ]);
-    expect([...counts.dep]).toEqual([[2, 2]]);
-  });
-
-  test('leaves a directory with no rows out of both channels', () => {
-    // This is the hard filter: `FilteredTree` draws no row for a directory
-    // nothing counted in, so an entry here would put the whole mirror back.
-    const {counts, members} = indexChartRows(rows);
-    expect(counts.rule.has(1)).toBe(false);
-    expect(counts.dep.has(1)).toBe(false);
-    expect(members.has(1)).toBe(false);
-  });
-
-  test('orders members rules-first then by label, as paging needs', () => {
-    const {members} = indexChartRows(rows);
-    expect(members.get(2)?.map((r) => r.label)).toEqual([
-      'zzz',
-      'a.ml',
-      'b.ml',
-    ]);
-  });
-});
-
-describe('ChartDirExplorerSource queries', () => {
-  test('joins the input into dune_node, bounded, on the configured column', async () => {
-    const {source, sql} = sourceOver([nodeRow({})]);
-    await source.allDirs();
-
-    const join = sql.find((q) => !isDirQuery(q));
-    expect(join).toBeDefined();
-    expect(has(join!, 'FROM dune_node n')).toBe(true);
+    const counts = sql.find(isCountsQuery);
+    expect(counts).toBeDefined();
     expect(
-      has(join!, 'JOIN (SELECT * FROM results_1) q ON q."node_id" = n.node_id'),
+      has(
+        counts!,
+        'SELECT n.dir_id AS dir_id, n.kind AS kind, count(*) AS cnt ' +
+          'FROM dune_node n',
+      ),
     ).toBe(true);
-    // One more than the cap: that row is what says the cap bit.
-    expect(has(join!, `LIMIT ${CHART_ROW_CAP + 1}`)).toBe(true);
+    expect(has(counts!, 'GROUP BY 1, 2')).toBe(true);
+    expect(counts).not.toMatch(/LIMIT/);
+  });
+
+  test('counts nodes rather than join rows', async () => {
+    // An edge query has a `src` per edge, not per node, so counting the join
+    // would count a node once per edge it appears on.
+    const {source, sql} = sourceOver();
+    await source.matchingCounts('rule', {});
+
+    const counts = sql.find(isCountsQuery)!;
+    expect(
+      has(
+        counts,
+        'JOIN ( SELECT DISTINCT "node_id" AS node_id ' +
+          'FROM (SELECT * FROM results_1) ) q ON q.node_id = n.node_id',
+      ),
+    ).toBe(true);
   });
 
   test('quotes the column name rather than pasting it in', async () => {
-    const {source, sql} = sourceOver([], {column: 'we"ird'});
-    await source.allDirs();
-    expect(sql.some((q) => q.includes('q."we""ird"'))).toBe(true);
+    const {source, sql} = sourceOver({}, {column: 'we"ird'});
+    await source.matchingCounts('rule', {});
+    expect(sql.some((q) => q.includes('"we""ird" AS node_id'))).toBe(true);
   });
 
-  test('reads the hierarchy and the rows in one pass each', async () => {
-    const {source, sql} = sourceOver([nodeRow({})]);
+  test('splits the rows into one channel per kind', async () => {
+    const {source} = sourceOver({
+      counts: [
+        countRow(2, 'dep', 2),
+        countRow(2, 'rule', 1),
+        countRow(3, 'rule', 5),
+      ],
+    });
+    expect([...(await source.matchingCounts('rule', {}))]).toEqual([
+      [2, 1],
+      [3, 5],
+    ]);
+    expect([...(await source.matchingCounts('dep', {}))]).toEqual([[2, 2]]);
+  });
+
+  test('leaves a directory with no rows out of both channels', async () => {
+    // This is the hard filter: `FilteredTree` draws no row for a directory
+    // nothing counted in, so an entry here would put the whole mirror back.
+    const {source} = sourceOver({counts: [countRow(2, 'dep', 1)]});
+    expect((await source.matchingCounts('rule', {})).has(1)).toBe(false);
+    expect((await source.matchingCounts('dep', {})).has(1)).toBe(false);
+  });
+
+  test('reads the hierarchy and the counts once between them', async () => {
+    const {source, sql} = sourceOver({counts: [countRow(2, 'dep', 1)]});
     await Promise.all([
       source.allDirs(),
       source.matchingCounts('rule', {}),
-      source.dirMembers(2, undefined, 10, 0),
+      source.matchingCounts('dep', {}),
     ]);
     // Three reads of the same load, still two statements.
     expect(sql).toHaveLength(2);
@@ -223,7 +250,7 @@ describe('ChartDirExplorerSource queries', () => {
 
   test('re-reads when the mirror is rebuilt under it', async () => {
     const controller = fakeController(3);
-    const {source, sql} = sourceOver([nodeRow({})], {controller});
+    const {source, sql} = sourceOver({}, {controller});
     await source.allDirs();
     expect(sql).toHaveLength(2);
     expect(source.version).toBe(3);
@@ -235,16 +262,98 @@ describe('ChartDirExplorerSource queries', () => {
   });
 });
 
+describe('ChartDirExplorerSource member queries', () => {
+  test('pages one directory rather than slicing the input', async () => {
+    const {source, sql} = sourceOver({members: [memberRow()]});
+    await source.dirMembers(2, 'dep', 500, 1000);
+
+    const members = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q));
+    expect(members).toBeDefined();
+    expect(
+      has(
+        members!,
+        'SELECT n.node_id AS node_id, n.kind AS kind, n.label AS label ' +
+          'FROM dune_node n',
+      ),
+    ).toBe(true);
+    // `dir_id` first: it is the index probe that selects rows, and it is what
+    // bounds this query by the directory instead of by the input.
+    expect(
+      has(
+        members!,
+        "WHERE n.dir_id = 2 AND n.kind = 'dep' " +
+          'AND n.node_id IN (SELECT "node_id" FROM (SELECT * FROM results_1))',
+      ),
+    ).toBe(true);
+    // Rules before deps then by label - the order paging rests on.
+    expect(has(members!, 'ORDER BY n.kind DESC, n.label')).toBe(true);
+    expect(has(members!, 'LIMIT 500 OFFSET 1000')).toBe(true);
+  });
+
+  test('asks for both kinds by leaving the kind clause out', async () => {
+    // A node has no third kind, so `kind IN ('rule','dep')` would narrow
+    // nothing while costing a comparison on a computed column.
+    const {source, sql} = sourceOver({members: []});
+    await source.dirMembers(7, undefined, 10, 0);
+
+    const members = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q))!;
+    expect(members).not.toMatch(/n\.kind =/);
+    expect(has(members, 'WHERE n.dir_id = 7 AND n.node_id IN')).toBe(true);
+  });
+
+  test('does not need the counts load to page a directory', async () => {
+    // One query per page, and nothing held between them.
+    const {source, sql} = sourceOver({members: [memberRow()]});
+    await source.dirMembers(2, undefined, 10, 0);
+    expect(sql).toHaveLength(1);
+  });
+
+  test('maps a member row onto what the pane renders', async () => {
+    const {source} = sourceOver({
+      members: [memberRow({node_id: 4, kind: 'rule', label: 'lib:foo'})],
+    });
+    expect(await source.dirMembers(2, undefined, 10, 0)).toEqual([
+      {nodeId: 4, kind: 'rule', label: 'lib:foo'},
+    ]);
+  });
+
+  test('reads bulk ids unbounded but still from one directory', async () => {
+    const {source, sql} = sourceOver({
+      members: [memberRow({node_id: 4}), memberRow({node_id: 9})],
+    });
+    expect(await source.dirMemberIds(2, ['rule'])).toEqual([4, 9]);
+
+    const ids = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q))!;
+    expect(has(ids, 'SELECT n.node_id AS node_id FROM dune_node n')).toBe(true);
+    expect(
+      has(
+        ids,
+        "WHERE n.dir_id = 2 AND n.kind = 'rule' " +
+          'AND n.node_id IN (SELECT "node_id" FROM (SELECT * FROM results_1))',
+      ),
+    ).toBe(true);
+    // Unbounded by design: the count is on screen before the click and the
+    // caller is about to put them all in a Set.
+    expect(ids).not.toMatch(/LIMIT/);
+  });
+
+  test('asks nothing at all for no kinds', async () => {
+    const {source, sql} = sourceOver();
+    expect(await source.dirMemberIds(2, [])).toEqual([]);
+    expect(sql).toHaveLength(0);
+  });
+});
+
 describe('ChartDirExplorerSource contract', () => {
   test('declares itself row-driven', () => {
-    const {source} = sourceOver([]);
+    const {source} = sourceOver();
     expect(source.rowDriven).toBe(true);
   });
 
   test('refuses to be descended a level at a time', async () => {
     // Returning [] here would look like an empty build; the pane would draw
     // nothing and no one would know why.
-    const {source} = sourceOver([nodeRow({})]);
+    const {source} = sourceOver();
     await expect(source.rootDirs()).rejects.toThrow(/rows/);
     await expect(source.childDirs()).rejects.toThrow(/rows/);
   });
@@ -252,71 +361,29 @@ describe('ChartDirExplorerSource contract', () => {
   test('never says "all of them" for a kind', async () => {
     // Undefined would send FilteredTree to the mirror's stored n_rules/n_deps,
     // i.e. draw every directory in the build.
-    const {source} = sourceOver([]);
+    const {source} = sourceOver();
     expect(await source.matchingCounts('rule', {})).toBeDefined();
     expect(await source.matchingCounts('dep', {})).toBeDefined();
-  });
-
-  test('pages members out of the input rows', async () => {
-    const {source, sql} = sourceOver([
-      nodeRow({node_id: 1, label: 'b.ml'}),
-      nodeRow({node_id: 2, label: 'a.ml'}),
-      nodeRow({node_id: 3, kind: 'rule', label: 'r'}),
-    ]);
-    const first = await source.dirMembers(2, undefined, 2, 0);
-    expect(first.map((r) => r.label)).toEqual(['r', 'a.ml']);
-    const second = await source.dirMembers(2, undefined, 2, 2);
-    // A short page ends the list, which is what the pane reads "no more" off.
-    expect(second.map((r) => r.label)).toEqual(['b.ml']);
-    // Still no query per page: they are slices of the rows already in hand.
-    expect(sql).toHaveLength(2);
-  });
-
-  test('narrows members and bulk ids by kind', async () => {
-    const {source} = sourceOver([
-      nodeRow({node_id: 1, label: 'a.ml'}),
-      nodeRow({node_id: 2, kind: 'rule', label: 'r'}),
-    ]);
-    expect(await source.dirMembers(2, 'dep', 10, 0)).toEqual([
-      {dirId: 2, nodeId: 1, kind: 'dep', label: 'a.ml'},
-    ]);
-    expect(await source.dirMemberIds(2, ['rule'])).toEqual([2]);
-    expect(await source.dirMemberIds(2, ['rule', 'dep'])).toEqual([2, 1]);
-  });
-
-  test('de-duplicates a node the input named twice', async () => {
-    // An edge query has a `src` per edge, not per node.
-    const {source} = sourceOver([nodeRow({node_id: 9}), nodeRow({node_id: 9})]);
-    expect(await source.matchingCounts('dep', {})).toEqual(new Map([[2, 1]]));
   });
 });
 
 describe('ChartDirExplorerSource state', () => {
-  test('reports the row count and asks for a redraw when the load lands', async () => {
-    const {source, controller} = sourceOver([nodeRow({})]);
+  test('reports the node count and asks for a redraw when the load lands', async () => {
+    const {source, controller} = sourceOver({
+      counts: [countRow(2, 'dep', 2), countRow(3, 'rule', 1)],
+    });
     expect(source.state.phase).toBe('idle');
     source.ensureLoaded();
     expect(source.state.phase).toBe('loading');
     await source.allDirs();
-    expect(source.state).toEqual({
-      phase: 'ready',
-      rowCount: 1,
-      truncated: false,
-    });
+    expect(source.state).toEqual({phase: 'ready', nodeCount: 3});
     expect(controller.redraws).toBeGreaterThan(0);
   });
 
-  test('says so when the cap bites, and holds exactly the cap', async () => {
-    const rows = Array.from({length: CHART_ROW_CAP + 1}, (_, i) =>
-      nodeRow({node_id: i}),
-    );
-    const {source} = sourceOver(rows);
+  test('reports nothing counted as a zero rather than as a failure', async () => {
+    const {source} = sourceOver({counts: []});
     await source.allDirs();
-    expect(source.state).toEqual({
-      phase: 'ready',
-      rowCount: CHART_ROW_CAP,
-      truncated: true,
-    });
+    expect(source.state).toEqual({phase: 'ready', nodeCount: 0});
   });
 
   test('keeps a failed query as a message rather than a retry loop', async () => {
@@ -342,10 +409,9 @@ describe('ChartDirExplorerSource state', () => {
 
 describe('ChartDirExplorerSource.subtreeDirIds', () => {
   test('returns the subtree directories that hold rows, and only those', async () => {
-    const {source} = sourceOver([
-      nodeRow({dir_id: 2, node_id: 1}),
-      nodeRow({dir_id: 1, node_id: 2}),
-    ]);
+    const {source} = sourceOver({
+      counts: [countRow(2, 'dep', 1), countRow(1, 'rule', 1)],
+    });
     await source.allDirs();
     // From the root: 1 and 2 hold rows, 0 and 3 do not. Sorted for the
     // comparison only - the walk's order is its own business.
@@ -355,7 +421,7 @@ describe('ChartDirExplorerSource.subtreeDirIds', () => {
   });
 
   test('is empty before the load lands', () => {
-    const {source} = sourceOver([nodeRow({})]);
+    const {source} = sourceOver({counts: [countRow(0, 'dep', 1)]});
     expect(source.subtreeDirIds(0)).toEqual([]);
   });
 });

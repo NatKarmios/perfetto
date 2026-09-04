@@ -22,8 +22,8 @@
  * The states around the tree get the same attention as the tree, because they
  * are what a misconfigured chart shows and each of them is a different thing to
  * fix: no graph loaded, a primary column that holds no node ids, no results
- * table yet, a query whose rows name no nodes, and the row cap having bitten.
- * The alternative to all five is an empty tree, which says none of it.
+ * table yet, and a query whose rows name no nodes. The alternative to all four
+ * is an empty tree, which says none of it.
  *
  * The registration lifecycle gets the same treatment as the node column
  * renderer's (node_cell_unittest.ts): registering a chart type twice throws, so
@@ -53,7 +53,6 @@ import {
 } from '../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
 import type {SqlValue} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
-import {CHART_ROW_CAP} from './dir_chart_source';
 import {registerDirExplorerChart} from './dir_explorer_chart';
 
 // The type id as the registry sees it. Spelt out rather than imported: it is
@@ -141,8 +140,17 @@ function renderIntoDom(children: m.Children): HTMLElement {
   return root;
 }
 
-// A stub engine answering the source's two queries: the mirror's directories,
-// and the join of the chart's input onto `dune_node`.
+/**
+ * A stub engine answering the source's three queries from one fixture: the
+ * mirror's directories, the per-directory counts over the chart's input, and a
+ * directory's members.
+ *
+ * `nodes` is the input as the *mirror* resolves it - one entry per node the
+ * query named - and the counts are aggregated from it here because that is what
+ * the source now asks SQL to do (see dir_chart_source.ts). Member queries get
+ * the same rows back: these tests never expand a directory, so the fixture only
+ * has to have the right columns.
+ */
 function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
   const dirs = [
     {
@@ -162,7 +170,11 @@ function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
   ];
   return {
     query: async (q: string) => {
-      const rows = q.includes('FROM dune_dir') ? dirs : nodes;
+      const rows = q.includes('FROM dune_dir')
+        ? dirs
+        : q.includes('count(*)')
+          ? countRows(nodes)
+          : nodes;
       let i = 0;
       const it = {
         valid: () => i < rows.length,
@@ -218,6 +230,24 @@ async function renderChart(opts: {
 // One row of the input join, as the source's reader wants it.
 function nodeRow(over: Record<string, unknown> = {}) {
   return {dir_id: 0, node_id: 1, kind: 'rule', label: 'lib:foo', ...over};
+}
+
+// The counts query's answer over a fixture: one row per (directory, kind), the
+// way the `GROUP BY` the source issues would return it.
+function countRows(
+  nodes: ReadonlyArray<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const counts = new Map<string, Record<string, unknown>>();
+  for (const node of nodes) {
+    const key = `${node.dir_id}/${node.kind}`;
+    const row = counts.get(key);
+    if (row === undefined) {
+      counts.set(key, {dir_id: node.dir_id, kind: node.kind, cnt: 1});
+    } else {
+      row.cnt = (row.cnt as number) + 1;
+    }
+  }
+  return [...counts.values()];
 }
 
 describe('registerDirExplorerChart', () => {
@@ -339,20 +369,19 @@ describe('the directory chart', () => {
     expect(root.querySelector('.pf-dune-explorer')).toBeNull();
   });
 
-  test('says when the row cap bit', async () => {
+  test('draws the whole tree however many rows the query returned', async () => {
+    // Nothing is capped and nothing is warned about: the counts are aggregated
+    // in SQL, so a query naming every node in the build costs the same rows on
+    // the way back as one naming a handful (see dir_chart_source.ts).
     register(loadedController());
     const root = await renderChart({
       node: fakeNode(['node_id']),
       config: config('node_id'),
-      nodes: Array.from({length: CHART_ROW_CAP + 1}, (_, i) =>
-        nodeRow({node_id: i}),
-      ),
+      nodes: Array.from({length: 60_000}, (_, i) => nodeRow({node_id: i})),
     });
 
-    expect(root.querySelector('.pf-dune-dir-chart__note')).not.toBeNull();
-    expect(root.textContent).toContain(CHART_ROW_CAP.toLocaleString());
-    // Capped, but still a tree over what it did read.
     expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
+    expect(root.textContent).not.toContain('no more');
   });
 
   test('waits for the host to produce a results table', async () => {

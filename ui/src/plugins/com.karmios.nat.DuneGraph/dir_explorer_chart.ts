@@ -58,11 +58,10 @@ import {registerChartType} from '../dev.perfetto.DataExplorer/query_builder/char
 import {Button} from '../../widgets/button';
 import {Callout} from '../../widgets/callout';
 import {EmptyState} from '../../widgets/empty_state';
-import {Icon} from '../../widgets/icon';
 import {Intent} from '../../widgets/common';
 import {Spinner} from '../../widgets/spinner';
 import type {DuneGraphController} from './controller';
-import {CHART_ROW_CAP, ChartDirExplorerSource} from './dir_chart_source';
+import {ChartDirExplorerSource} from './dir_chart_source';
 import type {DirEntry} from './dir_explorer';
 import {DirExplorerPanel, renderMirrorNotLoaded} from './dir_explorer_panel';
 
@@ -237,7 +236,7 @@ function renderChartBody(
       assertUnreachable(state);
   }
 
-  if (state.rowCount === 0) {
+  if (state.nodeCount === 0) {
     return m(
       EmptyState,
       {icon: 'search_off', title: 'No Dune nodes in these rows'},
@@ -250,24 +249,14 @@ function renderChartBody(
     );
   }
 
-  return [
-    state.truncated &&
-      m(
-        '.pf-dune-dir-chart__note',
-        m(Icon, {icon: 'warning'}),
-        `The query returned more than ${CHART_ROW_CAP.toLocaleString()} rows; ` +
-          'this tree holds the first ' +
-          `${CHART_ROW_CAP.toLocaleString()} and no more.`,
-      ),
-    m(
-      '.pf-dune-dir-chart__pane',
-      m(DirExplorerPanel, {
-        controller,
-        source,
-        onFilterToDir: dirFilterHandler(ctx, source),
-      }),
-    ),
-  ];
+  return m(
+    '.pf-dune-dir-chart__pane',
+    m(DirExplorerPanel, {
+      controller,
+      source,
+      onFilterToDir: dirFilterHandler(ctx, source),
+    }),
+  );
 }
 
 /**

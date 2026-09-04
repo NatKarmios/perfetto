@@ -25,11 +25,60 @@
  * where the directory tree exists at all. What the chart's input rows decide
  * is which of those directories are drawn, and what hangs off them.
  *
- * So there is exactly one thing to compute, and `dir_filter.ts` already does
- * everything downstream of it: the per-directory count channels. From those,
- * `FilteredTree` does the subtree rollup, the hard filter (a directory with no
- * matching rows gets no row at all), the pass-through compression over what
- * survives, and the expansion remapping - all client-side, all arithmetic.
+ * The shape of the whole tree is then decided by one thing, and `dir_filter.ts`
+ * already does everything downstream of it: the per-directory count channels.
+ * From those, `FilteredTree` does the subtree rollup, the hard filter (a
+ * directory with no matching rows gets no row at all), the pass-through
+ * compression over what survives, and the expansion remapping - all
+ * client-side, all arithmetic.
+ *
+ * ## Counts and members are fetched differently, because they are different
+ * sizes
+ *
+ * This is the whole design of the file, so it is worth being explicit about.
+ * The pane asks a source for two unrelated things, and the naive reading - pull
+ * the input rows in once and derive both from them - ties both to the size of
+ * the *input*, which is unbounded. A bare `SELECT ... FROM dune_node` chart
+ * (which is what the "explore directory tree" omnibox command seeds) names all
+ * 818k nodes of the monorepo trace, and holding those in the browser is not
+ * something to do at all, never mind to do behind a cap that silently keeps an
+ * arbitrary 50k of them and draws a tree of whichever directories they happened
+ * to land in.
+ *
+ * So the two are fetched separately, each bounded by what it is actually
+ * bounded by:
+ *
+ * - **Counts** are an aggregate, and aggregates are what SQL is for. One
+ *   `GROUP BY dir_id, kind` returns at most two rows per *directory* - ~38k
+ *   rows at the very worst on the monorepo trace, and typically a handful -
+ *   however many input rows went into it. Bounded by the mirror rather than by
+ *   the input, it needs no cap, and the tree is complete at any scale. This is
+ *   the same shape `matchingCounts` in dir_explorer.ts uses against the mirror.
+ * - **Members** are needed only for the directories the user actually expands,
+ *   and only one `MEMBER_PAGE` at a time, because the pane already pages them.
+ *   So each page is its own bounded query rather than a slice of an array that
+ *   had to exist first. That also means the input query is re-run per page -
+ *   which is what the trace processor is for, and is the same trade the SQL
+ *   source makes on every expansion.
+ *
+ * ## De-duplication, and which way each query joins
+ *
+ * An input naming the same node more than once is normal rather than exotic: an
+ * edge query has a `src` per edge, not per node. Counting join rows would then
+ * count a node once per edge, so both queries have to count *nodes* rather
+ * than rows, and each does it the way that suits its join direction:
+ *
+ * - The counts query is driven **from** the input - there is no directory to
+ *   start at, and the input is normally the small side - so it de-duplicates
+ *   the input first (`SELECT DISTINCT`) and then `count(*)` counts nodes.
+ *   Distinct-then-count rather than `count(DISTINCT n.node_id)`: both sort, but
+ *   this one sorts once for the whole query instead of building a b-tree per
+ *   group, and it shrinks the probe count and the GROUP BY's input as well.
+ * - The member queries are driven **into** it: they start from `dir_id`, which
+ *   is one index probe returning a directory's handful of nodes, and test each
+ *   against the input with `node_id IN (...)`. A semi-join returns each node
+ *   once by construction, so there is nothing to de-duplicate, and the cost is
+ *   bounded by the directory rather than by the input.
  *
  * ## What it guarantees against the interface's contract
  *
@@ -51,18 +100,9 @@
  *   which for this source would mean falling back to the stored `n_rules` /
  *   `n_deps` and drawing the whole mirror. See `matchingCounts` below.
  * - **Members are paged, rules before deps, and a short page ends the list.**
- *   They come from the input rows rather than from a fresh `dune_node` probe -
- *   the probe would return every member of the directory, which is precisely the
- *   rows the query did *not* select - so paging is a slice of a list that was
- *   sorted once, at index time, into the order the SQL member query uses
- *   (`ORDER BY n.kind DESC, n.label`).
- *
- * ## The row cap
- *
- * The pane's own tree is lazy and needs no cap; the input is a materialised
- * result and does. One query, capped, read once per mount - see
- * {@link CHART_ROW_CAP} for the number and why the query asks for one row more
- * than it wants.
+ *   The order is `ORDER BY n.kind DESC, n.label`, the same one the SQL source's
+ *   member query uses, so a page is a page of one list rather than of whatever
+ *   came back that time.
  */
 
 import {getErrorMessage} from '../../base/errors';
@@ -80,59 +120,13 @@ import type {DirExplorerSource} from './dir_explorer_source';
 import type {NodeKind} from './graph';
 
 /**
- * How many of the query's rows the chart will hold.
- *
- * The tree below this is lazy - it draws one level at a time out of arithmetic -
- * so the cap is not about rendering. It is about the join's result being
- * materialised in the browser: every row here is a node id, a kind and a label
- * string, and a query over `dune_node` with no WHERE at all would hand back all
- * 818k of them.
- *
- * 50k is generous next to the built-in charts (a treemap caps at 50 rows, a
- * scatter at 2,000) and is meant to be: those cap what they can *draw*, and this
- * caps what it can *hold*. A directory tree over 50k nodes is still perfectly
- * readable, because the tree only ever renders the level you opened.
- *
- * The query asks for `CHART_ROW_CAP + 1` rows, which is how "the cap bit" is
- * known exactly rather than guessed at from a full page - the same trick the
- * pane's member paging plays in reverse.
- */
-export const CHART_ROW_CAP = 50_000;
-
-/**
- * One input row, resolved against the mirror: which node it named, and where
- * that node is filed.
- *
- * A superset of `MemberEntry`, deliberately - the member lists this source hands
- * the pane are these very objects, so `dirId` is the only field that is this
- * file's rather than the pane's.
- */
-export interface ChartMemberRow extends MemberEntry {
-  readonly dirId: number;
-}
-
-/**
- * The input rows arranged the two ways the pane asks for them.
- *
- * `counts` is what `FilteredTree` is built from and is therefore what decides
- * the shape of the whole tree; `members` is what a directory row expands into.
- * Both are derived in one pass by {@link indexChartRows}, which is pure and is
- * where the interesting part of this file is tested.
- */
-export interface ChartRowIndex {
-  /** Per kind, how many input rows each directory holds directly. */
-  readonly counts: Readonly<Record<NodeKind, ReadonlyMap<number, number>>>;
-  /**
-   * Per directory, the input rows filed there - rules before deps and then by
-   * label, which is the order {@link DirExplorerSource.dirMembers} pages
-   * through.
-   */
-  readonly members: ReadonlyMap<number, readonly ChartMemberRow[]>;
-}
-
-/**
- * Where a source's one query has got to, for the chart to render around the
+ * Where a source's up-front load has got to, for the chart to render around the
  * pane.
+ *
+ * "The load" is the counts and the hierarchy - the two whole-tier reads the
+ * tree's shape needs. Member pages are not part of it: they are fetched per
+ * expansion and their failures belong to the row that asked, which is where the
+ * pane already reports them.
  *
  * A discriminated union rather than a bag of optional fields because the chart
  * switches on it exhaustively: each phase is a different thing to show, and
@@ -143,57 +137,29 @@ export type ChartSourceState =
   | {readonly phase: 'loading'}
   | {
       readonly phase: 'ready';
-      /** Distinct nodes the query's rows named. */
-      readonly rowCount: number;
-      /** Whether {@link CHART_ROW_CAP} bit, i.e. rows were dropped. */
-      readonly truncated: boolean;
+      /**
+       * Distinct nodes the query's rows named, i.e. the counts summed.
+       *
+       * Zero is the chart's "this query named no nodes at all" state, and is
+       * the reason this is carried rather than recomputed from
+       * {@link ChartDirExplorerSource.matchingCounts}, which is async.
+       */
+      readonly nodeCount: number;
     }
   | {readonly phase: 'error'; readonly message: string};
 
-// Everything one load produced, held for as long as the source lives.
-interface LoadedRows {
+// Everything one load produced, held for as long as the source lives. Small by
+// construction: two numbers per directory and one hierarchy, both bounded by
+// `dune_dir` rather than by the chart's input.
+interface LoadedTree {
   readonly dirs: readonly DirEntry[];
-  readonly index: ChartRowIndex;
+  /** Per kind, how many of the input's nodes each directory holds directly. */
+  readonly counts: Readonly<Record<NodeKind, ReadonlyMap<number, number>>>;
   // Child directory ids by parent id, over the *whole* mirror hierarchy - what
   // a narrow-to-this-directory click walks. Built here rather than taken off
   // `FilteredTree`, which keeps its own copy private and holds the filtered
   // shape rather than the real one.
   readonly childIds: ReadonlyMap<number, readonly number[]>;
-}
-
-/**
- * Arranges input rows into the per-directory channels the pane reads.
- *
- * Pure, and separated from the query for the usual reason: this is the part
- * where a mistake would be silent. A count keyed on the wrong thing draws the
- * wrong tree, and a member list in the wrong order makes "show more" hand back
- * pages of an unordered result - neither of which the SQL would notice.
- *
- * @param rows The input rows, already de-duplicated by node.
- */
-export function indexChartRows(rows: readonly ChartMemberRow[]): ChartRowIndex {
-  const members = new Map<number, ChartMemberRow[]>();
-  const counts: Record<NodeKind, Map<number, number>> = {
-    rule: new Map(),
-    dep: new Map(),
-  };
-  for (const row of rows) {
-    const list = members.get(row.dirId);
-    if (list === undefined) members.set(row.dirId, [row]);
-    else list.push(row);
-    const byKind = counts[row.kind];
-    byKind.set(row.dirId, (byKind.get(row.dirId) ?? 0) + 1);
-  }
-  // Rules before deps and then by label - the order `dirMembers` promises, and
-  // the same one its SQL twin gets from `ORDER BY n.kind DESC, n.label`. Sorted
-  // once here rather than per page, since every page is a slice of this.
-  for (const list of members.values()) {
-    list.sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === 'rule' ? -1 : 1;
-      return a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
-    });
-  }
-  return {counts, members};
 }
 
 /**
@@ -204,19 +170,21 @@ export function indexChartRows(rows: readonly ChartMemberRow[]): ChartRowIndex {
  * data and drops every cache it holds: one per render would collapse the tree
  * every frame.
  *
- * The load is lazy and happens at most once per mirror version. A graph reload
- * renumbers every node and rebuilds `dune_dir`, which invalidates both halves of
- * what is held here - the rows' `dir_id`s and the hierarchy they index into - so
- * `version` follows `mirrorVersion` exactly as the SQL source's does, and
- * the next read re-runs the query.
+ * The counts load is lazy and happens at most once per mirror version. A graph
+ * reload renumbers every node and rebuilds `dune_dir`, which invalidates both
+ * halves of what is held here - the counts' `dir_id`s and the hierarchy they
+ * index into - so `version` follows `mirrorVersion` exactly as the SQL source's
+ * does, and the next read re-runs the queries. Member pages need no such check:
+ * they are read fresh from the mirror every time, and the pane drops the ones
+ * it cached when `version` moves.
  */
 export class ChartDirExplorerSource implements DirExplorerSource {
   readonly rowDriven = true;
 
   private stateValue: ChartSourceState = {phase: 'idle'};
-  private loadPromise?: Promise<LoadedRows>;
+  private loadPromise?: Promise<LoadedTree>;
   private loadedVersion?: number;
-  private loaded?: LoadedRows;
+  private loaded?: LoadedTree;
   private disposed = false;
 
   /**
@@ -237,7 +205,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     return this.controller.mirrorVersion;
   }
 
-  /** Where the one query has got to. Cheap; read every render. */
+  /** Where the up-front load has got to. Cheap; read every render. */
   get state(): ChartSourceState {
     return this.stateValue;
   }
@@ -257,7 +225,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     });
   }
 
-  /** Frees the rows. Called through `ChartLoaderEntry.custom`. */
+  /** Frees the counts. Called through `ChartLoaderEntry.custom`. */
   dispose(): void {
     this.disposed = true;
     this.loadPromise = undefined;
@@ -276,6 +244,10 @@ export class ChartDirExplorerSource implements DirExplorerSource {
    * the filter becomes. Dropping them cannot change which rows match, since a
    * directory with no rows selects none.
    *
+   * Read off the counts rather than off a member list: a directory holds rows
+   * exactly when one of the two count channels names it, which is the same test
+   * `FilteredTree` drew the row by.
+   *
    * Empty until the load lands, which is also when the chart first offers the
    * click.
    */
@@ -286,7 +258,9 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     const stack = [id];
     while (stack.length > 0) {
       const at = stack.pop()!;
-      if (loaded.index.members.has(at)) out.push(at);
+      if (loaded.counts.rule.has(at) || loaded.counts.dep.has(at)) {
+        out.push(at);
+      }
       const children = loaded.childIds.get(at);
       if (children !== undefined) stack.push(...children);
     }
@@ -328,8 +302,8 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 
   /**
-   * How many input rows of `kind` each directory holds - the count channel
-   * that is this chart's filter.
+   * How many of the input's nodes of `kind` each directory holds - the count
+   * channel that is this chart's filter.
    *
    * Never undefined, unlike the SQL source's. Undefined means "every member of
    * this kind matches", which sends `FilteredTree` to the stored `n_rules` /
@@ -344,16 +318,17 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     kind: NodeKind,
     _filter: MemberFilter,
   ): Promise<ReadonlyMap<number, number>> {
-    return (await this.load()).index.counts[kind];
+    return (await this.load()).counts[kind];
   }
 
   /**
-   * One page of `id`'s members, sliced out of the input rows filed there.
+   * One page of `id`'s members that the input named, in the pane's paging
+   * order.
    *
-   * A slice rather than a query: the rows are already in hand, and a `dir_id`
-   * probe of `dune_node` would return the directory's *whole* membership rather
-   * than the part the query selected. Short page ends the list, as promised -
-   * which falls out of the slice.
+   * One query per page rather than a slice of rows held in memory: the input
+   * can name every node in the build, and a directory's own membership cannot,
+   * so starting from `dir_id` is what keeps this bounded. A short page ends the
+   * list, as promised - which falls out of the `LIMIT`.
    */
   async dirMembers(
     id: number,
@@ -361,35 +336,80 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     limit: number,
     offset: number,
   ): Promise<readonly MemberEntry[]> {
-    const rows = await this.membersOf(id, kind);
-    return rows.slice(offset, offset + limit);
+    const result = await this.engine.query(`
+      SELECT n.node_id AS node_id, n.kind AS kind, n.label AS label
+      FROM dune_node n
+      WHERE ${this.memberWhere(id, kind === undefined ? [] : [kind])}
+      ORDER BY n.kind DESC, n.label
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+    const members: MemberEntry[] = [];
+    const it = result.iter({node_id: NUM, kind: STR, label: STR});
+    for (; it.valid(); it.next()) {
+      members.push({
+        nodeId: it.node_id,
+        kind: it.kind as NodeKind,
+        label: it.label,
+      });
+    }
+    return members;
   }
 
-  /** Every member of `id` of the given kinds, as node ids - the bulk actions. */
+  /**
+   * Every member of `id` of the given kinds that the input named, as node ids -
+   * what the bulk ＋all / －all buttons act on.
+   *
+   * Unbounded in row count, like the SQL source's twin and for the same reason:
+   * nothing is rendered from these, the count is already on screen before the
+   * click, and it is still one directory's *direct* members rather than a scan
+   * of the input. Unordered, also like the twin - the caller is about to put
+   * them in a Set.
+   */
   async dirMemberIds(
     id: number,
     kinds: readonly NodeKind[],
   ): Promise<readonly number[]> {
-    const rows = await this.membersOf(id, undefined);
-    return rows.filter((r) => kinds.includes(r.kind)).map((r) => r.nodeId);
-  }
-
-  private async membersOf(
-    id: number,
-    kind: NodeKind | undefined,
-  ): Promise<readonly ChartMemberRow[]> {
-    const rows = (await this.load()).index.members.get(id) ?? [];
-    return kind === undefined ? rows : rows.filter((r) => r.kind === kind);
+    if (kinds.length === 0) return [];
+    const result = await this.engine.query(`
+      SELECT n.node_id AS node_id
+      FROM dune_node n
+      WHERE ${this.memberWhere(id, kinds)}
+    `);
+    const ids: number[] = [];
+    const it = result.iter({node_id: NUM});
+    for (; it.valid(); it.next()) ids.push(it.node_id);
+    return ids;
   }
 
   /**
-   * The rows and the hierarchy, fetched at most once per mirror version.
+   * The `WHERE` body both member queries share: the directory, the kinds asked
+   * for, and membership of the input.
+   *
+   * `dir_id` first because it is the term that selects rows - it is an index
+   * probe of `_dune_node(dir_id)` returning a directory's handful of nodes (see
+   * sql_graph.ts), which the other two then test rather than search. `kind` is
+   * a computed column on the view and narrows nothing on its own, so it is
+   * dropped entirely when both kinds are wanted.
+   *
+   * @param id The directory to list.
+   * @param kinds The kinds to keep, or empty for "both" - which is no clause at
+   *   all rather than a two-element `IN`, since a node has no third kind.
+   */
+  private memberWhere(id: number, kinds: readonly NodeKind[]): string {
+    const parts = [`n.dir_id = ${id}`];
+    if (kinds.length === 1) parts.push(`n.kind = '${kinds[0]}'`);
+    parts.push(`n.node_id IN (${this.inputIds()})`);
+    return parts.join(' AND ');
+  }
+
+  /**
+   * The counts and the hierarchy, fetched at most once per mirror version.
    *
    * The version check is what makes a graph reload land: the pane drops its
    * caches when `version` moves and asks again, and this notices that what
    * it holds was read out of a mirror that no longer exists.
    */
-  private load(): Promise<LoadedRows> {
+  private load(): Promise<LoadedTree> {
     const version = this.controller.mirrorVersion;
     if (this.loadPromise === undefined || this.loadedVersion !== version) {
       this.loadedVersion = version;
@@ -399,27 +419,19 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     return this.loadPromise;
   }
 
-  private async fetch(): Promise<LoadedRows> {
+  private async fetch(): Promise<LoadedTree> {
     try {
       // Two queries, both of them whole-tier reads rather than per-row work:
-      // the mirror's hierarchy, and the chart's own input. Issued together
+      // the mirror's hierarchy, and the input's counts over it. Issued together
       // because neither needs the other's answer.
-      const [dirs, rows] = await Promise.all([
+      const [dirs, counts] = await Promise.all([
         allDirs(this.engine),
-        this.fetchRows(),
+        this.fetchCounts(),
       ]);
-      const loaded: LoadedRows = {
-        dirs,
-        index: indexChartRows(rows.rows),
-        childIds: childIndex(dirs),
-      };
+      const loaded: LoadedTree = {dirs, counts, childIds: childIndex(dirs)};
       if (!this.disposed) {
         this.loaded = loaded;
-        this.stateValue = {
-          phase: 'ready',
-          rowCount: rows.rows.length,
-          truncated: rows.truncated,
-        };
+        this.stateValue = {phase: 'ready', nodeCount: totalCount(counts)};
         this.controller.requestRedraw();
       }
       return loaded;
@@ -433,57 +445,47 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 
   /**
-   * The chart's input rows, mapped onto graph nodes.
+   * How many of the input's nodes each directory holds, per kind.
    *
-   * One query, and the whole of what this chart reads of its input. The join is
-   * driven from the (small) input side into `dune_node`'s primary key, so the
-   * cost is one probe per input row rather than a scan.
+   * The one query the tree's whole shape comes out of, and the reason there is
+   * no row cap anywhere in this file: the `GROUP BY` collapses the input to at
+   * most two rows per directory before anything crosses into the browser, so
+   * the result is bounded by `dune_dir` (~19k rows) whatever the input's size.
    *
-   * De-duplication is client-side rather than a `SELECT DISTINCT`: an input
-   * naming the same node twice is normal (an edge query has a `src` per edge,
-   * not per node), and `DISTINCT` would sort the whole join to find that out,
-   * whereas a `Set` of node ids costs nothing on rows that are being read
-   * anyway. It does mean the cap counts rows rather than nodes, which is the
-   * honest reading of "the query returned more than we will hold".
+   * The join is driven from the (de-duplicated) input side into `dune_node`'s
+   * primary key, so the cost is one probe per distinct input node rather than a
+   * scan - see the file header on why the de-duplication is here rather than in
+   * the aggregate.
    */
-  private async fetchRows(): Promise<{
-    rows: ChartMemberRow[];
-    truncated: boolean;
-  }> {
+  private async fetchCounts(): Promise<
+    Readonly<Record<NodeKind, ReadonlyMap<number, number>>>
+  > {
     const result = await this.engine.query(`
-      SELECT
-        n.dir_id AS dir_id,
-        n.node_id AS node_id,
-        n.kind AS kind,
-        n.label AS label
+      SELECT n.dir_id AS dir_id, n.kind AS kind, count(*) AS cnt
       FROM dune_node n
-      JOIN (${this.query}) q ON q.${quoteIdent(this.nodeColumn)} = n.node_id
-      LIMIT ${CHART_ROW_CAP + 1}
+      JOIN (
+        SELECT DISTINCT ${quoteIdent(this.nodeColumn)} AS node_id
+        FROM (${this.query})
+      ) q ON q.node_id = n.node_id
+      GROUP BY 1, 2
     `);
-    const rows: ChartMemberRow[] = [];
-    const seen = new Set<number>();
-    let read = 0;
-    const it = result.iter({
-      dir_id: NUM,
-      node_id: NUM,
-      kind: STR,
-      label: STR,
-    });
+    const counts: Record<NodeKind, Map<number, number>> = {
+      rule: new Map(),
+      dep: new Map(),
+    };
+    const it = result.iter({dir_id: NUM, kind: STR, cnt: NUM});
     for (; it.valid(); it.next()) {
-      // The row past the cap is asked for only to be counted: it is what says
-      // the cap bit, and it is not kept.
-      read++;
-      if (read > CHART_ROW_CAP) break;
-      if (seen.has(it.node_id)) continue;
-      seen.add(it.node_id);
-      rows.push({
-        dirId: it.dir_id,
-        nodeId: it.node_id,
-        kind: it.kind as NodeKind,
-        label: it.label,
-      });
+      counts[it.kind as NodeKind].set(it.dir_id, it.cnt);
     }
-    return {rows, truncated: read > CHART_ROW_CAP};
+    return counts;
+  }
+
+  // The input's node id column, as a one-column relation to test membership of.
+  // Not de-duplicated: `IN` is a set test, so duplicates change nothing and
+  // sorting them out would cost the member queries the very thing starting from
+  // `dir_id` bought them.
+  private inputIds(): string {
+    return `SELECT ${quoteIdent(this.nodeColumn)} FROM (${this.query})`;
   }
 }
 
@@ -495,6 +497,19 @@ const NOT_DESCENDED =
   "The Dune directory chart draws its tree from its query's rows, so it has " +
   'no directory levels to descend. This is a bug: the pane should be in its ' +
   'filtered mode for a row-driven source.';
+
+// Every counted node, over both kinds. The counts are per (directory, kind) and
+// each node is counted once, so this is the number of distinct nodes the input
+// named - which is what the chart's "named no nodes at all" state tests.
+function totalCount(
+  counts: Readonly<Record<NodeKind, ReadonlyMap<number, number>>>,
+): number {
+  let total = 0;
+  for (const byDir of Object.values(counts)) {
+    for (const n of byDir.values()) total += n;
+  }
+  return total;
+}
 
 /**
  * Child directory ids by parent id, over every directory in the mirror.
