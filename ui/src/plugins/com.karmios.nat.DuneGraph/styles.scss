@@ -20,9 +20,11 @@
 
   // Panel-level actions that aren't about the selection: the Data Explorer
   // sources, above the stacked areas and only while that page is open (see
-  // panel.ts). Titled like an area, but a row of buttons rather than one.
+  // panel.ts). Titled and ruled off like an area, but a row of buttons rather
+  // than one.
   &__toolbar {
     padding: 4px 0;
+    border-top: 1px solid var(--pf-color-border);
   }
 
   &__toolbar-buttons {

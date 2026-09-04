@@ -20,9 +20,10 @@
  *   the tree with nothing to configure. This is the omnibox command, and the
  *   only way in from outside the Data Explorer.
  * - {@link appendExploreSource} *adds* one of the mirror's tables to the graph
- *   the user is already working in, and nothing else - no dashboard, no
- *   navigation anywhere. These are the panel's buttons, which only exist while
- *   the Data Explorer is the open page (see panel.ts).
+ *   the user is already working in, as a named group, and nothing else - no
+ *   dashboard, no export, no navigation anywhere. These are the panel's
+ *   buttons, which only exist while the Data Explorer is the open page (see
+ *   panel.ts).
  *
  * The JSON both hand over lives in explore_source.ts and its two sources
  * (dir_tree_graph.ts, node_source.ts).
@@ -93,13 +94,14 @@ export async function exploreDirTree(
 }
 
 /**
- * Adds `source` to the active graph as three more nodes, leaving everything
+ * Adds `source` to the active graph as one named group, leaving everything
  * already in it - nodes, layouts, dashboards and all - alone.
  *
  * Deliberately no dashboard argument: the dashboards `setActiveGraphJson` takes
  * would *replace* the tab's, and there is no public getter for them to merge
- * into (see DATA_EXPLORER_PLAN.LOCAL.md, phase 5). So this stops at publishing
- * the data source, and the user drops it onto a dashboard of their own - which
+ * into (see DATA_EXPLORER_PLAN.LOCAL.md, phase 5). And deliberately no export
+ * node either (see explore_source.ts): this stops at putting the query in the
+ * user's graph, and they decide whether it is published to a dashboard - which
  * is the natural hand-off point anyway, since only they know what they are
  * building.
  *

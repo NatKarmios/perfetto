@@ -103,7 +103,7 @@ export const DIR_TREE_SOURCE: ExploreSource = {
   title:
     "Add the build's directories - with per-directory rule, dependency, " +
     'failure and duration rollups - to the current Data Explorer graph, as a ' +
-    'source you can put on a dashboard',
+    'group you can query further or export to a dashboard',
 };
 
 /**

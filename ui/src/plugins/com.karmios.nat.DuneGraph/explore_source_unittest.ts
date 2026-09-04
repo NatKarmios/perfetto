@@ -23,6 +23,11 @@
  * subtly rewires what the user already had would be destructive and invisible:
  * a dashboard item names its data source by *node id*, so an id that moved is a
  * dashboard that renders nothing. Hence the "untouched" assertions below.
+ *
+ * The two paths also differ in what they add - the replacing one exports to a
+ * dashboard, the appending one groups and exports nothing - and both halves of
+ * that are asserted here, since nothing else would notice a source that quietly
+ * started publishing itself again.
  */
 
 import {registerCoreNodes} from '../dev.perfetto.DataExplorer/query_builder/core_nodes';
@@ -146,12 +151,54 @@ describe('exploreSourceGraph', () => {
 
 describe('appendExploreSourceToGraph', () => {
   it('seeds from scratch when there is no graph to append to', () => {
-    // getActiveGraphJson() returns undefined for an empty tab.
+    // getActiveGraphJson() returns undefined for an empty tab, and '' for one
+    // that has been emptied. Either way the button does what it always does -
+    // the same grouped, unexported chain, not the command's payload.
+    const empty = JSON.stringify({nodes: [], rootNodeIds: []});
+    const expected = appendExploreSourceToGraph(empty, TOY_SOURCE).json;
     expect(appendExploreSourceToGraph(undefined, TOY_SOURCE).json).toBe(
-      exploreSourceGraph(TOY_SOURCE).json,
+      expected,
     );
-    expect(appendExploreSourceToGraph('', TOY_SOURCE).json).toBe(
-      exploreSourceGraph(TOY_SOURCE).json,
+    expect(appendExploreSourceToGraph('', TOY_SOURCE).json).toBe(expected);
+    expect(validateSerializedGraph(expected).errors).toEqual([]);
+  });
+
+  it('groups the chain and publishes nothing', () => {
+    // The panel's button makes the data available; what is done with it is the
+    // user's call, so no dashboard export node - and the pair of nodes lands as
+    // one named, collapsed group rather than loose on the user's canvas.
+    const {json, ids} = appendExploreSourceToGraph(undefined, TOY_SOURCE);
+    const {nodes} = parse(json);
+    expect(nodes.map((n) => n.type)).toEqual([
+      'sql_source',
+      'modify_columns',
+      'group',
+    ]);
+    const group = nodes[2];
+    expect(group.nodeId).toBe(ids.groupNodeId);
+    expect((group.state as {name: string}).name).toBe(TOY_SOURCE.exportName);
+    expect(group.innerNodeIds).toEqual([ids.sourceNodeId, ids.columnsNodeId]);
+    // The group is the root; its inner nodes are reached by traversing it.
+    expect(parse(json).rootNodeIds).toEqual([ids.groupNodeId]);
+  });
+
+  it('leaves the group connectable, with the columns node as its output', () => {
+    // The end node - the inner node with no successor inside the group - is
+    // what the loader turns into the group's output port, and it is what a
+    // `dashboard` node would be connected to later. It is also where the
+    // declared column types live, so they survive the grouping.
+    const {json, ids} = appendExploreSourceToGraph(undefined, TOY_SOURCE);
+    const state = deserializeState(json, trace, sqlModules);
+    expect(state.rootNodes).toHaveLength(1);
+    const group = state.rootNodes[0];
+    expect(group.type).toBe('group');
+    expect(group.innerNodes?.map((n) => n.nodeId)).toEqual([
+      ids.sourceNodeId,
+      ids.columnsNodeId,
+    ]);
+    const end = group.innerNodes?.find((n) => n.nodeId === ids.columnsNodeId);
+    expect(end?.finalCols.map((c) => c.name)).toEqual(
+      TOY_SOURCE.columns.map((c) => c.name),
     );
   });
 
@@ -161,7 +208,7 @@ describe('appendExploreSourceToGraph', () => {
     expect(ids).toEqual({
       sourceNodeId: '3',
       columnsNodeId: '4',
-      exportNodeId: '5',
+      groupNodeId: '5',
     });
     expect(parse(json).nodes.map((n) => n.nodeId)).toEqual([
       '0',
@@ -233,8 +280,8 @@ describe('appendExploreSourceToGraph', () => {
 
     expect(after.nodes.slice(0, before.nodes.length)).toEqual(before.nodes);
     expect(after.nodes).toHaveLength(before.nodes.length + 3);
-    // The original root is still a root, and the new source has joined it.
-    expect(after.rootNodeIds).toEqual([...before.rootNodeIds, '3']);
+    // The original root is still a root, and the new group has joined it.
+    expect(after.rootNodeIds).toEqual([...before.rootNodeIds, '5']);
     // Layouts, labels and panel state are the user's business, not ours - and
     // the appended nodes deliberately get no layout, so the graph view places
     // them itself instead of stacking them on someone else.
@@ -248,21 +295,24 @@ describe('appendExploreSourceToGraph', () => {
     expect((after as {sidebarWidth?: number}).sidebarWidth).toBe(321);
   });
 
-  it('selects the node it just added', () => {
+  it('selects the group it just added', () => {
+    // The group, not the SQL node inside it: on the graph tab the inner nodes
+    // are not drawn, so selecting one would look like nothing happened.
     const before = exploreSourceGraph(DIR_TREE_SOURCE).json;
     const {json, ids} = appendExploreSourceToGraph(before, NODE_SOURCE);
-    expect(parse(json).selectedNodeId).toBe(ids.sourceNodeId);
+    expect(parse(json).selectedNodeId).toBe(ids.groupNodeId);
   });
 
-  it('numbers a repeated export name instead of publishing two alike', () => {
-    // Adding the same source twice is legitimate; two identically named
-    // entries in the dashboard's source picker are not distinguishable.
+  it('numbers a repeated group name instead of adding two alike', () => {
+    // Adding the same source twice is legitimate (two views of one table,
+    // filtered differently); two identically titled groups are not tellable
+    // apart on the canvas.
     const once = appendExploreSourceToGraph(undefined, TOY_SOURCE).json;
     const twice = appendExploreSourceToGraph(once, TOY_SOURCE).json;
     const thrice = appendExploreSourceToGraph(twice, TOY_SOURCE).json;
     const names = parse(thrice)
-      .nodes.filter((n) => n.type === 'dashboard')
-      .map((n) => (n.state as {exportName: string}).exportName);
+      .nodes.filter((n) => n.type === 'group')
+      .map((n) => (n.state as {name: string}).name);
     expect(names).toEqual(['Toy', 'Toy 2', 'Toy 3']);
   });
 
@@ -273,30 +323,29 @@ describe('appendExploreSourceToGraph', () => {
     expect(() => appendExploreSourceToGraph('not json', TOY_SOURCE)).toThrow();
   });
 
-  it('produces a graph the Data Explorer accepts and both exports survive', () => {
+  it("produces a graph the Data Explorer accepts, next to the command's", () => {
     const before = exploreSourceGraph(DIR_TREE_SOURCE).json;
     const {json, ids} = appendExploreSourceToGraph(before, NODE_SOURCE);
     expect(validateSerializedGraph(json).errors).toEqual([]);
 
     const state = deserializeState(json, trace, sqlModules);
-    // Two independent chains, so two roots - a merge that lost one would show
-    // up here as a chain silently missing from the graph.
+    // The replaced graph's chain and the appended group, so two roots - a merge
+    // that lost one would show up here as a chain silently missing.
     expect(state.rootNodes).toHaveLength(2);
-    expect(state.selectedNodes).toEqual(new Set([ids.sourceNodeId]));
+    expect(state.selectedNodes).toEqual(new Set([ids.groupNodeId]));
 
-    // Both dashboard nodes publish, under their own ids and names, with their
-    // columns known before anything has been executed.
+    // The graph that was already there still publishes its source, under its
+    // own id and name, with its columns known before anything has been
+    // executed - and the appended one publishes nothing.
     const dirs = dashboardRegistry.getExportedSource(
       parse(before).nodes[2].nodeId,
     );
-    const nodes = dashboardRegistry.getExportedSource(ids.exportNodeId);
     expect(dirs?.name).toBe(DIR_TREE_SOURCE.exportName);
-    expect(nodes?.name).toBe(NODE_SOURCE.exportName);
     expect(dirs?.columns.map((c) => c.name)).toEqual(
       DIR_TREE_SOURCE.columns.map((c) => c.name),
     );
-    expect(nodes?.columns.map((c) => c.name)).toEqual(
-      NODE_SOURCE.columns.map((c) => c.name),
-    );
+    expect(
+      parse(json).nodes.filter((n) => n.type === 'dashboard'),
+    ).toHaveLength(1);
   });
 });

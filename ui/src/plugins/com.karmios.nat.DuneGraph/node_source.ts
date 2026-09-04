@@ -94,6 +94,7 @@ export const NODE_SOURCE: ExploreSource = {
   icon: 'hub',
   title:
     "Add the build graph's nodes - rules and dependencies, with their " +
-    'timing - to the current Data Explorer graph, as a source you can put on ' +
-    'a dashboard. Node ids render as chips, as they do in the Dune query tab',
+    'timing - to the current Data Explorer graph, as a group you can query ' +
+    'further or export to a dashboard. Node ids render as chips, as they do ' +
+    'in the Dune query tab',
 };

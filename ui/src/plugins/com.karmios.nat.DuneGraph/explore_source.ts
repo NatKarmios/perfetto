@@ -19,13 +19,23 @@
  * between them is a table name, a column list and a name; the *shape* of the
  * hand-off is all here.
  *
- * Each source becomes three serialized Data Explorer nodes:
+ * Each source becomes a two-node chain:
  *
- *   sql_source (SELECT ... FROM <table>) -> modify_columns -> dashboard
+ *   sql_source (SELECT ... FROM <table>) -> modify_columns
  *
- * The middle node looks redundant - a source feeding the export directly is the
- * obvious graph - but it is what makes the hand-off work at all, and the reason
- * is invisible from the dashboard end:
+ * plus one node that says what is to be done with it, and that node is the
+ * whole difference between the two ways of applying a source:
+ *
+ * - The *replacing* path ({@link exploreSourceGraph}, the command) adds a
+ *   `dashboard` export node after the chain, because it also seeds a dashboard
+ *   that has to name a published source.
+ * - The *appending* path ({@link appendExploreSourceToGraph}, the panel's
+ *   buttons) wraps the chain in a named `group` instead, and exports nothing.
+ *   See the note on that function for why.
+ *
+ * The `modify_columns` node looks redundant - a source feeding the export
+ * directly is the obvious graph - but it is what makes the seeded dashboard
+ * work at all, and the reason is invisible from the dashboard end:
  *
  * - A dashboard item renders nothing until its data source reports columns
  *   (`DashboardGridView` bails out with "No columns" before it would ever ask
@@ -104,17 +114,26 @@ export interface ExploreSource {
   readonly title: string;
 }
 
-/** The three nodes a source becomes, by id. */
+/** The chain a source always becomes, by id. */
 export interface ExploreSourceIds {
   readonly sourceNodeId: string;
   readonly columnsNodeId: string;
+}
+
+/** ...plus the export node the replacing path publishes it through. */
+export interface ExportedSourceIds extends ExploreSourceIds {
   readonly exportNodeId: string;
 }
 
+/** ...plus the group the appending path wraps it in. */
+export interface GroupedSourceIds extends ExploreSourceIds {
+  readonly groupNodeId: string;
+}
+
 /** A serialized graph plus the ids the source's own nodes ended up with. */
-export interface ExploreSourceGraph {
+export interface ExploreSourceGraph<Ids extends ExploreSourceIds> {
   readonly json: string;
-  readonly ids: ExploreSourceIds;
+  readonly ids: Ids;
 }
 
 /**
@@ -144,11 +163,27 @@ export function exploreSelect(source: ExploreSource): string {
 }
 
 /**
- * A graph that is nothing but this source, with ids from zero - what the
- * "open it" path hands to `setActiveGraphJson`, replacing whatever was there.
+ * A graph that is nothing but this source and its dashboard export, with ids
+ * from zero - what the "open it" path hands to `setActiveGraphJson`, replacing
+ * whatever was there. The export node is the one a seeded dashboard's item
+ * names as its data source (see dir_tree_graph.ts).
+ *
+ * Ungrouped, unlike the appending path: this graph *is* the source, so a group
+ * would have nothing to tell it apart from, and it would hide the SELECT that
+ * the user is most likely to want to read or edit.
  */
-export function exploreSourceGraph(source: ExploreSource): ExploreSourceGraph {
-  const {nodes, ids} = sourceNodes(source, 0, source.exportName);
+export function exploreSourceGraph(
+  source: ExploreSource,
+): ExploreSourceGraph<ExportedSourceIds> {
+  const exportNodeId = '2';
+  const {nodes, ids} = chainNodes(source, 0, [exportNodeId]);
+  nodes.push({
+    nodeId: exportNodeId,
+    type: NodeType.kDashboard,
+    state: {exportName: source.exportName},
+    primaryInputId: ids.columnsNodeId,
+    nextNodes: [],
+  });
   return {
     json: JSON.stringify(
       {
@@ -162,31 +197,90 @@ export function exploreSourceGraph(source: ExploreSource): ExploreSourceGraph {
       undefined,
       2,
     ),
-    ids,
+    ids: {...ids, exportNodeId},
   };
 }
 
 /**
- * The same three nodes, merged into a graph the user already has - what the
- * panel's buttons hand back to `setActiveGraphJson`. Everything already in the
- * graph survives untouched, ids and all: the ids are what the user's dashboard
- * items name their data sources by, so renumbering anything would silently
- * detach them.
+ * The same chain, merged into a graph the user already has - what the panel's
+ * buttons hand back to `setActiveGraphJson`. Everything already in the graph
+ * survives untouched, ids and all: the ids are what the user's dashboard items
+ * name their data sources by, so renumbering anything would silently detach
+ * them.
+ *
+ * Two differences from the replacing path, both because this lands in the
+ * middle of somebody else's work:
+ *
+ * - **The chain goes in a group**, named after the source. Appending drops
+ *   nodes onto a canvas the user is arranging, and a bare pair of unplaced
+ *   nodes is two more things to tidy up; a group is one, it is collapsed, and
+ *   its title says where it came from. It also survives the round-trip: a
+ *   `group` node serializes as its name plus `innerNodeIds`, and its end node
+ *   (the `modify_columns`, the only inner node with no inner successor) becomes
+ *   its output port, so the group can be connected onwards like any node.
+ * - **Nothing is exported to a dashboard.** Publishing a source the user did
+ *   not ask to publish puts an entry in every dashboard's source picker, and
+ *   the button's job is to make the data *available*, not to decide what is
+ *   done with it. Connecting a `dashboard` node to the group's output is one
+ *   drag away when that is what is wanted.
  *
  * @param existing The current graph JSON (`getActiveGraphJson()`), or undefined
- *     when there is no graph yet - in which case this is just a seed.
+ *     when there is no graph yet - in which case this is just a seed, in the
+ *     same grouped, unexported shape.
  * @param source The source to add.
  * @returns The merged graph, and the ids the new nodes were given.
  */
 export function appendExploreSourceToGraph(
   existing: string | undefined,
   source: ExploreSource,
-): ExploreSourceGraph {
+): ExploreSourceGraph<GroupedSourceIds> {
+  const graph = parseGraph(existing);
+  const base = firstFreeNodeId(graph.nodes);
+  const {nodes, ids} = chainNodes(source, base, []);
+  const groupNodeId = String(base + 2);
+  nodes.push({
+    nodeId: groupNodeId,
+    type: NodeType.kGroup,
+    state: {name: uniqueName(groupNames(graph.nodes), source.exportName)},
+    // Order matters only in that the end node must be discoverable; the
+    // loader finds it by looking for the inner node with no inner successor.
+    innerNodeIds: [ids.sourceNodeId, ids.columnsNodeId],
+    nextNodes: [],
+  });
+  return {
+    json: JSON.stringify(
+      {
+        // Spread first: node layouts, labels, sidebar width and anything else
+        // the format grows are the user's, and are none of our business.
+        ...graph,
+        nodes: [...graph.nodes, ...nodes],
+        // The group is the root, not the source node inside it: inner nodes
+        // are reached by traversing the group, and listing one as a root would
+        // draw it in the outer graph as well.
+        rootNodeIds: [...graph.rootNodeIds, groupNodeId],
+        // Select what was just added, so the click visibly did something even
+        // on the graph tab. Nothing else is disturbed by this: the whole graph
+        // is rebuilt from JSON on every call anyway (see
+        // data_explorer_handoff.ts), so there is no in-place edit to preserve.
+        selectedNodeId: groupNodeId,
+      },
+      undefined,
+      2,
+    ),
+    ids: {...ids, groupNodeId},
+  };
+}
+
+/**
+ * The graph to append to: the parsed `existing`, or an empty one when there is
+ * nothing there yet. Throws on anything else, which is the right outcome - the
+ * caller turns it into a modal rather than replacing a graph it failed to
+ * understand.
+ */
+function parseGraph(existing: string | undefined): SerializedGraph {
   if (existing === undefined || existing.trim() === '') {
-    return exploreSourceGraph(source);
+    return {nodes: [], rootNodeIds: []};
   }
-  // Throws on malformed JSON, which is the right outcome: the caller turns it
-  // into a modal rather than replacing a graph it failed to understand.
   const graph = JSON.parse(existing) as Partial<SerializedGraph> | null;
   if (
     graph === null ||
@@ -199,46 +293,23 @@ export function appendExploreSourceToGraph(
         'nothing can be added to it.',
     );
   }
-  const {nodes, ids} = sourceNodes(
-    source,
-    firstFreeNodeId(graph.nodes),
-    uniqueExportName(graph.nodes, source.exportName),
-  );
-  return {
-    json: JSON.stringify(
-      {
-        // Spread first: node layouts, labels, sidebar width and anything else
-        // the format grows are the user's, and are none of our business.
-        ...graph,
-        nodes: [...graph.nodes, ...nodes],
-        rootNodeIds: [...graph.rootNodeIds, ids.sourceNodeId],
-        // Select what was just added, so the click visibly did something even
-        // on the graph tab. Nothing else is disturbed by this: the whole graph
-        // is rebuilt from JSON on every call anyway (see
-        // data_explorer_handoff.ts), so there is no in-place edit to preserve.
-        selectedNodeId: ids.sourceNodeId,
-      },
-      undefined,
-      2,
-    ),
-    ids,
-  };
+  return graph as SerializedGraph;
 }
 
 /**
- * The three nodes themselves, numbered from `base`. Edges are written from both
- * ends (`nextNodes` plus `primaryInputId`), which the graph format requires - a
- * one-sided edge is dropped on load.
+ * The chain itself, numbered from `base`. Edges are written from both ends
+ * (`nextNodes` plus `primaryInputId`), which the graph format requires - a
+ * one-sided edge is dropped on load - so the caller passes what follows the
+ * chain and the columns node is wired to it here.
  */
-function sourceNodes(
+function chainNodes(
   source: ExploreSource,
   base: number,
-  exportName: string,
+  nextAfterColumns: ReadonlyArray<string>,
 ): {nodes: SerializedNode[]; ids: ExploreSourceIds} {
   const ids: ExploreSourceIds = {
     sourceNodeId: String(base),
     columnsNodeId: String(base + 1),
-    exportNodeId: String(base + 2),
   };
   const nodes: SerializedNode[] = [
     {
@@ -270,14 +341,7 @@ function sourceNodes(
         })),
       },
       primaryInputId: ids.sourceNodeId,
-      nextNodes: [ids.exportNodeId],
-    },
-    {
-      nodeId: ids.exportNodeId,
-      type: NodeType.kDashboard,
-      state: {exportName},
-      primaryInputId: ids.columnsNodeId,
-      nextNodes: [],
+      nextNodes: [...nextAfterColumns],
     },
   ];
   return {nodes, ids};
@@ -301,21 +365,24 @@ function firstFreeNodeId(nodes: ReadonlyArray<SerializedNode>): number {
   return next;
 }
 
-/**
- * The export name to use, given what the graph already exports. Adding the same
- * source twice is legitimate (two views of the same table, filtered
- * differently), but two identically-named entries in the dashboard's source
- * picker are indistinguishable, so later ones are numbered.
- */
-function uniqueExportName(
-  nodes: ReadonlyArray<SerializedNode>,
-  wanted: string,
-): string {
-  const taken = new Set(
+/** The names the graph's groups already use, for {@link uniqueName}. */
+function groupNames(nodes: ReadonlyArray<SerializedNode>): Set<string> {
+  return new Set(
     nodes
-      .filter((n) => n.type === NodeType.kDashboard)
-      .map((n) => (n.state as {exportName?: string}).exportName),
+      .filter((n) => n.type === NodeType.kGroup)
+      .map((n) => (n.state as {name?: string}).name)
+      .filter((name): name is string => name !== undefined),
   );
+}
+
+/**
+ * The name to use, given what is already taken. Adding the same source twice is
+ * legitimate (two views of the same table, filtered differently), but two
+ * identically titled groups - or two identically named entries in the
+ * dashboard's source picker - are indistinguishable, so later ones are
+ * numbered.
+ */
+function uniqueName(taken: ReadonlySet<string>, wanted: string): string {
   if (!taken.has(wanted)) return wanted;
   for (let i = 2; ; i++) {
     const candidate = `${wanted} ${i}`;
