@@ -44,22 +44,22 @@ import {Icon} from '../../../../widgets/icon';
 import {Card} from '../../../../widgets/card';
 import {classNames} from '../../../../base/classnames';
 import {renderChartTypePickerGrid} from '../charts/chart_type_picker';
+import {
+  getChartableColumns,
+  getChartTypeDefinition,
+  getDefaultChartLabel,
+} from '../charts/chart_type_registry';
 import {Popup} from '../../../../widgets/popup';
 
 /**
- * Chart type options.
+ * Identifier of a chart type.
+ *
+ * Deliberately open rather than a closed union: the built-in types are the
+ * entries of the chart type registry, and other plugins can add their own via
+ * `registerChartType`. Use `isValidChartType` to check a string names a
+ * registered type.
  */
-export type ChartType =
-  | 'bar'
-  | 'histogram'
-  | 'line'
-  | 'scatter'
-  | 'pie'
-  | 'treemap'
-  | 'boxplot'
-  | 'heatmap'
-  | 'cdf'
-  | 'scorecard';
+export type ChartType = string;
 
 /**
  * Bar chart orientation options.
@@ -146,47 +146,6 @@ export function generateChartId(): string {
   return `chart-${crypto.randomUUID()}`;
 }
 
-/**
- * Generate a default display label for a chart config.
- * Used by both the node card and the chart view header.
- */
-export function getDefaultChartLabel(config: ChartConfig): string {
-  if (!config.column) return 'Not configured';
-  switch (config.chartType) {
-    case 'histogram':
-      return `Histogram: ${config.column}`;
-    case 'line':
-      return config.yColumn
-        ? `${config.yColumn} vs ${config.column}`
-        : `Line: ${config.column}`;
-    case 'scatter':
-      return config.yColumn
-        ? `${config.yColumn} vs ${config.column}`
-        : `Scatter: ${config.column}`;
-    case 'boxplot':
-      return config.measureColumn
-        ? `${config.measureColumn} by ${config.column}`
-        : `Boxplot: ${config.column}`;
-    case 'heatmap':
-      return config.yColumn
-        ? `${config.column} vs ${config.yColumn}`
-        : `Heatmap: ${config.column}`;
-    case 'cdf':
-      return `CDF: ${config.column}`;
-    case 'scorecard': {
-      const agg = config.aggregation ?? 'COUNT_DISTINCT';
-      return `${agg}(${config.measureColumn ?? config.column})`;
-    }
-    case 'pie':
-    case 'treemap':
-    case 'bar': {
-      const agg = config.aggregation ?? 'COUNT';
-      if (agg === 'COUNT') return `Count by ${config.column}`;
-      return `${agg}(${config.measureColumn ?? config.column}) by ${config.column}`;
-    }
-  }
-}
-
 // Serializable node configuration.
 export interface VisualisationNodeAttrs {
   /** Array of chart configurations - multiple charts per node */
@@ -243,24 +202,9 @@ export class VisualisationNode implements QueryNode {
     return this.sourceCols;
   }
 
-  /**
-   * Get columns suitable for the primary column of a given chart type.
-   * Histogram, line, and scatter require numeric columns for their primary
-   * axis; all other types accept any column.
-   */
-  getChartableColumns(chartType: ChartType): ColumnInfo[] {
-    if (
-      chartType === 'histogram' ||
-      chartType === 'line' ||
-      chartType === 'scatter' ||
-      chartType === 'cdf'
-    ) {
-      return this.sourceCols.filter((col) => {
-        const type = col.type;
-        return type !== undefined && isQuantitativeType(type);
-      });
-    }
-    return this.sourceCols;
+  /** Columns suitable for the primary column of a given chart type. */
+  getChartableColumns(chartType: ChartType): ReadonlyArray<ColumnInfo> {
+    return getChartableColumns(chartType, this.sourceCols);
   }
 
   /**
@@ -343,7 +287,7 @@ export class VisualisationNode implements QueryNode {
     // Chart cards container
     const chartCards = this.attrs.chartConfigs.map((config) => {
       const chartTypeIcon =
-        config.chartType === 'bar' ? 'bar_chart' : 'ssid_chart';
+        getChartTypeDefinition(config.chartType)?.icon ?? 'ssid_chart';
       const defaultLabel = getDefaultChartLabel(config);
 
       // Filters matching this chart's column

@@ -15,10 +15,10 @@
 import m from 'mithril';
 import type {ChartConfig, BarOrientation} from '../nodes/visualisation_node';
 import {
-  CHART_TYPES,
   getChartTypeDefinition,
+  getChartTypes,
   isValidChartType,
-} from '../nodes/chart_type_registry';
+} from './chart_type_registry';
 import type {ChartAggregation} from '../../../../components/widgets/charts/chart_utils';
 import {Select} from '../../../../widgets/select';
 import {Form, FormLabel} from '../../../../widgets/form';
@@ -134,7 +134,7 @@ export function renderChartConfigPopup(
                 });
               },
             },
-            CHART_TYPES.map((chartTypeDef) =>
+            getChartTypes().map((chartTypeDef) =>
               m(
                 'option',
                 {

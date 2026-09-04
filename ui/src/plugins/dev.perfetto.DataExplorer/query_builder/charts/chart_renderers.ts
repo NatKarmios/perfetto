@@ -13,11 +13,8 @@
 // limitations under the License.
 
 import m from 'mithril';
-import {
-  type ChartConfig,
-  type ChartType,
-  getDefaultChartLabel,
-} from '../nodes/visualisation_node';
+import type {ChartConfig, ChartType} from '../nodes/visualisation_node';
+import type {Trace} from '../../../../public/trace';
 import type {ColumnInfo} from '../column_info';
 import {BarChart} from '../../../../components/widgets/charts/bar_chart';
 import {Histogram} from '../../../../components/widgets/charts/histogram';
@@ -30,20 +27,19 @@ import {
 } from '../../../../components/widgets/charts/treemap';
 import {BoxplotChart} from '../../../../components/widgets/charts/boxplot';
 import {HeatmapChart} from '../../../../components/widgets/charts/heatmap';
-import {SQLBarChartLoader} from '../../../../components/widgets/charts/bar_chart_loader';
-import {SQLHistogramLoader} from '../../../../components/widgets/charts/histogram_loader';
-import {SQLLineChartLoader} from '../../../../components/widgets/charts/line_chart_loader';
-import {SQLScatterChartLoader} from '../../../../components/widgets/charts/scatterplot_loader';
-import {SQLPieChartLoader} from '../../../../components/widgets/charts/pie_chart_loader';
-import {SQLTreemapLoader} from '../../../../components/widgets/charts/treemap_loader';
-import {SQLBoxplotLoader} from '../../../../components/widgets/charts/boxplot_loader';
-import {SQLHeatmapLoader} from '../../../../components/widgets/charts/heatmap_loader';
-import {SQLCdfLoader} from '../../../../components/widgets/charts/cdf_loader';
-import {SQLSingleValueLoader} from '../../../../components/widgets/charts/single_value_loader';
+import type {SQLBarChartLoader} from '../../../../components/widgets/charts/bar_chart_loader';
+import type {SQLHistogramLoader} from '../../../../components/widgets/charts/histogram_loader';
+import type {SQLLineChartLoader} from '../../../../components/widgets/charts/line_chart_loader';
+import type {SQLScatterChartLoader} from '../../../../components/widgets/charts/scatterplot_loader';
+import type {SQLPieChartLoader} from '../../../../components/widgets/charts/pie_chart_loader';
+import type {SQLTreemapLoader} from '../../../../components/widgets/charts/treemap_loader';
+import type {SQLBoxplotLoader} from '../../../../components/widgets/charts/boxplot_loader';
+import type {SQLHeatmapLoader} from '../../../../components/widgets/charts/heatmap_loader';
+import type {SQLCdfLoader} from '../../../../components/widgets/charts/cdf_loader';
+import type {SQLSingleValueLoader} from '../../../../components/widgets/charts/single_value_loader';
 import {Scorecard} from '../../../../components/widgets/charts/scorecard';
 import {EmptyState} from '../../../../widgets/empty_state';
 import type {SqlValue} from '../../../../trace_processor/query_result';
-import type {Engine} from '../../../../trace_processor/engine';
 import {isIntegerColumn, getNumericFormatter} from './chart_column_formatters';
 import type {ChartAggregation} from '../../../../components/widgets/charts/chart_utils';
 
@@ -84,6 +80,8 @@ export interface ChartLoaderEntry {
   heatmapLoader?: SQLHeatmapLoader;
   cdfLoader?: SQLCdfLoader;
   singleValueLoader?: SQLSingleValueLoader;
+  /** Escape hatch for chart types with no dedicated field above. */
+  custom?: {dispose(): void};
 }
 
 /**
@@ -104,14 +102,28 @@ export interface ChartColumnProvider {
 
 /**
  * Minimal context passed to chart render functions.
- * Avoids passing the full ChartViewAttrs (which includes Trace and
+ * Avoids passing the full ChartViewAttrs (which includes the
  * QueryExecutionService that renderers don't need).
  */
 export interface ChartRenderContext {
+  readonly trace: Trace;
   readonly node: ChartColumnProvider;
   readonly onFilterChange?: () => void;
   /** When set, charts that support grid lines will render them. */
   readonly gridLines?: 'horizontal' | 'vertical' | 'both';
+}
+
+/**
+ * Placeholder for a chart whose type isn't in the registry — e.g. a persisted
+ * dashboard item naming a chart type contributed by a plugin that isn't
+ * loaded.
+ */
+export function renderUnknownChartType(chartType: ChartType): m.Child {
+  return m(
+    EmptyState,
+    {icon: 'help', title: `Unknown chart type "${chartType}"`},
+    'No plugin has registered this chart type.',
+  );
 }
 
 /** Dispose all loaders on a ChartLoaderEntry. */
@@ -126,6 +138,7 @@ export function disposeChartLoaders(entry: ChartLoaderEntry): void {
   entry.heatmapLoader?.dispose();
   entry.cdfLoader?.dispose();
   entry.singleValueLoader?.dispose();
+  entry.custom?.dispose();
 }
 
 /** Build a stable cache key for a chart loader entry. */
@@ -144,139 +157,6 @@ export function buildLoaderCacheKey(
     config.sizeColumn ?? '',
     ...extras,
   ].join('|');
-}
-
-/** Create the appropriate SQL loader(s) for a chart config. */
-export function createChartLoaders(
-  engine: Engine,
-  query: string,
-  config: ChartConfig,
-  entry: ChartLoaderEntry,
-): void {
-  switch (config.chartType) {
-    case 'bar':
-      entry.barLoader = new SQLBarChartLoader({
-        engine,
-        query,
-        dimensionColumn: config.column,
-        measureColumn: config.measureColumn ?? config.column,
-        seriesColumn: config.groupColumn,
-      });
-      break;
-    case 'histogram':
-      entry.histogramLoader = new SQLHistogramLoader({
-        engine,
-        query: `SELECT ${config.column} FROM (${query})`,
-        valueColumn: config.column,
-      });
-      break;
-    case 'line':
-      if (config.yColumn) {
-        entry.lineLoader = new SQLLineChartLoader({
-          engine,
-          query,
-          xColumn: config.column,
-          yColumn: config.yColumn,
-          seriesColumn: config.groupColumn,
-        });
-      }
-      break;
-    case 'scatter':
-      if (config.yColumn) {
-        entry.scatterLoader = new SQLScatterChartLoader({
-          engine,
-          query,
-          xColumn: config.column,
-          yColumn: config.yColumn,
-          sizeColumn: config.sizeColumn,
-          seriesColumn: config.groupColumn,
-        });
-      }
-      break;
-    case 'pie':
-      entry.pieLoader = new SQLPieChartLoader({
-        engine,
-        query,
-        dimensionColumn: config.column,
-        measureColumn: config.measureColumn ?? config.column,
-      });
-      break;
-    case 'treemap':
-      entry.treemapLoader = new SQLTreemapLoader({
-        engine,
-        query,
-        labelColumn: config.column,
-        sizeColumn: config.measureColumn ?? config.column,
-        groupColumn: config.groupColumn,
-      });
-      break;
-    case 'boxplot':
-      if (config.yColumn) {
-        entry.boxplotLoader = new SQLBoxplotLoader({
-          engine,
-          query,
-          categoryColumn: config.column,
-          valueColumn: config.yColumn,
-        });
-      }
-      break;
-    case 'heatmap':
-      if (config.yColumn) {
-        entry.heatmapLoader = new SQLHeatmapLoader({
-          engine,
-          query,
-          xColumn: config.column,
-          yColumn: config.yColumn,
-          valueColumn: config.measureColumn ?? config.column,
-        });
-      }
-      break;
-    case 'cdf':
-      entry.cdfLoader = new SQLCdfLoader({
-        engine,
-        query,
-        valueColumn: config.column,
-        seriesColumn: config.groupColumn,
-      });
-      break;
-    case 'scorecard':
-      entry.singleValueLoader = new SQLSingleValueLoader({
-        engine,
-        query,
-        measureColumn: config.measureColumn ?? config.column,
-      });
-      break;
-  }
-}
-
-/** Render the appropriate chart widget for a config + loader entry. */
-export function renderChartByType(
-  ctx: ChartRenderContext,
-  config: ChartConfig,
-  entry: ChartLoaderEntry,
-): m.Child {
-  switch (config.chartType) {
-    case 'bar':
-      return renderBarChart(ctx, config, entry);
-    case 'histogram':
-      return renderHistogram(ctx, config, entry);
-    case 'line':
-      return renderLineChart(ctx, config, entry);
-    case 'scatter':
-      return renderScatterChart(ctx, config, entry);
-    case 'pie':
-      return renderPieChart(ctx, config, entry);
-    case 'treemap':
-      return renderTreemap(ctx, config, entry);
-    case 'boxplot':
-      return renderBoxplot(ctx, config, entry);
-    case 'heatmap':
-      return renderHeatmap(ctx, config, entry);
-    case 'cdf':
-      return renderCdf(ctx, config, entry);
-    case 'scorecard':
-      return renderScorecard(ctx, config, entry);
-  }
 }
 
 export function renderBarChart(
@@ -553,6 +433,7 @@ export function renderScorecard(
   ctx: ChartRenderContext,
   config: ChartConfig,
   entry: ChartLoaderEntry,
+  label: string,
 ): m.Child {
   if (!entry.singleValueLoader) {
     return m(EmptyState, {icon: 'numbers', title: 'No data to display'});
@@ -567,7 +448,7 @@ export function renderScorecard(
   );
 
   return m(Scorecard, {
-    label: getDefaultChartLabel(config),
+    label,
     value: data?.value,
     isPending,
     fillParent: true,

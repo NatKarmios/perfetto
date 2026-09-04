@@ -669,6 +669,12 @@
     }
   }
 
+  // Fallback thumbnail for chart types that supply no SVG preview.
+  &__preview-icon {
+    font-size: 32px;
+    color: var(--pf-color-text-muted);
+  }
+
   &__label {
     font-size: 11px;
     font-weight: 500;
