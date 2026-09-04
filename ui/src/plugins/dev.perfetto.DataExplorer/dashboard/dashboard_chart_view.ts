@@ -38,6 +38,7 @@ import {
 import {ResultsPanelEmptyState} from '../query_builder/widgets';
 import type {SqlValue} from '../../../trace_processor/query_result';
 import {isQuantitativeType} from '../../../trace_processor/perfetto_sql_type';
+import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
 
 export interface DashboardChartViewAttrs {
   trace: Trace;
@@ -188,7 +189,7 @@ class DashboardChartAdapter implements ChartColumnProvider {
     m.redraw();
   }
 
-  addRangeFilter(column: string, min: number, max: number): void {
+  addRangeFilter(column: string, min: SqlValue, max: SqlValue): void {
     this.clearColumnLocally(column);
     this.filters.push({column, op: '>=', value: min});
     this.filters.push({column, op: '<', value: max});
@@ -378,7 +379,7 @@ export class DashboardChartView implements m.ClassComponent<DashboardChartViewAt
  * Same-column '=' filters are combined with OR (IN clause).
  * Range filters and cross-column conditions are combined with AND.
  */
-function buildWhereClause(
+export function buildWhereClause(
   filters: ReadonlyArray<DashboardBrushFilter>,
 ): string {
   if (filters.length === 0) return '';
@@ -404,22 +405,16 @@ function buildWhereClause(
         hasNull = true;
       } else {
         // >= or <
-        rangeConditions.push(`${column} ${f.op} ${f.value}`);
+        rangeConditions.push(`${column} ${f.op} ${sqlValue(f.value ?? null)}`);
       }
     }
 
     if (eqValues.length > 0 || hasNull) {
       const parts: string[] = [];
       if (eqValues.length === 1) {
-        const v = eqValues[0];
-        parts.push(
-          `${column} = ${typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v}`,
-        );
+        parts.push(`${column} = ${sqlValue(eqValues[0])}`);
       } else if (eqValues.length > 1) {
-        const formatted = eqValues.map((v) =>
-          typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v,
-        );
-        parts.push(`${column} IN (${formatted.join(', ')})`);
+        parts.push(`${column} IN (${eqValues.map(sqlValue).join(', ')})`);
       }
       if (hasNull) {
         parts.push(`${column} IS NULL`);

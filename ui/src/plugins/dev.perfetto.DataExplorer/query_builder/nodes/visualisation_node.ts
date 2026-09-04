@@ -744,7 +744,7 @@ export class VisualisationNode implements QueryNode {
    * Add a range filter (for histogram bins).
    * Creates two filters: column >= min AND column < max
    */
-  addRangeFilter(column: string, min: number, max: number): void {
+  addRangeFilter(column: string, min: SqlValue, max: SqlValue): void {
     if (!this.attrs.chartFilters) {
       this.attrs.chartFilters = [];
     }
