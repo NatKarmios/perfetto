@@ -1042,13 +1042,18 @@
 
 // The directory Explorer rendered as a Data Explorer chart (see
 // dir_explorer_chart.ts). `.pf-dune-graph` is `height: 100%`, which needs a
-// definite height to resolve against; a chart card gives its content none, so
-// this wrapper supplies one and the tree scrolls inside it the way it does in
-// the side panel.
+// definite height to resolve against - and a chart card does give it one:
+// `.pf-dashboard__chart` is absolutely positioned with a height from the grid
+// and `.pf-dashboard__chart-content` is `flex: 1; min-height: 0`. So this fills
+// the card rather than fixing a height of its own, and the tree scrolls inside
+// it the way it does in the side panel.
 .pf-dune-dir-chart {
-  height: 320px;
-  // A column, because the tree can be preceded by a note about the row cap. The
-  // pane takes what is left rather than its own 320px.
+  height: 100%;
+  // So the flex children below can shrink under their content instead of
+  // pushing the card's scroll out.
+  min-height: 0;
+  // A column, because the tree can be preceded by a note. The pane takes
+  // whatever is left over.
   display: flex;
   flex-direction: column;
 
@@ -1072,13 +1077,13 @@
 }
 
 // The graph pane rendered as a Data Explorer chart (see node_graph_chart.ts).
-// Same problem and same answer as `.pf-dune-dir-chart` above: the pane sizes
-// itself against its parent (`.pf-dune-graph__graph` is `flex: 1; min-height:
-// 0`), and a chart card gives its content no definite height to resolve
-// against, so this wrapper supplies one. Matched to the directory chart's so
-// that two Dune cards side by side in a dashboard line up.
+// Same answer as `.pf-dune-dir-chart` above: the pane sizes itself against its
+// parent (`.pf-dune-graph__graph` is `flex: 1; min-height: 0`), and the chart
+// card supplies the height, so this fills the card. Resizing the card resizes
+// the graph, which is the point of being able to resize it.
 .pf-dune-node-chart {
-  height: 320px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 
