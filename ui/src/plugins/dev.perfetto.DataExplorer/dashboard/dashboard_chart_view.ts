@@ -29,6 +29,7 @@ import {
 import {
   createChartLoaders,
   getChartableColumns,
+  getChartTypeDefinition,
   renderChartByType,
 } from '../query_builder/charts/chart_type_registry';
 import type {ColumnInfo} from '../query_builder/column_info';
@@ -425,13 +426,15 @@ export function buildWhereClause(
 }
 
 /**
- * Create a default ChartConfig for a data source, picking the first column.
+ * Create a default ChartConfig for a data source, picking the first column -
+ * unless the chart type knows better (see `ChartTypeDefinition.defaultColumn`).
  */
 export function createDefaultChartConfig(
   columns: ReadonlyArray<{name: string}>,
   chartType: ChartType = 'bar',
 ): ChartConfig {
-  const column = columns.length > 0 ? columns[0].name : '';
+  const preferred = getChartTypeDefinition(chartType)?.defaultColumn?.(columns);
+  const column = preferred ?? (columns.length > 0 ? columns[0].name : '');
   return {
     id: generateChartId(),
     column,

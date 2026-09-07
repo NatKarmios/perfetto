@@ -119,6 +119,23 @@ export interface ChartTypeDefinition {
   readonly description: string;
 
   /**
+   * The column a freshly added chart of this type should start on, given the
+   * columns its query returns, or undefined to let the host choose generically.
+   *
+   * The generic choice is "the first column that isn't a number", which suits a
+   * chart whose primary column is a category to aggregate by. A chart type
+   * whose primary column means something more specific - an id joining the rows
+   * to somewhere else, say - will otherwise land on a column it cannot use and
+   * have to ask the user to correct it before it can draw anything.
+   *
+   * Only a starting point: it is written into the chart's config, so it appears
+   * in the column picker as an ordinary choice the user can change.
+   */
+  readonly defaultColumn?: (
+    columns: ReadonlyArray<{readonly name: string}>,
+  ) => string | undefined;
+
+  /**
    * Create the SQL loader(s) this chart needs and stash them on `entry`, from
    * where the render function picks them up. Charts whose config is not yet
    * complete (e.g. a line chart with no Y column) create nothing.

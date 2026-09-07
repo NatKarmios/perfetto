@@ -505,10 +505,16 @@ export class VisualisationNode implements QueryNode {
     );
 
     // Find a good default column:
+    // 0. Let the chart type choose, if its primary column means something
+    //    specific enough that the generic rules below would pick wrongly. It
+    //    wins outright rather than being filtered by "prefer unused": two
+    //    charts reading the same id column is normal, not a collision.
     // 1. Prefer unused columns
     // 2. Prefer non-numeric columns (better for aggregation chart types)
     // 3. Fall back to first available column
     const availableCols = this.sourceCols;
+    const preferred =
+      getChartTypeDefinition(chartType)?.defaultColumn?.(availableCols);
     const unusedCols = availableCols.filter((c) => !usedColumns.has(c.name));
     const colsToCheck = unusedCols.length > 0 ? unusedCols : availableCols;
 
@@ -516,7 +522,8 @@ export class VisualisationNode implements QueryNode {
     const stringCol = colsToCheck.find(
       (c) => c.type === undefined || !isQuantitativeType(c.type),
     );
-    const defaultColumn = stringCol?.name ?? colsToCheck[0]?.name ?? '';
+    const defaultColumn =
+      preferred ?? stringCol?.name ?? colsToCheck[0]?.name ?? '';
 
     const newChart: ChartConfig = {
       id: generateChartId(),
