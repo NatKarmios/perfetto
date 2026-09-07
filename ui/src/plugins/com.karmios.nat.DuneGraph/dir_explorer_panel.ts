@@ -99,7 +99,7 @@ import {bulkNodeActions} from './node_tree_actions';
  * at the top level under the empty prefix (see dir_tree.ts), and a blank row
  * reads as a bug. Same label the Data Explorer hand-off uses for the same row -
  * kept in step by eye rather than shared, since that one has to be inlined into
- * generated SQL (see dir_tree_graph.ts).
+ * generated SQL (see dir_tree_source.ts).
  */
 const TOP_LEVEL_LABEL = '(top level)';
 

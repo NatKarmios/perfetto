@@ -61,7 +61,7 @@ export const DUNE_NODE_ID_COLUMN = 'node_id';
 /**
  * The type a column of graph-node ids should declare to render as a node chip.
  * Exported so a builder emitting serialized Data Explorer JSON (see
- * dir_tree_graph.ts for the shape) can stamp it on a column rather than
+ * dir_tree_source.ts for the shape) can stamp it on a column rather than
  * spelling the type out.
  */
 export const DUNE_NODE_JOINID: PerfettoSqlType = {

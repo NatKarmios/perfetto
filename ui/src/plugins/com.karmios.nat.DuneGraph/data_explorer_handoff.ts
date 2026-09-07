@@ -20,7 +20,7 @@
  * the open page (see panel.ts).
  *
  * The JSON they hand over lives in explore_source.ts and its two sources
- * (dir_tree_graph.ts, node_source.ts).
+ * (dir_tree_source.ts, node_source.ts).
  *
  * This is the only place DuneGraph reaches into another plugin. It goes through
  * the Data Explorer's public `getActiveGraphJson` / `setActiveGraphJson` (the
@@ -34,7 +34,7 @@ import type {Trace} from '../../public/trace';
 import {showModal} from '../../widgets/modal';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import type {DuneGraphController} from './controller';
-import {DIR_TREE_SOURCE} from './dir_tree_graph';
+import {DIR_TREE_SOURCE} from './dir_tree_source';
 import type {ExploreSource} from './explore_source';
 import {appendExploreSourceToGraph} from './explore_source';
 import {NODE_SOURCE} from './node_source';

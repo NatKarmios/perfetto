@@ -15,7 +15,7 @@
 /**
  * One of the mirror's tables, offered to the Data Explorer as a data source the
  * user can query and put on a dashboard - the mechanism shared by every such
- * offer (dir_tree_graph.ts's directories, node_source.ts's nodes). What varies
+ * offer (dir_tree_source.ts's directories, node_source.ts's nodes). What varies
  * between them is a table name, a column list and a name; the *shape* of the
  * hand-off is all here.
  *

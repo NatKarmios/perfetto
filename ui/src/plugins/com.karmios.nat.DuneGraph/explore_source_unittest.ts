@@ -37,7 +37,7 @@ import {
 } from '../dev.perfetto.DataExplorer/json_handler';
 import type {SerializedNode} from '../dev.perfetto.DataExplorer/json_handler';
 import type {Trace} from '../../public/trace';
-import {DIR_TREE_SOURCE} from './dir_tree_graph';
+import {DIR_TREE_SOURCE} from './dir_tree_source';
 import type {ExploreSource} from './explore_source';
 import {
   appendExploreSourceToGraph,

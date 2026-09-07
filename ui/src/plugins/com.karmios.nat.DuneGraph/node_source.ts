@@ -83,7 +83,7 @@ export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
  * "Nodes" button, which adds it to the graph the user is already building and
  * leaves the presentation to them, and the directory-tree command, whose seeded
  * graph is this source - the tree it opens is a chart over *rows*, and these
- * are the rows that carry a node id (see dir_tree_graph.ts).
+ * are the rows that carry a node id (see dir_tree_source.ts).
  */
 export const NODE_SOURCE: ExploreSource = {
   from: DUNE_NODE_TABLE,

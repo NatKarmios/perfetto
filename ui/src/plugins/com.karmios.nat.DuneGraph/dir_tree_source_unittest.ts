@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /**
- * The directory source (dir_tree_graph.ts): its SELECT, and the types it
+ * The directory source (dir_tree_source.ts): its SELECT, and the types it
  * declares for the columns that SELECT returns.
  *
  * The SELECT and the column list come from one declaration, so what is checked
@@ -26,7 +26,7 @@
  * in explore_source_unittest.ts, which is where the mechanism lives.
  */
 
-import {DIR_TREE_COLUMNS, DIR_TREE_SQL} from './dir_tree_graph';
+import {DIR_TREE_COLUMNS, DIR_TREE_SQL} from './dir_tree_source';
 import {exploreColumnType} from './explore_source';
 
 describe('DIR_TREE_SQL', () => {
