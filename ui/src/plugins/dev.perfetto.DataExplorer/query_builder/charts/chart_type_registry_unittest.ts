@@ -23,6 +23,7 @@ import {
   renderChartByType,
 } from './chart_type_registry';
 import {renderChartTypePickerGrid} from './chart_type_picker';
+import {createDefaultChartConfig} from '../../dashboard/dashboard_chart_view';
 import type {ChartLoaderEntry, ChartRenderContext} from './chart_renderers';
 import type {ChartConfig} from '../nodes/visualisation_node';
 
@@ -184,5 +185,38 @@ describe('renderChartTypePickerGrid', () => {
     const cards = root.querySelectorAll('.pf-chart-type-picker__card');
     expect(cards.length).toEqual(getChartTypes().length);
     expect(root.textContent).toContain(`Label for ${TEST_TYPE}`);
+  });
+});
+
+describe('defaultColumn', () => {
+  const cols = [{name: 'dur'}, {name: 'name'}, {name: 'node_id'}];
+
+  test('a chart type without one gets the host default', () => {
+    using _reg = registerChartType(makeDefinition());
+    // The generic rule for a dashboard chart: the first column, whatever it is.
+    expect(createDefaultChartConfig(cols, TEST_TYPE).column).toEqual('dur');
+  });
+
+  test('a chart type with one starts on the column it names', () => {
+    using _reg = registerChartType(
+      makeDefinition(TEST_TYPE, {
+        defaultColumn: (c) => c.find((x) => x.name === 'node_id')?.name,
+      }),
+    );
+    expect(createDefaultChartConfig(cols, TEST_TYPE).column).toEqual('node_id');
+  });
+
+  test('falls back when the hook finds nothing it wants', () => {
+    using _reg = registerChartType(
+      makeDefinition(TEST_TYPE, {defaultColumn: () => undefined}),
+    );
+    expect(createDefaultChartConfig(cols, TEST_TYPE).column).toEqual('dur');
+  });
+
+  test('is not consulted for a chart type that is not registered', () => {
+    // No throw, and the host's own choice stands.
+    expect(createDefaultChartConfig(cols, 'test-missing').column).toEqual(
+      'dur',
+    );
   });
 });
