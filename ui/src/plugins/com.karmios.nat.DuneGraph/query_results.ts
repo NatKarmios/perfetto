@@ -252,6 +252,43 @@ export function formatExtraParts(
 }
 
 /**
+ * One "extras" value as text: a `dur_ns`/`action_dur_ns` column as a human
+ * duration, a chip column (e.g. `dst` when grouping by `src`) as its node's
+ * label via `nodeLabel`, anything else as the raw value.
+ *
+ * Only the chip columns take a label: their raw value is an internal graph
+ * index that says nothing to the reader. A `slice_id` resolves to a node just
+ * as well, but it is an id worth reading in its own right (and the one you'd
+ * take to a `slice` query), so labelling it there would only restate the leaf's
+ * own label under a misleading name. `nodeLabel` returning undefined (a
+ * dangling id) also falls back to the raw value.
+ */
+export function formatExtraValue(
+  col: string,
+  value: SqlValue,
+  nodeLabel: (col: string, value: SqlValue) => string | undefined,
+): string {
+  if (DURATION_COLS.has(col)) {
+    const text = durationText(value);
+    if (text !== undefined) return text;
+  }
+  if (CHIP_COLS.includes(col)) {
+    const label = nodeLabel(col, value);
+    if (label !== undefined) return label;
+  }
+  return String(value);
+}
+
+// `value` (a `dur_ns`-shaped column) as a human duration, or undefined if it
+// isn't a number/bigint (e.g. NULL).
+function durationText(value: SqlValue): string | undefined {
+  if (typeof value !== 'number' && typeof value !== 'bigint') {
+    return undefined;
+  }
+  return formatDurNs(Number(value));
+}
+
+/**
  * Runs SQL over the Dune graph tables and renders the result, letting the user
  * push result rows into the graph selection - per-row via a ＋/－ toggle on a
  * node cell, or in bulk via the toolbar. Surface-agnostic: it owns the whole
@@ -535,7 +572,7 @@ export class DuneQueryResults {
 
   // Muted "×N" (when duplicates were merged) plus, when enabled, the row's
   // other columns - `forced_by_*` specially formatted (see `formatExtraParts`),
-  // the rest as "col=value" text, a node-bearing sibling column (e.g. `dst` when
+  // the rest as "col=value" text, a chip sibling column (e.g. `dst` when
   // grouping by `src`) rendering via its own node label rather than a raw id.
   private renderTreeExtras(
     response: QueryResponse,
@@ -545,33 +582,12 @@ export class DuneQueryResults {
       this.extraCols(response),
       entry.row,
       entry.count,
-      (col, value) => this.formatExtraValue(col, value),
+      (col, value) =>
+        formatExtraValue(col, value, (c, v) => this.nodeLabelFor(c, v)),
     );
     if (parts.length === 0) return undefined;
     const text = parts.join(', ');
     return m('span.pf-dune-query__extras', {title: text}, text);
-  }
-
-  // A `dur_ns`/`action_dur_ns` column renders as a human duration; a
-  // node-bearing column (e.g. `dst` when grouping by `src`) as its node's label;
-  // anything else as the raw value. `nodeLabelFor` resolves nothing for a column
-  // that isn't node-bearing, so an arbitrary numeric column (a `distance`, say)
-  // can't false-positive its way into a label.
-  private formatExtraValue(col: string, value: SqlValue): string {
-    if (DURATION_COLS.has(col)) {
-      const text = this.durationText(value);
-      if (text !== undefined) return text;
-    }
-    return this.nodeLabelFor(col, value) ?? String(value);
-  }
-
-  // `value` (a `dur_ns`-shaped column) as a human duration, or undefined if
-  // it isn't a number/bigint (e.g. NULL).
-  private durationText(value: SqlValue): string | undefined {
-    if (typeof value !== 'number' && typeof value !== 'bigint') {
-      return undefined;
-    }
-    return formatDurNs(Number(value));
   }
 
   // Columns shown as a tree leaf's "extras" suffix: every result column
@@ -839,8 +855,8 @@ export class DuneQueryResults {
   private durationDef(col: string): ColumnDef {
     return {
       title: col,
-      cellRenderer: (value) => this.durationText(value) ?? '',
-      cellFormatter: (value) => this.durationText(value) ?? String(value),
+      cellRenderer: (value) => durationText(value) ?? '',
+      cellFormatter: (value) => durationText(value) ?? String(value),
     };
   }
 
@@ -924,6 +940,8 @@ export class DuneQueryResults {
     return cols;
   }
 
+  // The label of the node a chip column's cell names, or undefined if it names
+  // none (a dangling id, or a NULL/non-numeric cell).
   private nodeLabelFor(col: string, value: SqlValue): string | undefined {
     const node = this.nodeForValue(col, value);
     return node === undefined ? undefined : this.controller.graph.labelOf(node);

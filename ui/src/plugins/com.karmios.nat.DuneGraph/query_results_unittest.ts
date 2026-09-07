@@ -18,7 +18,12 @@ import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
 import {dep, rule, testGraph} from './graph_test_helper';
 import type {TreeLeafEntry} from './query_results';
-import {buildNodeTreeItems, formatExtraParts, sliceLink} from './query_results';
+import {
+  buildNodeTreeItems,
+  formatExtraParts,
+  formatExtraValue,
+  sliceLink,
+} from './query_results';
 import type {PathTreeItem} from './path_tree';
 
 // Projects a `PathTreeItem<TreeLeafEntry>` down to a plain, easy-to-assert-on
@@ -232,6 +237,42 @@ describe('formatExtraParts', () => {
     expect(formatExtraParts(['a', 'b', 'c'], row, 1, formatValue)).toEqual([
       'c=5',
     ]);
+  });
+});
+
+describe('formatExtraValue', () => {
+  // Stands in for the panel's `nodeLabelFor`: every id here resolves to a node,
+  // so a column showing a raw value is doing so by column, not for want of a
+  // node to name.
+  const nodeLabel = (_col: string, value: SqlValue) => `node-${String(value)}`;
+
+  it('labels a chip column, whose raw id means nothing on its own', () => {
+    for (const col of ['node_id', 'src', 'dst']) {
+      expect(formatExtraValue(col, 3, nodeLabel)).toEqual('node-3');
+    }
+  });
+
+  it('keeps a slice_id raw rather than restating the node label', () => {
+    expect(formatExtraValue('slice_id', 512, nodeLabel)).toEqual('512');
+  });
+
+  it('falls back to the raw id for a chip column that resolves to no node', () => {
+    expect(formatExtraValue('node_id', 3, () => undefined)).toEqual('3');
+  });
+
+  it('renders a duration column as a human duration', () => {
+    expect(formatExtraValue('dur_ns', 88_000_000, nodeLabel)).toEqual('88ms');
+    expect(formatExtraValue('action_dur_ns', 88_000_000n, nodeLabel)).toEqual(
+      '88ms',
+    );
+  });
+
+  it('leaves a non-numeric duration cell as its raw value', () => {
+    expect(formatExtraValue('dur_ns', null, nodeLabel)).toEqual('null');
+  });
+
+  it('leaves an ordinary column raw, however id-shaped its value', () => {
+    expect(formatExtraValue('distance', 3, nodeLabel)).toEqual('3');
   });
 });
 

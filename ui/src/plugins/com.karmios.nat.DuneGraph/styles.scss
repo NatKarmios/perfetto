@@ -961,13 +961,19 @@
   }
 
   // Muted "col=value, ..." suffix on a tree-mode leaf, and the duplicate-node
-  // "×N" count when merging is on.
+  // "×N" count when merging is on. Wraps and shrinks like the label beside
+  // it: left un-shrinkable it keeps its full max-content width and squeezes
+  // `__ref-label` down to a couple of characters, which - wrapping `anywhere` -
+  // then towers over the row. Sharing the shortfall makes both fold instead,
+  // weighted by length, so the long side gives up the most.
   &__extras {
     margin-left: auto;
     padding-left: 8px;
-    flex-shrink: 0;
+    min-width: 0;
     font-size: 11px;
     color: var(--pf-color-text-muted);
+    overflow-wrap: anywhere;
+    text-align: right;
   }
 }
 
