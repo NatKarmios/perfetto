@@ -267,7 +267,10 @@
   // Padding around the chart creates grabbable margins for dragging.
   padding: 4px 6px 10px;
 
-  canvas {
+  // The card's `cursor: grab` would otherwise promise a drag that these
+  // surfaces deliberately do not start (see DRAG_EXCLUDED_SELECTORS).
+  canvas,
+  svg {
     cursor: default;
   }
 }

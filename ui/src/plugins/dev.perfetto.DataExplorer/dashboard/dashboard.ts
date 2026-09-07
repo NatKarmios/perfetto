@@ -62,9 +62,13 @@ import {Switch} from '../../../widgets/switch';
 import {Select} from '../../../widgets/select';
 
 const DEFAULT_DIVIDER_LABEL = 'Filter boundary';
-// CSS selector for elements that should not initiate a card drag.
+// CSS selector for elements that should not initiate a card drag. The two
+// drawing surfaces are here for a specific reason: a chart may handle a drag
+// itself - panning, brushing - and dragging the card out from under the
+// gesture makes that chart unusable. The card is still draggable by its header
+// and by the padding around the chart (see `.pf-dashboard__chart-content`).
 const DRAG_EXCLUDED_SELECTORS =
-  'textarea, button, input, .pf-resize-handle, canvas';
+  'textarea, button, input, .pf-resize-handle, canvas, svg';
 // Delay (ms) after a drag gesture during which title click-to-edit is
 // suppressed, so releasing the pointer doesn't accidentally open the editor.
 const DRAG_EDIT_SUPPRESS_MS = 300;
@@ -811,7 +815,8 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
           isDragging && 'pf-dashboard__chart--dragging',
         ),
         // Allow dragging from anywhere on the card, excluding interactive
-        // elements (textareas, buttons, inputs, resize handles, and canvas).
+        // elements and the chart's own drawing surface (see
+        // DRAG_EXCLUDED_SELECTORS).
         onpointerdown: (e: PointerEvent) => {
           if ((e.target as HTMLElement).closest(DRAG_EXCLUDED_SELECTORS)) {
             return;
