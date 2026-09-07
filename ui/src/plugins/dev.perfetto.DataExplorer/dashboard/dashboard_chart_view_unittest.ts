@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {buildWhereClause} from './dashboard_chart_view';
+import {DashboardChartView, buildWhereClause} from './dashboard_chart_view';
 import type {DashboardBrushFilter} from './dashboard_registry';
 
 describe('buildWhereClause', () => {
@@ -71,5 +71,58 @@ describe('buildWhereClause', () => {
     expect(buildWhereClause(filters)).toEqual(
       " WHERE (name = 'a' OR name IS NULL)",
     );
+  });
+});
+
+describe('a chart does not filter itself by its own brush', () => {
+  // `brushFilters` is keyed by *source* node, and a chart's own selection is
+  // written into its own source's entry, so a chart reading that entry back as
+  // an input filter re-runs its own query on its own brush. `isDriverChart`
+  // was meant to prevent that but is only true once a consumer exists, so a
+  // chart with nothing below a divider was filtering itself. The adapter
+  // therefore remembers which columns it brushed; `ensureLoader` excludes them.
+  const source = {
+    nodeId: 's1',
+    columns: [{name: 'node_id'}, {name: 'dur'}],
+  };
+
+  function adapter() {
+    const callbacks = {
+      brushFilters: new Map<string, DashboardBrushFilter[]>(),
+      onBrushFiltersChange: () => {},
+      allSources: [source],
+    };
+    return new DashboardChartView.Adapter(source as never, callbacks as never, {
+      id: 'c1',
+      column: 'node_id',
+      chartType: 'bar',
+    });
+  }
+
+  test('claims a column it brushes', () => {
+    const a = adapter();
+    expect([...a.brushedColumns]).toEqual([]);
+    a.setBrushSelection('node_id', [1, 2]);
+    expect([...a.brushedColumns]).toEqual(['node_id']);
+  });
+
+  test('claims a column it range-filters', () => {
+    const a = adapter();
+    a.addRangeFilter('dur', 10, 20);
+    expect([...a.brushedColumns]).toEqual(['dur']);
+  });
+
+  test('gives the column back when it clears it', () => {
+    // So the chart can consume a filter another chart later puts on it.
+    const a = adapter();
+    a.setBrushSelection('node_id', [1]);
+    a.clearChartFiltersForColumn('node_id');
+    expect([...a.brushedColumns]).toEqual([]);
+  });
+
+  test('does not claim a column it brushed nothing on', () => {
+    const a = adapter();
+    a.setBrushSelection('node_id', []);
+    expect([...a.brushedColumns]).toEqual([]);
   });
 });
