@@ -408,3 +408,30 @@ describe('the node graph chart', () => {
     expect(root.textContent).toContain('Waiting for results');
   });
 });
+
+describe("the registered chart type's default column", () => {
+  // The whole point: a chart dropped on a Dune query starts on the node id
+  // column instead of the host's generic first-non-numeric guess, so it draws
+  // rather than asking (see chart_node_column.ts). The descriptor only exists
+  // while a registration does, hence the `register()` in each test.
+  const pick = (names: readonly string[]) =>
+    getChartTypeDefinition(CHART_TYPE)?.defaultColumn?.(
+      names.map((name) => ({name})),
+    );
+
+  test('picks node_id over a label the generic rule would have taken', () => {
+    register();
+    expect(pick(['label', 'node_id', 'dur'])).toEqual('node_id');
+  });
+
+  test('takes src or dst when there is no node_id, in that order', () => {
+    register();
+    expect(pick(['label', 'src', 'dst'])).toEqual('src');
+    expect(pick(['label', 'dst'])).toEqual('dst');
+  });
+
+  test('defers to the host when the query names none of them', () => {
+    register();
+    expect(pick(['label', 'path', 'dur'])).toBeUndefined();
+  });
+});

@@ -57,7 +57,11 @@ import {registerChartType} from '../dev.perfetto.DataExplorer/query_builder/char
 import {Callout} from '../../widgets/callout';
 import {EmptyState} from '../../widgets/empty_state';
 import {Spinner} from '../../widgets/spinner';
-import {renderNodeColumnPrompt, resolveNodeColumn} from './chart_node_column';
+import {
+  defaultNodeColumn,
+  renderNodeColumnPrompt,
+  resolveNodeColumn,
+} from './chart_node_column';
 import type {DuneGraphController} from './controller';
 import {ChartDirExplorerSource} from './dir_chart_source';
 import type {DirEntry} from './dir_explorer';
@@ -120,6 +124,10 @@ export function registerDirExplorerChart(
       // Named for what it is read as, since it is not a dimension or a measure
       // and the popup offers no other hint (see `resolveNodeColumn`).
       primaryColumnLabel: 'Node id column',
+      // So a chart dropped on a query that has one just draws, instead of
+      // landing on the host's generic first-non-numeric guess and having to
+      // ask (see chart_node_column.ts).
+      defaultColumn: defaultNodeColumn,
       supportsYColumn: false,
       supportsGroupColumn: false,
       supportsSizeColumn: false,

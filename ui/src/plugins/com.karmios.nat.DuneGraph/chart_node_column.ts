@@ -31,9 +31,15 @@
  * graph wants it verbatim, which is the second data point that says it belongs
  * to neither of them.
  *
- * It stops at *offering*. The column picker is the chart config's own, and
- * quietly substituting a different column behind the user's back is what the
- * directory chart used to do.
+ * There are two halves to it, and the order matters. {@link defaultNodeColumn}
+ * is what stops the problem happening: it is the descriptor's `defaultColumn`
+ * hook, so a chart added to a query that has a node id column *starts* on it
+ * and simply draws. {@link renderNodeColumnPrompt} is the fallback for when it
+ * did not - the user picked something else, or the query aliased its node id to
+ * a name we cannot guess - and that one stops at *offering*, because the column
+ * picker is the chart config's own and substituting behind the user's back once
+ * they have chosen is a different thing entirely from choosing for them up
+ * front.
  */
 
 import m from 'mithril';
@@ -57,6 +63,27 @@ import type {ChartRenderContext} from '../dev.perfetto.DataExplorer/query_builde
 export const NODE_ID_COLUMNS: readonly string[] = ['node_id', 'src', 'dst'];
 
 /**
+ * The column a Dune chart should start on, given the columns a query returns.
+ *
+ * The `defaultColumn` hook of both descriptors. Without it the host picks the
+ * first non-numeric column - on a Dune query usually a label or a path - so a
+ * chart dropped on `dune_node` would join a string against node ids, match
+ * nothing, and need correcting before it drew anything.
+ *
+ * Undefined when the query has none of the known names, which hands the choice
+ * back to the host's generic rule and leaves {@link renderNodeColumnPrompt} to
+ * say so if that turns out badly.
+ *
+ * @param cols The columns the chart's query returns.
+ */
+export function defaultNodeColumn(
+  cols: ReadonlyArray<{readonly name: string}>,
+): string | undefined {
+  const names = new Set(cols.map((c) => c.name));
+  return NODE_ID_COLUMNS.find((c) => names.has(c));
+}
+
+/**
  * The column that should hold node ids but isn't the one configured, or
  * undefined when the configured one will do.
  *
@@ -73,8 +100,7 @@ export function resolveNodeColumn(
   cols: ReadonlyArray<ColumnInfo>,
 ): string | undefined {
   if (NODE_ID_COLUMNS.includes(column)) return undefined;
-  const names = new Set(cols.map((c) => c.name));
-  return NODE_ID_COLUMNS.find((c) => names.has(c));
+  return defaultNodeColumn(cols);
 }
 
 /**
