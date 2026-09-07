@@ -80,7 +80,13 @@
  * unfiltered load: `state.nodeCount`, which answers "did this column name any
  * Dune nodes at all" and is a statement about the chart's config rather than
  * about the pane's filter, and `subtreeDirIds`, which is where the query's rows
- * are and so is what a dashboard brush should name.
+ * are and so is what a directory click should name.
+ *
+ * One thing exists only to *follow* it, at the other end of the same story:
+ * `matchingNodeIds` lists the very nodes the counts counted, so that the chart
+ * can narrow the rest of the dashboard to the filter the pane is showing (see
+ * dir_explorer_chart.ts). It is the counts query with the aggregate taken off,
+ * which is why both are written once - see `matchingNodes`.
  *
  * ## De-duplication, and which way each query joins
  *
@@ -314,6 +320,48 @@ export class ChartDirExplorerSource implements DirExplorerSource {
       if (children !== undefined) stack.push(...children);
     }
     return out;
+  }
+
+  /**
+   * The node ids of the input's rows that `filter` matches, across the whole
+   * tree.
+   *
+   * The other thing a "narrow everything else" gesture sends, and the twin of
+   * `subtreeDirIds` above: that one answers "where are the rows", this one
+   * answers "which rows matched the pane's filter". Deliberately *not* on
+   * `DirExplorerSource` - the side panel has no second surface to narrow, and
+   * the interface is a contract the SQL source would then have to meet for no
+   * one.
+   *
+   * A set of ids rather than a predicate because a filter is not expressible as
+   * one over a single column: a dep is matched on its own `label` and a rule on
+   * its *directory's* path (a rule's label is a bare dune id and carries no
+   * path at all), so the filter is a disjunction over two columns while brush
+   * filters conjoin across columns. `node_id` is the one column both halves can
+   * be resolved onto, which is what makes the answer a list.
+   *
+   * The same selection the counts are counted from, by construction (see
+   * `matchingNodes`), so `FilteredTree.matchCount` is the length of this list -
+   * which is what lets a caller decide whether to ask for it *before* it is
+   * fetched. Unbounded here, deliberately: the cap belongs to whoever is paying
+   * for the ids, not to the query that answers honestly (see
+   * `MAX_BRUSH_NODES` in dir_explorer_chart.ts).
+   *
+   * One query, no cache: it is asked for once per filter apply, unlike the
+   * counts which every render reads.
+   *
+   * @param filter The pane's member filter. The empty one selects every node
+   *   the input named, which is the honest answer but not a useful brush.
+   */
+  async matchingNodeIds(filter: MemberFilter): Promise<readonly number[]> {
+    const result = await this.engine.query(`
+      SELECT n.node_id AS node_id
+      ${this.matchingNodes(filter)}
+    `);
+    const ids: number[] = [];
+    const it = result.iter({node_id: NUM});
+    for (; it.valid(); it.next()) ids.push(it.node_id);
+    return ids;
   }
 
   /**
@@ -586,12 +634,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   private async fetchCounts(filter: MemberFilter): Promise<DirCounts> {
     const result = await this.engine.query(`
       SELECT n.dir_id AS dir_id, n.kind AS kind, count(*) AS cnt
-      ${memberFrom(filter)}
-      JOIN (
-        SELECT DISTINCT ${quoteIdentifier(this.nodeColumn)} AS node_id
-        FROM (${this.query})
-      ) q ON q.node_id = n.node_id
-      ${countsWhere(filter)}
+      ${this.matchingNodes(filter)}
       GROUP BY 1, 2
     `);
     const counts: Record<NodeKind, Map<number, number>> = {
@@ -603,6 +646,27 @@ export class ChartDirExplorerSource implements DirExplorerSource {
       counts[it.kind as NodeKind].set(it.dir_id, it.cnt);
     }
     return counts;
+  }
+
+  /**
+   * The `FROM` / `JOIN` / `WHERE` that select exactly the input's nodes matching
+   * `filter` - the one selection this source is a source of.
+   *
+   * Shared by the counts query and `matchingNodeIds`, which is the point:
+   * the two must be the *same* selection counted and listed, or the count the
+   * pane shows would not be the size of the set a brush over these ids narrows
+   * to. Writing the join twice would make that an invariant to remember rather
+   * than one that holds by construction.
+   */
+  private matchingNodes(filter: MemberFilter): string {
+    return `
+      ${memberFrom(filter)}
+      JOIN (
+        SELECT DISTINCT ${quoteIdentifier(this.nodeColumn)} AS node_id
+        FROM (${this.query})
+      ) q ON q.node_id = n.node_id
+      ${countsWhere(filter)}
+    `;
   }
 
   // The input's node id column, as a one-column relation to test membership of.

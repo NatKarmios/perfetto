@@ -263,6 +263,162 @@ describe('DirExplorerPanel over a row-driven source', () => {
   });
 });
 
+/**
+ * The pane reporting its own filter outwards, which is the other half of the
+ * `onFilterToDir` split: the pane owns the filter UI and the caller owns
+ * whatever else is narrowed by it (a dashboard brush, in the chart mount - see
+ * dir_explorer_chart.ts).
+ *
+ * Both arguments matter and both are easy to get subtly wrong. A report that
+ * arrived before the tree was built would carry the previous count; one that
+ * skipped the clear would leave the caller narrowed to a filter that is no
+ * longer on screen.
+ */
+describe('DirExplorerPanel reporting its filter', () => {
+  test('reports the applied filter with what it matched', async () => {
+    const {source} = recordingRowDrivenSource();
+    const changes: Array<{path?: string; count: number}> = [];
+    const attrs = {
+      controller: fakeController(),
+      source,
+      onFilterChange: (filter: MemberFilter, count: number) =>
+        changes.push({path: filter.path?.text, count}),
+    };
+    const root = await renderPane(attrs);
+
+    // The pane's initial state over a row-driven source is the empty filter,
+    // which is a report in its own right: the rows are not a subset of
+    // anything the pane narrowed.
+    expect(changes).toEqual([{path: undefined, count: 3}]);
+
+    typeFilter(root, 'a.ml');
+    await rerender(root, attrs);
+
+    // The count is the tree's own `matchCount`, i.e. what the filter matched -
+    // not the 3 the query named.
+    expect(changes[changes.length - 1]).toEqual({path: 'a.ml', count: 1});
+  });
+
+  test('reports an inactive filter when the filter is cleared', async () => {
+    const {source} = recordingRowDrivenSource();
+    const changes: MemberFilter[] = [];
+    const attrs = {
+      controller: fakeController(),
+      source,
+      onFilterChange: (filter: MemberFilter) => changes.push(filter),
+    };
+    const root = await renderPane(attrs);
+
+    typeFilter(root, 'a.ml');
+    await rerender(root, attrs);
+    expect(filterActive(changes[changes.length - 1])).toBe(true);
+
+    clearChip(root)?.click();
+    await rerender(root, attrs);
+
+    // Whatever the caller narrowed has to be un-narrowed: the filter that
+    // named it is gone from the box as well as from the tree.
+    expect(filterActive(changes[changes.length - 1])).toBe(false);
+  });
+
+  test('reports the filter gone when applying it failed', async () => {
+    // `apply` drops the filter on a failed query, so a caller left narrowed to
+    // it would be narrowed to something the tree is not showing either.
+    const changes: MemberFilter[] = [];
+    const source: DirExplorerSource = {
+      ...rowDrivenSource(),
+      matchingCounts: async (_kind, filter) => {
+        if (filterActive(filter)) throw new Error('no such column');
+        return new Map([[2, 1]]);
+      },
+    };
+    const attrs = {
+      controller: fakeController(),
+      source,
+      onFilterChange: (filter: MemberFilter) => changes.push(filter),
+    };
+    const root = await renderPane(attrs);
+
+    typeFilter(root, 'a.ml');
+    await rerender(root, attrs);
+
+    expect(root.textContent).toContain('Could not apply the filter');
+    expect(filterActive(changes[changes.length - 1])).toBe(false);
+  });
+});
+
+/**
+ * The narrowing button as a toggle. The pane cannot know which directory is
+ * narrowed to - it hands one out and hears nothing back - so the answer comes
+ * in as `filteredDirId`, and all the pane does is draw the button pressed and
+ * report the click.
+ */
+describe('DirExplorerPanel narrowing toggle', () => {
+  test('draws the button pressed for the directory it is told about', async () => {
+    const root = await renderPane({
+      controller: fakeController(),
+      source: rowDrivenSource(),
+      onFilterToDir: () => {},
+      filteredDirId: 2,
+    });
+
+    const button = narrowButton(root)!;
+    expect(button.classList.contains('pf-active')).toBe(true);
+    expect(button.querySelector('.pf-filled')).not.toBeNull();
+    expect(button.getAttribute('title')).toContain('Stop narrowing');
+  });
+
+  test('leaves it unpressed for any other directory', async () => {
+    // Deliberately id 0, which is `_build` - a directory the compressed row
+    // above swallowed. The row is keyed on the deepest of the run (id 2), and
+    // that is the id handed to `onFilterToDir`, so it is the id that has to
+    // come back for the button to light up.
+    const root = await renderPane({
+      controller: fakeController(),
+      source: rowDrivenSource(),
+      onFilterToDir: () => {},
+      filteredDirId: 0,
+    });
+
+    const button = narrowButton(root)!;
+    expect(button.classList.contains('pf-active')).toBe(false);
+    expect(button.querySelector('.pf-filled')).toBeNull();
+    expect(button.getAttribute('title')).toContain('Narrow everything else');
+  });
+
+  test('reports a click on the pressed button like any other', async () => {
+    // Which way the click goes is the caller's decision, since it owns the
+    // filter; the pane's job is to report it either way.
+    const narrowed: DirEntry[] = [];
+    const root = await renderPane({
+      controller: fakeController(),
+      source: rowDrivenSource(),
+      onFilterToDir: (d) => narrowed.push(d),
+      filteredDirId: 2,
+    });
+
+    narrowButton(root)!.click();
+    expect(narrowed.map((d) => d.id)).toEqual([2]);
+  });
+
+  test('does not expand the row it is on', async () => {
+    // The button sits inside the header whose click expands the directory, so
+    // a click that reached it would open the directory as a side effect.
+    const source = rowDrivenSource();
+    const attrs = {
+      controller: fakeController(),
+      source,
+      onFilterToDir: () => {},
+    };
+    const root = await renderPane(attrs);
+    expect(root.querySelector('.pf-dune-tree__children')).toBeNull();
+
+    narrowButton(root)!.click();
+    await rerender(root, attrs);
+    expect(root.querySelector('.pf-dune-tree__children')).toBeNull();
+  });
+});
+
 describe('DirExplorerPanel over a hierarchy source', () => {
   test('descends lazily and reads no whole hierarchy', async () => {
     const calls: string[] = [];
@@ -283,6 +439,34 @@ describe('DirExplorerPanel over a hierarchy source', () => {
 
     expect(root.querySelector('.pf-dune-explorer__filter')).not.toBeNull();
     expect(root.textContent).toContain('Filters');
+  });
+
+  test("filters and unfilters with none of the chart mount's attrs", async () => {
+    // The side panel passes neither `onFilterToDir` nor `onFilterChange` nor
+    // `filteredDirId`, so every one of them has to be genuinely optional -
+    // including on the paths that report a change.
+    const calls: string[] = [];
+    const attrs = {
+      controller: fakeController(),
+      source: hierarchySource(calls),
+    };
+    const root = await renderPane(attrs);
+    expect(calls).toEqual(['rootDirs']);
+
+    typeFilter(root, 'lib');
+    await rerender(root, attrs);
+    // The filtered tree, compressed over what survives: this fake's counts say
+    // "all of them", so the run above `_build/default` collapses onto the first
+    // row with two visible children.
+    expect(dirNames(root)).toEqual(['_build/default/']);
+    expect(narrowButton(root)).toBeUndefined();
+
+    clearChip(root)?.click();
+    await rerender(root, attrs);
+    // Back on the lazy descent, with the filter's whole-hierarchy read behind
+    // it and no second `rootDirs` (the roots are still cached).
+    expect(calls).toEqual(['rootDirs', 'allDirs']);
+    expect(dirNames(root)).toEqual(['_build/default/lib/']);
   });
 
   test('shows the stored rollups a narrowed pane has to drop', async () => {
@@ -364,9 +548,20 @@ function typeFilter(root: HTMLElement, text: string): void {
 }
 
 // The pane's per-row "narrow everything else to here" button, found by the one
-// thing that distinguishes it from the bulk pair beside it.
+// thing that distinguishes it from the bulk pair beside it. Matched loosely
+// because the title says which way the toggle would go ("Narrow everything else
+// to …" / "Stop narrowing …"), and both are this button.
 function narrowButton(root: HTMLElement): HTMLElement | undefined {
   return Array.from(root.querySelectorAll('button')).find((b) =>
-    (b.getAttribute('title') ?? '').startsWith('Narrow everything else'),
+    /narrow/i.test(b.getAttribute('title') ?? ''),
+  );
+}
+
+// The active filter chip's dismiss button, which is how the filter is cleared
+// from the filter bar rather than from the Filters menu.
+function clearChip(root: HTMLElement): HTMLElement | undefined {
+  return (
+    root.querySelector<HTMLElement>('.pf-dune-explorer__filter-chip button') ??
+    undefined
   );
 }

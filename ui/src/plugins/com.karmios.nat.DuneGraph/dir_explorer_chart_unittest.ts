@@ -53,7 +53,7 @@ import {
 } from '../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
 import type {SqlValue} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
-import {registerDirExplorerChart} from './dir_explorer_chart';
+import {MAX_BRUSH_NODES, registerDirExplorerChart} from './dir_explorer_chart';
 
 // The type id as the registry sees it. Spelt out rather than imported: it is
 // persisted in dashboards, so a test that moved with it would not notice it
@@ -115,12 +115,13 @@ function fakeNode(
   cols: readonly string[] = ['path', 'dur'],
   brushes: Array<{column: string; values: SqlValue[]}> = [],
   updates: Array<Partial<ChartConfig>> = [],
+  clears: string[] = [],
 ): ChartColumnProvider {
   const sourceCols = cols.map((name) => ({name}));
   return {
     sourceCols,
     getChartableColumns: () => sourceCols,
-    clearChartFiltersForColumn: () => {},
+    clearChartFiltersForColumn: (column: string) => clears.push(column),
     setBrushSelection: (column: string, values: SqlValue[]) =>
       brushes.push({column, values}),
     addRangeFilter: () => {},
@@ -150,8 +151,18 @@ function renderIntoDom(children: m.Children): HTMLElement {
  * the source now asks SQL to do (see dir_chart_source.ts). Member queries get
  * the same rows back: these tests never expand a directory, so the fixture only
  * has to have the right columns.
+ *
+ * `filtered` is the same thing under the pane's own filter, i.e. the answer to
+ * any counts or id query carrying a `WHERE`. It takes the statement so that a
+ * test can give two filters different answers, which is the only way to drive
+ * the pane from one filter to another.
  */
-function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
+type Rows = ReadonlyArray<Record<string, unknown>>;
+
+function stubEngine(
+  nodes: Rows,
+  filtered: (sql: string) => Rows = () => nodes,
+): Engine {
   const dirs = [
     {
       id: 0,
@@ -168,13 +179,18 @@ function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
       total_dur_ns: 0n,
     },
   ];
+  // The rows a narrowed query sees: the filtered fixture where a filter is
+  // actually in the statement, the whole input otherwise.
+  const selected = (q: string) => (q.includes('WHERE') ? filtered(q) : nodes);
   return {
     query: async (q: string) => {
-      const rows = q.includes('FROM dune_dir')
-        ? dirs
-        : q.includes('count(*)')
-          ? countRows(nodes)
-          : nodes;
+      const rows = q.includes('count(*)')
+        ? countRows(selected(q))
+        : isBrushIdsQuery(q)
+          ? selected(q)
+          : q.includes('FROM dune_dir')
+            ? dirs
+            : nodes;
       let i = 0;
       const it = {
         valid: () => i < rows.length,
@@ -204,27 +220,83 @@ function stubEngine(nodes: ReadonlyArray<Record<string, unknown>>): Engine {
  * The two renders are the point - the first one starts the query and the second
  * one is the only one that can show what it found.
  */
-async function renderChart(opts: {
+interface ChartOpts {
   node: ChartColumnProvider;
   config: ChartConfig;
-  nodes?: ReadonlyArray<Record<string, unknown>>;
-}): Promise<HTMLElement> {
+  nodes?: Rows;
+  filtered?: (sql: string) => Rows;
+}
+
+async function renderChart(opts: ChartOpts): Promise<HTMLElement> {
+  return (await chartRunner(opts)).root;
+}
+
+/**
+ * The chart mounted as above, plus the means to keep driving it: `step()` lets
+ * the pending queries land and re-renders, which is what an interaction with
+ * the pane inside the card needs.
+ *
+ * Rendered into one root throughout, so the pane's component instance - and
+ * with it the filter it is holding - survives between steps.
+ */
+async function chartRunner(
+  opts: ChartOpts,
+): Promise<{root: HTMLElement; step: () => Promise<void>}> {
   const def = getChartTypeDefinition(CHART_TYPE);
   const entry: ChartLoaderEntry = {key: 'k'};
   const ctx = {node: opts.node} as unknown as ChartRenderContext;
+  const nodes = opts.nodes ?? [];
   def?.createLoader(
-    stubEngine(opts.nodes ?? []),
+    stubEngine(nodes, opts.filtered ?? (() => nodes)),
     'SELECT * FROM results_1',
     opts.config,
     entry,
   );
   const root = document.createElement('div');
+  const step = async () => {
+    await new Promise((r) => setTimeout(r, 0));
+    m.render(root, def?.render(ctx, opts.config, entry));
+  };
   m.render(root, def?.render(ctx, opts.config, entry));
-  await new Promise((r) => setTimeout(r, 0));
-  m.render(root, def?.render(ctx, opts.config, entry));
-  await new Promise((r) => setTimeout(r, 0));
-  m.render(root, def?.render(ctx, opts.config, entry));
-  return root;
+  await step();
+  await step();
+  return {root, step};
+}
+
+// Types `text` into the pane's filter box and submits it, the way the box's own
+// handlers see it: the draft follows `input`, and only Enter applies it.
+function typeFilter(root: HTMLElement, text: string): void {
+  const input = root.querySelector('input');
+  if (input === null) throw new Error('no filter input');
+  input.value = text;
+  input.dispatchEvent(new Event('input', {bubbles: true}));
+  input.dispatchEvent(
+    new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}),
+  );
+}
+
+// The pane's per-row narrowing button, whichever way its toggle is pointing.
+function narrowButton(root: HTMLElement): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll('button')).find((b) =>
+    /narrow/i.test(b.getAttribute('title') ?? ''),
+  );
+}
+
+/**
+ * The brush's id query (`matchingNodeIds`), as distinct from the two other
+ * queries that also select `n.node_id`.
+ *
+ * It has to be picked out before the `FROM dune_dir` test, because under a path
+ * filter it embeds a `dune_dir` scan of its own (the rule half of a path test).
+ * `n.dir_id =` is what tells it from a member query: those start from one
+ * directory, this one spans the tree.
+ */
+function isBrushIdsQuery(sql: string): boolean {
+  const flat = sql.replace(/\s+/g, ' ').trim();
+  return (
+    flat.startsWith('SELECT n.node_id AS node_id FROM') &&
+    !flat.includes('n.dir_id =')
+  );
 }
 
 // One row of the input join, as the source's reader wants it.
@@ -433,6 +505,238 @@ describe('the directory chart', () => {
       (b.getAttribute('title') ?? '').startsWith('Narrow everything else'),
     );
     expect(narrow).toBeUndefined();
+  });
+});
+
+/**
+ * The pane's own filter brushing the dashboard.
+ *
+ * The failures worth pinning are the ones nobody would see: a brush that goes
+ * out on the wrong column (matching nothing, silently), a truncated one (a lie
+ * about what matched, also silently), and a brush left standing after the filter
+ * that made it is gone (the other cards narrowed by something that is no longer
+ * on screen).
+ */
+describe('the directory chart brushing its filter', () => {
+  // Three nodes in the one directory, distinct ids, so a brush over them is
+  // distinguishable from a brush over the counts or the directories.
+  const THREE = [
+    nodeRow({node_id: 7}),
+    nodeRow({node_id: 8}),
+    nodeRow({node_id: 9}),
+  ];
+  // Over `MAX_BRUSH_NODES`, and counted as one `GROUP BY` row so the pane's
+  // match count is the fixture's length.
+  const TOO_MANY = Array.from({length: MAX_BRUSH_NODES + 500}, (_, i) =>
+    nodeRow({node_id: i}),
+  );
+
+  test('brushes the matching node ids on the column it was pointed at', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id', 'dur'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: THREE,
+    });
+
+    // Mounting brushes nothing: the pane's filter is empty, so there is nothing
+    // to narrow anything to - and nothing to clear either.
+    expect(brushes).toEqual([]);
+    expect(clears).toEqual([]);
+
+    typeFilter(root, 'a');
+    await step();
+    await step();
+
+    // The column is the chart's own primary column, since the ids are values of
+    // it - the same thing every built-in renderer brushes.
+    expect(brushes).toEqual([{column: 'node_id', values: [7, 8, 9]}]);
+    // Cleared first, so a second filter replaces the first rather than unioning
+    // with it.
+    expect(clears).toEqual(['node_id']);
+    expect(root.querySelector('.pf-dune-dir-chart__note')).toBeNull();
+  });
+
+  test('brushes the aliased column when the query named one', async () => {
+    // An edge query's node ids arrive as `src`, and the chart is configured on
+    // it; brushing a literal `node_id` would name a column the query has not
+    // got.
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['src', 'dur'], brushes),
+      config: config('src'),
+      nodes: [nodeRow({node_id: 7})],
+    });
+
+    typeFilter(root, 'a');
+    await step();
+    await step();
+
+    expect(brushes).toEqual([{column: 'src', values: [7]}]);
+  });
+
+  test('brushes nothing at all past the cap, and says so where the filter is', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: THREE,
+      filtered: () => TOO_MANY,
+    });
+
+    typeFilter(root, 'a');
+    await step();
+    await step();
+
+    // Not a truncated brush: a silently shortened one would leave the other
+    // cards showing a subset with nothing saying so.
+    expect(brushes).toEqual([]);
+    const note = root.querySelector('.pf-dune-dir-chart__note');
+    expect(note?.textContent).toContain(
+      `${TOO_MANY.length.toLocaleString()} matches`,
+    );
+    expect(note?.textContent).toContain('too many to narrow the other cards');
+    // The tree itself is drawn regardless - the note is about the rest of the
+    // dashboard, not about the card.
+    expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
+  });
+
+  test('clears the brush it can no longer make', async () => {
+    // Left standing, the earlier brush would narrow every other card to a
+    // filter that is not the one in the box.
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: THREE,
+      // Digits, so the two filters are told apart by their patterns: a typed
+      // word is case-folded into character classes (`*[bB][iI][gG]*`) and a
+      // digit is not (see `compileFilter`).
+      filtered: (sql) => (sql.includes("'*2*'") ? TOO_MANY : THREE),
+    });
+
+    typeFilter(root, '1');
+    await step();
+    await step();
+    expect(brushes).toHaveLength(1);
+
+    typeFilter(root, '2');
+    await step();
+    await step();
+
+    expect(brushes).toHaveLength(1);
+    expect(clears).toEqual(['node_id', 'node_id']);
+    expect(root.querySelector('.pf-dune-dir-chart__note')).not.toBeNull();
+  });
+
+  test('clears the brush when the filter is cleared', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: THREE,
+    });
+
+    typeFilter(root, 'a');
+    await step();
+    await step();
+    expect(brushes).toHaveLength(1);
+
+    root
+      .querySelector<HTMLElement>('.pf-dune-explorer__filter-chip button')
+      ?.click();
+    await step();
+    await step();
+
+    // No new brush, and the column cleared again: nothing outlives the filter
+    // that made it.
+    expect(brushes).toHaveLength(1);
+    expect(clears).toEqual(['node_id', 'node_id']);
+  });
+});
+
+/**
+ * The two brushes together. They are separate gestures on separate columns and
+ * the dashboard ANDs them, so the thing to pin is that neither one reaches into
+ * the other's column.
+ */
+describe('the directory chart narrowing toggle', () => {
+  test('brushes a directory, then clears it on a second click', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id', 'dir_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+    });
+
+    const button = () => narrowButton(root)!;
+    expect(button().classList.contains('pf-active')).toBe(false);
+
+    button().click();
+    await step();
+
+    expect(brushes).toEqual([{column: 'dir_id', values: [0]}]);
+    // Pressed and filled, so the row says which directory the dashboard is
+    // narrowed to.
+    expect(button().classList.contains('pf-active')).toBe(true);
+    expect(button().querySelector('.pf-filled')).not.toBeNull();
+
+    button().click();
+    await step();
+
+    // The clear, and no second brush: the button is the way back.
+    expect(brushes).toHaveLength(1);
+    expect(clears).toEqual(['dir_id', 'dir_id']);
+    expect(button().classList.contains('pf-active')).toBe(false);
+    expect(button().querySelector('.pf-filled')).toBeNull();
+  });
+
+  test('leaves the filter brush alone, and is left alone by it', async () => {
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id', 'dir_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: [nodeRow({node_id: 7})],
+    });
+
+    narrowButton(root)!.click();
+    await step();
+    typeFilter(root, 'a');
+    await step();
+    await step();
+
+    // Both out at once: "in this directory" AND "matching this filter" is what
+    // the dashboard reads them as, and it is what was asked for.
+    expect(brushes).toEqual([
+      {column: 'dir_id', values: [0]},
+      {column: 'node_id', values: [7]},
+    ]);
+    expect(clears).toEqual(['dir_id', 'node_id']);
+    // The directory is still the narrowed one, so its button is still pressed.
+    expect(narrowButton(root)!.classList.contains('pf-active')).toBe(true);
+
+    root
+      .querySelector<HTMLElement>('.pf-dune-explorer__filter-chip button')
+      ?.click();
+    await step();
+    await step();
+
+    // Clearing the filter clears its own column only.
+    expect(clears).toEqual(['dir_id', 'node_id', 'node_id']);
+    expect(narrowButton(root)!.classList.contains('pf-active')).toBe(true);
   });
 });
 

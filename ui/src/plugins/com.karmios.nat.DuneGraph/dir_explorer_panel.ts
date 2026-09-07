@@ -157,11 +157,60 @@ interface DirExplorerPanelAttrs {
    * means, and which column carries them, is the caller's business and not
    * something this pane could know.
    *
+   * A *toggle* rather than a set: called on every click of the row's button,
+   * including a click on the directory that is already narrowed to (which
+   * {@link DirExplorerPanelAttrs.filteredDirId} is how the pane knows about).
+   * Which way that click goes is the caller's to decide, for the same reason the
+   * column is - it owns the filter, so it is the only side that knows what
+   * undoing one means.
+   *
    * Deliberately a button on the row rather than the row's own click: that
    * click expands the directory, and re-filtering a dashboard every time
    * someone opens a directory to look inside it is not what they asked for.
    */
   readonly onFilterToDir?: (dir: DirEntry) => void;
+
+  /**
+   * The directory the caller's filter currently names, or undefined when
+   * nothing is narrowed to a directory.
+   *
+   * Comes back *in* because the pane cannot know it: it hands a directory to
+   * `onFilterToDir` and what becomes of it - a dashboard brush, in the one
+   * mount that passes either - is the caller's state, not the pane's. All the
+   * pane does with the answer is draw that row's button as pressed and say so
+   * in its tooltip, which is what makes the button read as a toggle rather than
+   * as a gesture with no visible effect and no way back.
+   *
+   * Absent in the side panel, together with `onFilterToDir`: there is no button
+   * there to light up.
+   */
+  readonly filteredDirId?: number;
+
+  /**
+   * The pane's own filter was applied, changed, or cleared: this is what it now
+   * is and how many members it matched.
+   *
+   * The other half of the same split as `onFilterToDir`. The pane owns the
+   * filter UI - the path box, the Filters menu, the chip - and a Data Explorer
+   * chart wants the *other* cards narrowed to whatever that filter matched, so
+   * the pane reports the change and the caller decides what to do about it (see
+   * dir_explorer_chart.ts, which turns it into a brush over the matching node
+   * ids).
+   *
+   * Both arguments are needed and neither can be recovered from the other: the
+   * filter is what the caller has to act on, and the count is the only thing
+   * that says how expensive acting would be *before* the ids are fetched - a
+   * loose filter matches most of the build.
+   *
+   * `matchCount` is 0 for an inactive filter, which is the pane saying its rows
+   * are no longer a filtered subset of anything - not "the filter matched
+   * nothing". Called on the apply that lands, not on the keystroke: the filter
+   * is submitted on Enter and the tree is built from queries, so this arrives
+   * with the tree it describes.
+   *
+   * Absent in the side panel, where there is nothing else to narrow.
+   */
+  readonly onFilterChange?: (filter: MemberFilter, matchCount: number) => void;
 }
 
 // One directory's child directories, once asked for.
@@ -354,7 +403,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
             icon: 'close',
             compact: true,
             title: this.clearTitle(),
-            onclick: () => this.clearFilter(),
+            onclick: () => this.clearFilter(attrs),
           }),
         ),
     );
@@ -495,7 +544,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         icon: 'clear',
         disabled: !filterActive(this.filter),
         onclick: () => {
-          this.clearFilter();
+          this.clearFilter(attrs);
           attrs.controller.requestRedraw();
         },
       }),
@@ -651,7 +700,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // there is - the rows already are the selection - so it takes this path
     // like any other and the tree gets built from the source's counts.
     if (!filterActive(filter) && !attrs.source.rowDriven) {
-      this.clearFilter();
+      this.clearFilter(attrs);
       attrs.controller.requestRedraw();
       return;
     }
@@ -686,12 +735,20 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.children.clear();
       this.members.clear();
       this.expanded = remapKeys(this.expanded, tree);
+      // Reported here rather than by the caller of `apply`, so that it arrives
+      // with the tree that describes it and carries that tree's count - which
+      // is only known now. `matchCount` is the total over the whole tree, i.e.
+      // exactly what a caller narrowing something else has to act on.
+      attrs.onFilterChange?.(filter, tree.matchCount);
     })()
       .catch((e) => {
         this.filterError = `Could not apply the filter: ${errorText(e)}`;
         this.filter = {};
         this.tree = undefined;
         this.ruleDirs = undefined;
+        // The filter is gone, so anything narrowed to it is narrowed to
+        // something that is not on screen - said the same way clearing it is.
+        attrs.onFilterChange?.({}, 0);
       })
       .finally(() => {
         this.filterLoading = false;
@@ -699,7 +756,18 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       });
   }
 
-  private clearFilter(): void {
+  /**
+   * Drops the filter entirely, box and all.
+   *
+   * Takes `attrs` only to report the change: clearing is a filter change like
+   * any other, and a caller narrowed to what the filter matched has to hear
+   * about it - otherwise the surface stays narrowed to something that is no
+   * longer on screen. A row-driven source then rebuilds its unfiltered tree
+   * from the render (see `renderBody`), which reports again with the count of
+   * everything the query named; the inactive filter reported here is what says
+   * "no longer a subset", and that is what a caller acts on.
+   */
+  private clearFilter(attrs: DirExplorerPanelAttrs): void {
     this.draft = '';
     this.filter = {};
     this.tree = undefined;
@@ -707,6 +775,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.filterError = undefined;
     this.children.clear();
     this.members.clear();
+    attrs.onFilterChange?.({}, 0);
   }
 
   private renderBody(attrs: DirExplorerPanelAttrs): m.Children {
@@ -911,9 +980,18 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   ): m.Children {
     if (count === 0 && narrowTo === undefined) return undefined;
     const where = dir.path === '' ? TOP_LEVEL_LABEL : dir.path;
+    // Whether *this* directory is the one the caller's filter names, which is
+    // what turns the button below into a toggle. Compared by id rather than by
+    // path because that is what was handed out and what comes back, and because
+    // a compressed row's directory is the deepest of the run it swallowed - the
+    // path on screen names several (see `dirLabel`).
+    const narrowedHere =
+      attrs.filteredDirId !== undefined && attrs.filteredDirId === dir.id;
     return m(
       'span.pf-dune-tree__group-actions',
-      // The buttons are not part of the row's collapse toggle.
+      // The buttons are not part of the row's collapse toggle. This is what
+      // keeps the narrowing toggle from also expanding the directory - the
+      // header's own `onclick` would otherwise see the same click.
       {onclick: (e: Event) => e.stopPropagation()},
       // Offered whatever this directory holds *directly*, unlike the bulk pair:
       // narrowing is to the subtree, and a directory of pure scaffolding with
@@ -921,8 +999,15 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       narrowTo !== undefined &&
         m(Button, {
           icon: 'filter_alt',
+          // Filled and pressed together: the fill is what reads at a glance in
+          // a column of identical outline icons, and `active` is what says the
+          // button is a state rather than an action (see widgets/button.ts).
+          iconFilled: narrowedHere,
+          active: narrowedHere,
           compact: true,
-          title: `Narrow everything else to ${where} and below`,
+          title: narrowedHere
+            ? `Stop narrowing everything else to ${where}`
+            : `Narrow everything else to ${where} and below`,
           onclick: () => narrowTo(dir),
         }),
       count > 0 &&

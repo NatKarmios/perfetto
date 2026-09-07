@@ -1064,8 +1064,10 @@
     min-height: 0;
   }
 
-  // The row cap having bitten: said once, above the tree, rather than repeated
-  // on the rows it silently shortened.
+  // Why the pane's filter did not narrow the other cards - too many matches to
+  // brush, or a query that failed. Said once, at the top of the card next to
+  // the filter box that caused it, and muted: it is a footnote about the rest
+  // of the dashboard, not a problem with the tree, which is drawn either way.
   &__note {
     display: flex;
     align-items: center;
