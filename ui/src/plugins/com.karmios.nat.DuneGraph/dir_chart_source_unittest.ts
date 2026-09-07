@@ -33,12 +33,17 @@
  *   pages of an unordered result;
  * - a source that answers `rootDirs` plausibly, which would put the pane back on
  *   its lazy descent and show the whole tree.
+ * - a query that drops the pane's member filter, which is the same class of bug
+ *   from the other side: the pane offers the filter, so a query that ignores it
+ *   shows rows the user asked not to see (and, for the counts, draws
+ *   directories that hold none of them).
  */
 
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../trace_processor/engine';
 import type {DuneGraphController} from './controller';
 import {ChartDirExplorerSource} from './dir_chart_source';
+import type {MemberFilter} from './dir_explorer';
 
 // A stub engine that records every statement and answers each from `handler`.
 // Rows are read through the real `iter` protocol, so the column names the
@@ -132,15 +137,22 @@ function memberRow(over: Record<string, unknown> = {}) {
   return {node_id: 1, kind: 'dep', label: 'a.ml', ...over};
 }
 
-// Which of the three queries a statement is. `allDirs` is the only one reading
-// `dune_dir`; the counts query is the only one that aggregates; everything else
-// is a member read.
-function isDirQuery(sql: string): boolean {
-  return sql.includes('FROM dune_dir');
-}
-
+// Which query a statement is. The counts query is the only one that aggregates,
+// and it is tested for *first*: under a path filter it embeds a `dune_dir` scan
+// of its own (the rule half of a path test - see `countsWhere`), so "reads
+// `dune_dir`" no longer picks out the hierarchy read on its own.
 function isCountsQuery(sql: string): boolean {
   return sql.includes('count(*)');
+}
+
+// `allDirs`, or the scan behind `matchingRuleDirs` - both read `dune_dir` and
+// both are answered from the same canned rows, since both are read for an `id`.
+function isDirQuery(sql: string): boolean {
+  return !isCountsQuery(sql) && sql.includes('FROM dune_dir');
+}
+
+function isMemberQuery(sql: string): boolean {
+  return !isCountsQuery(sql) && !isDirQuery(sql);
 }
 
 function sourceOver(
@@ -151,8 +163,8 @@ function sourceOver(
   opts: {column?: string; controller?: FakeController} = {},
 ) {
   const {engine, sql} = stubEngine((q) => {
-    if (isDirQuery(q)) return DIRS;
     if (isCountsQuery(q)) return rows.counts ?? [];
+    if (isDirQuery(q)) return DIRS;
     return rows.members ?? [];
   });
   const controller = opts.controller ?? fakeController();
@@ -267,7 +279,7 @@ describe('ChartDirExplorerSource member queries', () => {
     const {source, sql} = sourceOver({members: [memberRow()]});
     await source.dirMembers(2, 'dep', 500, 1000);
 
-    const members = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q));
+    const members = sql.find(isMemberQuery);
     expect(members).toBeDefined();
     expect(
       has(
@@ -296,7 +308,7 @@ describe('ChartDirExplorerSource member queries', () => {
     const {source, sql} = sourceOver({members: []});
     await source.dirMembers(7, undefined, 10, 0);
 
-    const members = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q))!;
+    const members = sql.find(isMemberQuery)!;
     expect(members).not.toMatch(/n\.kind =/);
     expect(has(members, 'WHERE n.dir_id = 7 AND n.node_id IN')).toBe(true);
   });
@@ -323,7 +335,7 @@ describe('ChartDirExplorerSource member queries', () => {
     });
     expect(await source.dirMemberIds(2, ['rule'])).toEqual([4, 9]);
 
-    const ids = sql.find((q) => !isDirQuery(q) && !isCountsQuery(q))!;
+    const ids = sql.find(isMemberQuery)!;
     expect(has(ids, 'SELECT n.node_id AS node_id FROM dune_node n')).toBe(true);
     expect(
       has(
@@ -341,6 +353,193 @@ describe('ChartDirExplorerSource member queries', () => {
     const {source, sql} = sourceOver();
     expect(await source.dirMemberIds(2, [])).toEqual([]);
     expect(sql).toHaveLength(0);
+  });
+});
+
+/**
+ * A filter reaching into every part of one: a path (which is per kind - a dep's
+ * own label, a rule's directory), a rule-only attribute, and a node column that
+ * applies to both kinds. The three halves are what the queries below have to
+ * keep apart.
+ */
+const FILTER: MemberFilter = {
+  path: {text: 'lib', pattern: '*lib*'},
+  outcomes: new Set(['failed-action' as const]),
+  minDurNs: 10_000_000n,
+};
+
+describe('ChartDirExplorerSource under a member filter', () => {
+  test('narrows the counts by the filter as well as by the input', async () => {
+    // Both narrowings, ANDed: the semi-join is what makes this the query's
+    // tree, and the arms are what make it the filter's.
+    const {source, sql} = sourceOver();
+    await source.matchingCounts('rule', FILTER);
+
+    const counts = sql.find(isCountsQuery)!;
+    // Still an aggregate over the mirror's directories, still uncapped.
+    expect(has(counts, 'GROUP BY 1, 2')).toBe(true);
+    expect(counts).not.toMatch(/LIMIT/);
+    expect(
+      has(
+        counts,
+        'JOIN ( SELECT DISTINCT "node_id" AS node_id ' +
+          'FROM (SELECT * FROM results_1) ) q ON q.node_id = n.node_id',
+      ),
+    ).toBe(true);
+    // The detail tables, which the filter's `r.` / `d.` predicates need. Both
+    // joins are on the primary key, so they probe rather than scan.
+    expect(has(counts, 'LEFT JOIN dune_rule r USING (node_id)')).toBe(true);
+    expect(has(counts, 'LEFT JOIN dune_dep d USING (node_id)')).toBe(true);
+    // One arm per kind, each narrowed on its own columns.
+    expect(
+      has(
+        counts,
+        "WHERE (n.kind = 'rule' AND (n.dir_id IN (SELECT id FROM dune_dir " +
+          "WHERE path GLOB '*lib*') AND r.outcome IN ('failed-action') " +
+          'AND n.dur_ns >= 10000000))',
+      ),
+    ).toBe(true);
+    expect(
+      has(
+        counts,
+        "OR (n.kind = 'dep' AND (n.label GLOB '*lib*' " +
+          'AND n.dur_ns >= 10000000))',
+      ),
+    ).toBe(true);
+  });
+
+  test("spells a rule's path test as a scan rather than an id list", async () => {
+    // This query spans directories, so the rule path test is a column test -
+    // and it cannot be the id set the pane holds, since one query answers both
+    // kinds and only the rule call is handed that set.
+    const {source, sql} = sourceOver();
+    await source.matchingCounts('dep', FILTER);
+    const counts = sql.find(isCountsQuery)!;
+    expect(has(counts, 'n.dir_id IN (SELECT id FROM dune_dir')).toBe(true);
+  });
+
+  test('leaves the unfiltered counts query exactly as it was', async () => {
+    // The hot path: every chart runs this one, filter or no filter, so an empty
+    // filter must not add a tautology on `kind` or two joins to skip.
+    const {source, sql} = sourceOver();
+    await source.matchingCounts('rule', {});
+    const counts = sql.find(isCountsQuery)!;
+    expect(counts).not.toMatch(/WHERE/);
+    expect(counts).not.toMatch(/LEFT JOIN/);
+    expect(counts).not.toMatch(/n\.kind =/);
+  });
+
+  test('reads one counts query per filter, and none for the empty one', async () => {
+    const {source, sql} = sourceOver();
+    // The load's two statements, and nothing more for either kind.
+    await Promise.all([
+      source.matchingCounts('rule', {}),
+      source.matchingCounts('dep', {}),
+    ]);
+    expect(sql).toHaveLength(2);
+
+    // One more for the filter, shared by both kinds.
+    await Promise.all([
+      source.matchingCounts('rule', FILTER),
+      source.matchingCounts('dep', FILTER),
+    ]);
+    expect(sql.filter(isCountsQuery)).toHaveLength(2);
+
+    // A different filter is a different query; the same one is not.
+    await source.matchingCounts('rule', {...FILTER, minDurNs: 1n});
+    await source.matchingCounts('rule', FILTER);
+    expect(sql.filter(isCountsQuery)).toHaveLength(3);
+  });
+
+  test('keeps the filter out of the node count the chart reports', async () => {
+    // `nodeCount` answers "did this column name any Dune nodes at all", which
+    // is about the chart's config rather than about the pane's filter: a filter
+    // matching nothing must not turn into "no Dune nodes in these rows", which
+    // would replace the tree - filter box and all - with a prompt to pick
+    // another column.
+    const {engine} = stubEngine((q) => {
+      if (!isCountsQuery(q)) return DIRS;
+      // The filtered channel is the one with a WHERE, and it matches nothing.
+      return q.includes('WHERE') ? [] : [countRow(2, 'dep', 2)];
+    });
+    const source = new ChartDirExplorerSource(
+      engine,
+      fakeController(),
+      'SELECT * FROM results_1',
+      'node_id',
+    );
+    source.ensureLoaded();
+    expect(await source.matchingCounts('dep', FILTER)).toEqual(new Map());
+    expect(source.state).toEqual({phase: 'ready', nodeCount: 2});
+  });
+
+  test('narrows a member page by the filter, still starting from the directory', async () => {
+    const {source, sql} = sourceOver({members: [memberRow()]});
+    await source.dirMembers(2, 'dep', 500, 1000, FILTER, true);
+
+    const members = sql.find(isMemberQuery)!;
+    expect(has(members, 'LEFT JOIN dune_dep d USING (node_id)')).toBe(true);
+    expect(
+      has(
+        members,
+        "WHERE n.dir_id = 2 AND ((n.kind = 'dep' AND " +
+          "(n.label GLOB '*lib*' AND n.dur_ns >= 10000000))) " +
+          'AND n.node_id IN (SELECT "node_id" FROM (SELECT * FROM results_1))',
+      ),
+    ).toBe(true);
+    // `dir_id` still first, and still the only term that selects rows.
+    const flat = members.replace(/\s+/g, ' ');
+    expect(flat.indexOf('n.dir_id = 2')).toBeLessThan(
+      flat.indexOf('n.label GLOB'),
+    );
+    expect(has(members, 'ORDER BY n.kind DESC, n.label')).toBe(true);
+    expect(has(members, 'LIMIT 500 OFFSET 1000')).toBe(true);
+  });
+
+  test('excludes rules whose directory did not match, without testing a path', async () => {
+    // The pane has already answered the rule path test for this directory, so
+    // the arm is a literal - the same trade the side panel's queries make.
+    const {source, sql} = sourceOver({members: []});
+    await source.dirMembers(2, undefined, 10, 0, FILTER, false);
+
+    const members = sql.find(isMemberQuery)!;
+    expect(has(members, "(n.kind = 'rule' AND (0 AND")).toBe(true);
+    expect(members).not.toContain('path GLOB');
+  });
+
+  test('narrows bulk ids by the filter too', async () => {
+    // Otherwise ＋all adds the rows the filter just hid.
+    const {source, sql} = sourceOver({members: [memberRow({node_id: 4})]});
+    expect(await source.dirMemberIds(2, ['rule'], FILTER, true)).toEqual([4]);
+
+    const ids = sql.find(isMemberQuery)!;
+    expect(
+      has(
+        ids,
+        "WHERE n.dir_id = 2 AND ((n.kind = 'rule' AND " +
+          "(r.outcome IN ('failed-action') AND n.dur_ns >= 10000000))) " +
+          'AND n.node_id IN (SELECT "node_id" FROM (SELECT * FROM results_1))',
+      ),
+    ).toBe(true);
+    // No path test in the arm at all: the pane answered it for this directory
+    // (`dirPathMatches`), so a matching directory leaves the rules alone.
+    expect(ids).not.toContain('GLOB');
+    expect(ids).not.toMatch(/LIMIT/);
+  });
+
+  test('finds the matching directories with the real scan', async () => {
+    // Not "all of them": a rule is matched on its directory, and which
+    // directories those are has nothing to do with the chart's input - the
+    // semi-join settles what the *query* named, separately.
+    const {source, sql} = sourceOver();
+    expect([...(await source.matchingRuleDirs(FILTER.path!))]).toEqual([
+      0, 1, 2, 3,
+    ]);
+    expect(
+      sql.some((q) =>
+        has(q, "SELECT id FROM dune_dir WHERE path GLOB '*lib*'"),
+      ),
+    ).toBe(true);
   });
 });
 

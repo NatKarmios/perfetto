@@ -331,53 +331,102 @@ function conjunction(preds: readonly string[]): string {
 }
 
 /**
- * The per-kind arms of a *member* query's filter, for a directory whose path is
- * already known to match or not.
+ * The per-kind arms of a member query's filter.
  *
- * The path part for rules is that boolean rather than a predicate: a rule is
- * matched on its directory, which is constant inside a query keyed on `dir_id`.
- * The path part for deps stays a predicate on `label` - the expensive column,
- * which resolves through a join to `dune_string` - but only ever ANDed onto the
- * `dir_id` probe, so it is tested against the handful of rows that probe already
- * found rather than against all 818k nodes.
+ * `rulePath` is how *this* query spells the rule half of a path filter, and is
+ * the one part of the filter that cannot be written once for every query: a rule
+ * carries no path of its own, so it is matched on the directory it is filed
+ * under, and how that is spelt depends on what the query is keyed on. Inside a
+ * query keyed on one `dir_id` it is a constant, so {@link memberFilterWhere}
+ * passes `'0'` or nothing at all; a query spanning directories has to test the
+ * column, so dir_chart_source.ts passes an `n.dir_id IN (...)` over
+ * {@link ruleDirsQuery}. Undefined means nothing about the path excludes a rule
+ * here.
+ *
+ * The path part for deps needs no such choice: it is always a predicate on
+ * `label` - the expensive column, which resolves through a join to
+ * `dune_string`. In a member query that is only ever ANDed onto the `dir_id`
+ * probe, so it is tested against the handful of rows that probe already found
+ * rather than against all 818k nodes.
  */
 function memberArms(
   filter: MemberFilter,
-  dirPathMatches: boolean,
+  rulePath?: string,
 ): {rule: string; dep: string} {
   const rulePreds = ruleAttrs(filter);
   const depPreds = depAttrs(filter);
   if (filter.path !== undefined) {
-    if (!dirPathMatches) rulePreds.unshift('0');
+    if (rulePath !== undefined) rulePreds.unshift(rulePath);
     depPreds.unshift(`n.label GLOB ${sqlValue(filter.path.pattern)}`);
   }
   return {rule: conjunction(rulePreds), dep: conjunction(depPreds)};
 }
 
-// The `FROM`/`JOIN` a member query needs. The detail tables are keyed on
-// `node_id`, which is their rowid, so each join is a primary-key probe of the
-// rows `dir_id` already selected - not a scan.
-const MEMBER_FROM = `
+/**
+ * The `FROM`/`JOIN` a member query needs. The detail tables are keyed on
+ * `node_id`, which is their rowid, so each join is a primary-key probe of the
+ * rows `dir_id` already selected - not a scan.
+ *
+ * Exported because a filter's `r.` / `d.` predicates are meaningless without
+ * these joins, so anything reusing {@link memberKindArms} needs the same two
+ * (see dir_chart_source.ts).
+ */
+export const MEMBER_FROM = `
   FROM dune_node n
   LEFT JOIN dune_rule r USING (node_id)
   LEFT JOIN dune_dep d USING (node_id)
 `;
 
-// The `WHERE` body for a member query: the directory, the kinds asked for, and
-// each kind's filter arm.
-function memberWhere(
-  id: number,
+/**
+ * The kinds a member query asks for when it asks for both - and the order the
+ * arms are written in, which is also the pane's listing order.
+ */
+export const BOTH_KINDS: readonly NodeKind[] = ['rule', 'dep'];
+
+/**
+ * `kinds`' filter arms, ORed - the part of a filter that is the same wherever it
+ * is applied.
+ *
+ * One arm per kind because the two kinds are narrowed on different columns, and
+ * because of the combining rule in {@link MemberFilter}: a kind whose attributes
+ * nothing selects gets `1` and so matches all of its members, rather than being
+ * quietly emptied by a filter aimed at the other kind.
+ *
+ * Exported so that a query over a *selection* of nodes rather than over one
+ * directory can narrow by the same filter (dir_chart_source.ts) - the predicates
+ * are the filter's meaning, and having two spellings of them would be two things
+ * to keep in step. See {@link memberArms} for `rulePath`.
+ */
+export function memberKindArms(
   kinds: readonly NodeKind[],
   filter: MemberFilter,
-  dirPathMatches: boolean,
+  rulePath?: string,
 ): string {
-  const arms = memberArms(filter, dirPathMatches);
+  const arms = memberArms(filter, rulePath);
   const parts = kinds.map((k) =>
     k === 'rule'
       ? `(n.kind = 'rule' AND (${arms.rule}))`
       : `(n.kind = 'dep' AND (${arms.dep}))`,
   );
-  return `n.dir_id = ${id} AND (${parts.join(' OR ')})`;
+  return parts.join(' OR ');
+}
+
+/**
+ * The `WHERE` body for a member query: the directory, the kinds asked for, and
+ * each kind's filter arm.
+ *
+ * `dirPathMatches` is the rule arm's path test, already answered for this
+ * directory by {@link matchingRuleDirs} - so a rule whose directory did not
+ * match is excluded by a literal `0` rather than by a per-row comparison.
+ */
+export function memberFilterWhere(
+  id: number,
+  kinds: readonly NodeKind[],
+  filter: MemberFilter,
+  dirPathMatches: boolean,
+): string {
+  const rulePath = dirPathMatches ? undefined : '0';
+  return `n.dir_id = ${id} AND (${memberKindArms(kinds, filter, rulePath)})`;
 }
 
 /**
@@ -561,11 +610,11 @@ export async function dirMembers(
   filter: MemberFilter = {},
   dirPathMatches: boolean = true,
 ): Promise<MemberEntry[]> {
-  const kinds: NodeKind[] = kind === undefined ? ['rule', 'dep'] : [kind];
+  const kinds = kind === undefined ? BOTH_KINDS : [kind];
   const result = await engine.query(`
     SELECT n.node_id AS node_id, n.kind AS kind, n.label AS label
     ${MEMBER_FROM}
-    WHERE ${memberWhere(id, kinds, filter, dirPathMatches)}
+    WHERE ${memberFilterWhere(id, kinds, filter, dirPathMatches)}
     ORDER BY n.kind DESC, n.label
     LIMIT ${limit} OFFSET ${offset}
   `);
@@ -611,7 +660,7 @@ export async function dirMemberIds(
   const result = await engine.query(`
     SELECT n.node_id AS node_id
     ${MEMBER_FROM}
-    WHERE ${memberWhere(id, kinds, filter, dirPathMatches)}
+    WHERE ${memberFilterWhere(id, kinds, filter, dirPathMatches)}
   `);
   const ids: number[] = [];
   const it = result.iter({node_id: NUM});
@@ -641,6 +690,19 @@ export async function allDirs(engine: Engine): Promise<DirEntry[]> {
 }
 
 /**
+ * The directories whose own path matches a filter, as a query.
+ *
+ * The one spelling of "where can a rule match at all", read two ways:
+ * {@link matchingRuleDirs} runs it and keeps the ids, so that a member query can
+ * be told whether rules match *here*; a query spanning directories embeds it as
+ * a subquery instead (see dir_chart_source.ts), where the answer is a column
+ * test rather than a constant.
+ */
+export function ruleDirsQuery(filter: PathFilter): string {
+  return `SELECT id FROM dune_dir WHERE path GLOB ${sqlValue(filter.pattern)}`;
+}
+
+/**
  * The directories whose own path matches, i.e. where *rules* can match at all.
  *
  * A rule's label is its bare dune id, which contains no path, so a rule is
@@ -655,9 +717,7 @@ export async function matchingRuleDirs(
   engine: Engine,
   filter: PathFilter,
 ): Promise<Set<number>> {
-  const result = await engine.query(`
-    SELECT id FROM dune_dir WHERE path GLOB ${sqlValue(filter.pattern)}
-  `);
+  const result = await engine.query(ruleDirsQuery(filter));
   const ids = new Set<number>();
   const it = result.iter({id: NUM});
   for (; it.valid(); it.next()) ids.add(it.id);
@@ -683,9 +743,10 @@ export async function matchingRuleDirs(
  *
  * Either way it is paid once, when the filter is applied, rather than once per
  * directory expanded. The per-expansion member query ANDs the same predicates
- * onto its `dir_id` probe (see {@link memberWhere}), so they never become the
- * clause that selects rows. Aggregating by `dir_id` here rather than returning
- * the matches is what keeps the result to one row per directory.
+ * onto its `dir_id` probe (see {@link memberFilterWhere}), so they never
+ * become the clause that selects rows. Aggregating by `dir_id` here rather
+ * than returning the matches is what keeps the result to one row per
+ * directory.
  */
 export async function matchingCounts(
   engine: Engine,

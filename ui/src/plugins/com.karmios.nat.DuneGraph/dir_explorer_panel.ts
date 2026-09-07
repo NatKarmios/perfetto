@@ -148,10 +148,11 @@ interface DirExplorerPanelAttrs {
    * Narrow whatever else is looking at these rows to one directory, or
    * undefined where there is nothing to narrow.
    *
-   * Absent in the side panel: the tree is the whole surface there, and the
-   * pane's own filter bar is how it is narrowed. Present in a Data Explorer
-   * chart, where the tree is one card among several over one query and the
-   * dashboard's brush filters are what the other cards follow (see
+   * Absent in the side panel: the tree is the whole surface there, so there is
+   * nothing else to narrow - the pane's own filter bar narrows *this* pane,
+   * which is a different affordance and is offered either way. Present in a Data
+   * Explorer chart, where the tree is one card among several over one query and
+   * the dashboard's brush filters are what the other cards follow (see
    * dir_explorer_chart.ts). Only the directory is passed - which rows that
    * means, and which column carries them, is the caller's business and not
    * something this pane could know.
@@ -222,6 +223,18 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // rules match *here* rather than testing each rule's directory (see
   // `matchingRuleDirs`).
   private ruleDirs?: ReadonlySet<number>;
+  /**
+   * How many members the source offered before the filter narrowed them, or
+   * undefined when the source is not narrowed on its own.
+   *
+   * Only a row-driven source has such a number: its rows are a selection, so
+   * even an *empty* filter yields a tree, and that tree's match count is the
+   * total everything else is a subset of. Recorded whenever the empty filter is
+   * applied (see `apply`), which for such a source is the pane's initial state,
+   * and never set in the side panel - where an empty filter means no tree at all
+   * and "matching" is measured against the whole build.
+   */
+  private selectedCount?: number;
   private filterLoading = false;
   private filterError?: string;
 
@@ -256,6 +269,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // since it is their input rather than derived state.
     this.tree = undefined;
     this.ruleDirs = undefined;
+    // Belongs to the source that was replaced, not to this one - and it is not
+    // recomputed until an empty filter is applied, so a stale one would sit
+    // under the chip claiming a total from a query that is no longer on screen.
+    this.selectedCount = undefined;
     this.filterLoading = false;
     this.filterError = undefined;
     this.roots = undefined;
@@ -273,18 +290,17 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    */
   private renderToolbar(attrs: DirExplorerPanelAttrs): m.Children {
     if (!attrs.controller.nodeMirrorReady) return undefined;
-    // A row-driven source has already been narrowed by the query behind it, and
-    // narrowing it further means re-querying the mirror, which it cannot do (see
-    // `DirExplorerSource.rowDriven`). Both halves of the filter UI go rather
-    // than sitting there doing nothing. Collapse all stays: it is about the
-    // tree's shape rather than its contents.
-    const filterable = !attrs.source.rowDriven;
+    // The same toolbar whatever the source. A row-driven source is *already*
+    // narrowed by the query behind it, but that is not a reason to withhold the
+    // filter: it re-queries for everything it shows, so the filter's predicates
+    // go into those queries alongside the input's semi-join and the two
+    // narrowings simply AND (see dir_chart_source.ts).
     return m(
       '.pf-dune-graph__toolbar',
-      filterable && this.renderFilterBar(attrs),
+      this.renderFilterBar(attrs),
       m(
         '.pf-dune-graph__toolbar-buttons',
-        filterable && this.renderFilterMenu(attrs),
+        this.renderFilterMenu(attrs),
         m(Button, {
           label: 'Collapse all',
           icon: 'unfold_less',
@@ -300,9 +316,12 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
    * The filter input, and the active filter as a dismissible chip.
    *
    * Submitted on Enter only. Applying a filter costs a scan of every dep in the
-   * build (see `matchingDepCounts`), which is fine once but is not something to
-   * do while someone is still typing - so there is deliberately no debounce and
-   * no filter-as-you-type.
+   * build (see `matchingCounts`), which is fine once but is not something to do
+   * while someone is still typing - so there is deliberately no debounce and no
+   * filter-as-you-type. A row-driven source tests the filter against its query's
+   * rows rather than the whole build, which makes a narrow query's filter much
+   * cheaper but a `SELECT * FROM dune_node` chart's exactly as expensive (see
+   * `fetchCounts` in dir_chart_source.ts) - so the same rule holds there.
    */
   private renderFilterBar(attrs: DirExplorerPanelAttrs): m.Children {
     return m(
@@ -341,12 +360,25 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  // What the chip says about the filter's reach. Exact rather than approximate:
-  // the counts come from the same rollup the tree itself is drawn from.
+  /**
+   * What the chip says about the filter's reach. Exact rather than approximate:
+   * the counts come from the same rollup the tree itself is drawn from.
+   *
+   * Qualified by `selectedCount` where there is a second narrowing to qualify it
+   * against - a row-driven source's rows - because "412 matching" out of a
+   * chart's 1,204 rows and out of the build's 818k nodes are very different
+   * claims. Unqualified when the two are equal, which is the honest reading of a
+   * filter that excluded nothing: "1,204 of 1,204" is the same number twice, and
+   * the row counts below already spell out where anything was dropped.
+   */
   private filterSummary(): string {
     const tree = this.tree;
     if (tree === undefined) return '';
-    return `${tree.matchCount.toLocaleString()} matching`;
+    const n = tree.matchCount;
+    const of = this.selectedCount;
+    return of === undefined || of === n
+      ? `${n.toLocaleString()} matching`
+      : `${n.toLocaleString()} of ${of.toLocaleString()} matching`;
   }
 
   /**
@@ -644,6 +676,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.filter = filter;
       this.ruleDirs = ruleDirs;
       this.tree = tree;
+      // The unnarrowed total, for the chip to qualify a filter against. Only a
+      // row-driven source gets here with an empty filter (the early return
+      // above), so this is exactly the "before my filter" number and only exists
+      // where there is one.
+      if (!filterActive(filter)) this.selectedCount = tree.matchCount;
       // A filter changes which rows exist, so nothing cached under the previous
       // one (or under no filter) describes this view.
       this.children.clear();

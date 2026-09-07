@@ -61,6 +61,27 @@
  *   which is what the trace processor is for, and is the same trade the SQL
  *   source makes on every expansion.
  *
+ * ## The pane's own filter, on top of the input's
+ *
+ * The rows are one narrowing; the pane's path box and Filters menu are another,
+ * and both apply. That is possible precisely because nothing here is
+ * materialised: every one of the three queries is re-issued when it is needed,
+ * so the filter's predicates go into them the same way the input's semi-join
+ * does. They are the *same* predicates the side panel builds - imported from
+ * dir_explorer.ts rather than re-derived, since a filter's meaning is its
+ * predicates and two spellings of them would be two things to keep in step.
+ *
+ * The one part that has to be spelt differently is the rule half of a path
+ * filter, because a rule carries no path and is matched on its directory: a
+ * member query is keyed on one `dir_id` and so takes it as a constant, while the
+ * counts query spans directories and tests the column. See `countsWhere`.
+ *
+ * Two things deliberately do *not* follow the filter, both read off the
+ * unfiltered load: `state.nodeCount`, which answers "did this column name any
+ * Dune nodes at all" and is a statement about the chart's config rather than
+ * about the pane's filter, and `subtreeDirIds`, which is where the query's rows
+ * are and so is what a dashboard brush should name.
+ *
  * ## De-duplication, and which way each query joins
  *
  * An input naming the same node more than once is normal rather than exotic: an
@@ -116,9 +137,22 @@ import type {
   MemberFilter,
   PathFilter,
 } from './dir_explorer';
-import {allDirs} from './dir_explorer';
+import {
+  BOTH_KINDS,
+  MEMBER_FROM,
+  allDirs,
+  filterActive,
+  fingerprint,
+  matchingRuleDirs,
+  memberFilterWhere,
+  memberKindArms,
+  ruleDirsQuery,
+} from './dir_explorer';
 import type {DirExplorerSource} from './dir_explorer_source';
 import type {NodeKind} from './graph';
+
+/** Per kind, how many nodes each directory holds - the tree's whole shape. */
+type DirCounts = Readonly<Record<NodeKind, ReadonlyMap<number, number>>>;
 
 /**
  * Where a source's up-front load has got to, for the chart to render around the
@@ -154,8 +188,17 @@ export type ChartSourceState =
 // `dune_dir` rather than by the chart's input.
 interface LoadedTree {
   readonly dirs: readonly DirEntry[];
-  /** Per kind, how many of the input's nodes each directory holds directly. */
-  readonly counts: Readonly<Record<NodeKind, ReadonlyMap<number, number>>>;
+  /**
+   * Per kind, how many of the input's nodes each directory holds directly, with
+   * no member filter applied.
+   *
+   * The unfiltered channel specifically, because two things that must not follow
+   * the pane's filter are read off it: `nodeCount`, which is the chart's "this
+   * query named no Dune nodes at all" state and so is a claim about the column
+   * the chart was configured with; and `subtreeDirIds`, which is where the
+   * query's rows are and so is what a dashboard filter should name.
+   */
+  readonly counts: DirCounts;
   // Child directory ids by parent id, over the *whole* mirror hierarchy - what
   // a narrow-to-this-directory click walks. Built here rather than taken off
   // `FilteredTree`, which keeps its own copy private and holds the filtered
@@ -186,6 +229,10 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   private loadPromise?: Promise<LoadedTree>;
   private loadedVersion?: number;
   private loaded?: LoadedTree;
+  // Counts under an *active* member filter, by `${version}|${fingerprint}` -
+  // see `countsFor`. Keyed on the version as well, so a rebuilt mirror is never
+  // answered out of the old one's `dir_id`s.
+  private readonly filteredCounts = new Map<string, Promise<DirCounts>>();
   private disposed = false;
 
   /**
@@ -231,6 +278,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     this.disposed = true;
     this.loadPromise = undefined;
     this.loaded = undefined;
+    this.filteredCounts.clear();
     this.stateValue = {phase: 'idle'};
   }
 
@@ -291,35 +339,45 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 
   /**
-   * Every directory, since a rule's path test cannot narrow anything here.
+   * The directories whose own path matches - the rule half of a path filter.
    *
-   * The pane only asks this while applying a path filter, and a row-driven
-   * source offers no filter UI at all (see `rowDriven`), so this is reached only
-   * if that ever changes. Returning "all of them" keeps the rule arm neutral,
-   * which is the same thing an absent path filter means.
+   * Nothing to do with the chart's input, and so not this source's own question
+   * at all: it is a scan of `dune_dir`'s `path` column, and a rule's directory
+   * either matches the pattern or does not, whether or not the query named that
+   * rule. Which rules the *input* named is settled separately, by the semi-join
+   * every query below carries. So this delegates to the same query the side
+   * panel's source runs.
    */
-  async matchingRuleDirs(_path: PathFilter): Promise<ReadonlySet<number>> {
-    return new Set((await this.load()).dirs.map((d) => d.id));
+  matchingRuleDirs(path: PathFilter): Promise<ReadonlySet<number>> {
+    return matchingRuleDirs(this.engine, path);
   }
 
   /**
-   * How many of the input's nodes of `kind` each directory holds - the count
-   * channel that is this chart's filter.
+   * How many of the input's nodes of `kind` each directory holds that also match
+   * `filter` - the count channel the tree's shape comes out of.
+   *
+   * Two narrowings, ANDed, and both are real: the input's semi-join (which is
+   * what makes this chart a picture of its query) and the pane's own member
+   * filter, which the pane offers here exactly as it does in the side panel. An
+   * empty filter is the common case and costs no second query - it is the load's
+   * own counts.
    *
    * Never undefined, unlike the SQL source's. Undefined means "every member of
    * this kind matches", which sends `FilteredTree` to the stored `n_rules` /
    * `n_deps` and draws the whole mirror's tree - the exact bug this chart exists
-   * to not have. A directory absent from the map holds no selected rows and so
+   * to not have. A directory absent from the map holds nothing matching and so
    * gets no row at all.
    *
-   * `filter` is ignored, and can only be the empty one: the pane hides its
-   * filter UI for a row-driven source, so nothing can put anything in it.
+   * The interface's third argument, `ruleDirs`, is deliberately not taken. One
+   * query answers both kinds here, so it cannot depend on something only the
+   * `kind === 'rule'` call is handed; it spells the rule path test as a subquery
+   * over the same `dune_dir` scan instead - see `countsWhere`.
    */
   async matchingCounts(
     kind: NodeKind,
-    _filter: MemberFilter,
+    filter: MemberFilter,
   ): Promise<ReadonlyMap<number, number>> {
-    return (await this.load()).counts[kind];
+    return (await this.countsFor(filter))[kind];
   }
 
   /**
@@ -336,11 +394,14 @@ export class ChartDirExplorerSource implements DirExplorerSource {
     kind: NodeKind | undefined,
     limit: number,
     offset: number,
+    filter: MemberFilter = {},
+    dirPathMatches: boolean = true,
   ): Promise<readonly MemberEntry[]> {
+    const kinds = kind === undefined ? [] : [kind];
     const result = await this.engine.query(`
       SELECT n.node_id AS node_id, n.kind AS kind, n.label AS label
-      FROM dune_node n
-      WHERE ${this.memberWhere(id, kind === undefined ? [] : [kind])}
+      ${memberFrom(filter)}
+      WHERE ${this.memberWhere(id, kinds, filter, dirPathMatches)}
       ORDER BY n.kind DESC, n.label
       LIMIT ${limit} OFFSET ${offset}
     `);
@@ -369,12 +430,14 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   async dirMemberIds(
     id: number,
     kinds: readonly NodeKind[],
+    filter: MemberFilter = {},
+    dirPathMatches: boolean = true,
   ): Promise<readonly number[]> {
     if (kinds.length === 0) return [];
     const result = await this.engine.query(`
       SELECT n.node_id AS node_id
-      FROM dune_node n
-      WHERE ${this.memberWhere(id, kinds)}
+      ${memberFrom(filter)}
+      WHERE ${this.memberWhere(id, kinds, filter, dirPathMatches)}
     `);
     const ids: number[] = [];
     const it = result.iter({node_id: NUM});
@@ -384,21 +447,47 @@ export class ChartDirExplorerSource implements DirExplorerSource {
 
   /**
    * The `WHERE` body both member queries share: the directory, the kinds asked
-   * for, and membership of the input.
+   * for, the pane's member filter, and membership of the input.
    *
    * `dir_id` first because it is the term that selects rows - it is an index
    * probe of `_dune_node(dir_id)` returning a directory's handful of nodes (see
-   * sql_graph.ts), which the other two then test rather than search. `kind` is
-   * a computed column on the view and narrows nothing on its own, so it is
-   * dropped entirely when both kinds are wanted.
+   * sql_graph.ts), which everything else then tests rather than searches. The
+   * input's semi-join is last for the same reason it is in the side panel's
+   * queries: it narrows, it does not drive.
+   *
+   * With no filter this is exactly what it always was, and in particular carries
+   * no `kind` clause when both kinds are wanted: `kind` is a computed column on
+   * the view and a node has no third kind, so the clause would narrow nothing.
+   * With one, the per-kind arms come from dir_explorer.ts unchanged - the two
+   * kinds are narrowed on different columns, so a filter *is* a pair of arms and
+   * the kind test is what picks between them.
    *
    * @param id The directory to list.
-   * @param kinds The kinds to keep, or empty for "both" - which is no clause at
-   *   all rather than a two-element `IN`, since a node has no third kind.
+   * @param kinds The kinds to keep, or empty for "both".
+   * @param filter The pane's member filter, possibly the empty one.
+   * @param dirPathMatches Whether `id`'s own path matched the filter, which is
+   *   the rule arm's path test (see `matchingRuleDirs`).
    */
-  private memberWhere(id: number, kinds: readonly NodeKind[]): string {
-    const parts = [`n.dir_id = ${id}`];
-    if (kinds.length === 1) parts.push(`n.kind = '${kinds[0]}'`);
+  private memberWhere(
+    id: number,
+    kinds: readonly NodeKind[],
+    filter: MemberFilter,
+    dirPathMatches: boolean,
+  ): string {
+    const parts: string[] = [];
+    if (filterActive(filter)) {
+      parts.push(
+        memberFilterWhere(
+          id,
+          kinds.length === 0 ? BOTH_KINDS : kinds,
+          filter,
+          dirPathMatches,
+        ),
+      );
+    } else {
+      parts.push(`n.dir_id = ${id}`);
+      if (kinds.length === 1) parts.push(`n.kind = '${kinds[0]}'`);
+    }
     parts.push(`n.node_id IN (${this.inputIds()})`);
     return parts.join(' AND ');
   }
@@ -427,7 +516,7 @@ export class ChartDirExplorerSource implements DirExplorerSource {
       // because neither needs the other's answer.
       const [dirs, counts] = await Promise.all([
         allDirs(this.engine),
-        this.fetchCounts(),
+        this.fetchCounts({}),
       ]);
       const loaded: LoadedTree = {dirs, counts, childIds: childIndex(dirs)};
       if (!this.disposed) {
@@ -446,7 +535,32 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 
   /**
-   * How many of the input's nodes each directory holds, per kind.
+   * The counts for `filter`, fetched at most once per (mirror version, filter).
+   *
+   * The empty filter is the load's own counts, so the pane's default state and
+   * every render of it cost nothing beyond the load. An active filter is one
+   * further query - the same one, with predicates - and it is asked for once per
+   * apply rather than per render, so it is cached but not retried: a rejected
+   * entry is dropped, which makes re-applying the same filter a retry rather
+   * than an instant repeat of the error.
+   */
+  private async countsFor(filter: MemberFilter): Promise<DirCounts> {
+    if (!filterActive(filter)) return (await this.load()).counts;
+    const key = `${this.controller.mirrorVersion}|${fingerprint(filter)}`;
+    let pending = this.filteredCounts.get(key);
+    if (pending === undefined) {
+      pending = this.fetchCounts(filter);
+      this.filteredCounts.set(key, pending);
+      void pending.catch(() => {
+        this.filteredCounts.delete(key);
+      });
+    }
+    return pending;
+  }
+
+  /**
+   * How many of the input's nodes matching `filter` each directory holds, per
+   * kind.
    *
    * The one query the tree's whole shape comes out of, and the reason there is
    * no row cap anywhere in this file: the `GROUP BY` collapses the input to at
@@ -457,17 +571,27 @@ export class ChartDirExplorerSource implements DirExplorerSource {
    * primary key, so the cost is one probe per distinct input node rather than a
    * scan - see the file header on why the de-duplication is here rather than in
    * the aggregate.
+   *
+   * **Whether the filter is cheaper here than in the side panel depends entirely
+   * on the query.** The side panel's path filter is a scan of every dep in the
+   * build, because `dune_node.label` resolves through a join to `dune_string`
+   * with no index on the string, and it has all 818k nodes to test. Here the
+   * candidates are the input's distinct nodes instead, so a query naming a few
+   * thousand rows makes the same filter two orders of magnitude cheaper - but a
+   * chart over a bare `SELECT * FROM dune_node` names the whole build and pays
+   * exactly what the side panel pays. That is why this is still submit-on-Enter
+   * with no debounce: the semi-join makes the good case fast without making the
+   * worst case safe to run per keystroke.
    */
-  private async fetchCounts(): Promise<
-    Readonly<Record<NodeKind, ReadonlyMap<number, number>>>
-  > {
+  private async fetchCounts(filter: MemberFilter): Promise<DirCounts> {
     const result = await this.engine.query(`
       SELECT n.dir_id AS dir_id, n.kind AS kind, count(*) AS cnt
-      FROM dune_node n
+      ${memberFrom(filter)}
       JOIN (
         SELECT DISTINCT ${quoteIdentifier(this.nodeColumn)} AS node_id
         FROM (${this.query})
       ) q ON q.node_id = n.node_id
+      ${countsWhere(filter)}
       GROUP BY 1, 2
     `);
     const counts: Record<NodeKind, Map<number, number>> = {
@@ -496,6 +620,45 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 }
 
+/**
+ * The `FROM` a query narrowed by `filter` needs.
+ *
+ * The detail tables come in only when there is a filter to reach into them,
+ * which keeps the unfiltered queries - the ones that run on every chart, on
+ * every mirror version - exactly as narrow as they were. When a filter is
+ * active they are joined whether or not that particular filter names a rule or
+ * dep column: both are primary-key probes (`node_id` is their rowid), and
+ * picking the joins apart per field would be a second place for the filter's
+ * meaning to live.
+ */
+function memberFrom(filter: MemberFilter): string {
+  return filterActive(filter) ? MEMBER_FROM : 'FROM dune_node n';
+}
+
+/**
+ * The counts query's `WHERE`, or nothing at all when no filter is active.
+ *
+ * Nothing at all rather than a tautology: with no filter the arms are both `1`
+ * and the clause would be a comparison on `kind`, a computed column, for every
+ * row of the join.
+ *
+ * The rule arm's path test is a *subquery* here, not the id set the pane already
+ * holds from `matchingRuleDirs`. Two reasons, and the first is correctness: this
+ * is one query for both kinds, so it cannot depend on an argument only the
+ * `kind === 'rule'` call is given. The second is that the set can be most of
+ * `dune_dir` - a filter of `_build` matches 19k directories on the monorepo
+ * trace - and inlining that many values into the statement costs more than the
+ * scan it was meant to save.
+ */
+function countsWhere(filter: MemberFilter): string {
+  if (!filterActive(filter)) return '';
+  const rulePath =
+    filter.path === undefined
+      ? undefined
+      : `n.dir_id IN (${ruleDirsQuery(filter.path)})`;
+  return `WHERE ${memberKindArms(BOTH_KINDS, filter, rulePath)}`;
+}
+
 // What `rootDirs` / `childDirs` say when a row-driven source is asked to be
 // descended. Spelt out rather than left as a bare throw: if this ever surfaces
 // it means the pane took its lazy path against a source that has no levels to
@@ -508,9 +671,7 @@ const NOT_DESCENDED =
 // Every counted node, over both kinds. The counts are per (directory, kind) and
 // each node is counted once, so this is the number of distinct nodes the input
 // named - which is what the chart's "named no nodes at all" state tests.
-function totalCount(
-  counts: Readonly<Record<NodeKind, ReadonlyMap<number, number>>>,
-): number {
+function totalCount(counts: DirCounts): number {
   let total = 0;
   for (const byDir of Object.values(counts)) {
     for (const n of byDir.values()) total += n;

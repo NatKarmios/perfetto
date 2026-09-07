@@ -121,19 +121,21 @@ export interface DirExplorerSource {
    * so it needs the filtered mode with no filter typed, which is a state the
    * pane would otherwise never enter.
    *
-   * Setting this changes three things about the pane, and nothing else:
+   * Setting this changes two things about the pane, and nothing else:
    *
    * - It builds a `FilteredTree` up front, from {@link allDirs} and
    *   {@link matchingCounts} with an empty filter, and rebuilds it whenever
    *   {@link DirExplorerSource.version} moves.
-   * - It stops offering its own filter bar and Filters menu. Those narrow by
-   *   re-querying the mirror, which a source that has already materialised its
-   *   rows cannot honour, and a filter that silently does nothing is worse than
-   *   no filter at all. (The dashboard's own brush filters are the narrowing
-   *   affordance there.)
    * - Its per-row counts read "3 of 1,204 rules" rather than "3 rules", and it
    *   drops the stored failure count and duration rollups, which describe every
    *   member of the directory rather than the selected ones.
+   *
+   * Note what it does *not* change: the pane's own filter bar and Filters menu
+   * are offered either way. "Already narrowed" and "cannot be narrowed further"
+   * are different claims, and only the first is what this flag means - an
+   * implementation is expected to put the filter's predicates into the same
+   * queries it answers {@link matchingCounts} and {@link dirMembers} from, so
+   * that the two narrowings AND.
    *
    * True implies {@link matchingCounts} never returns undefined: "all of them"
    * has no meaning when the rows are the selection.
@@ -194,7 +196,10 @@ export interface DirExplorerSource {
    * stored totals there would draw the whole mirror's tree.
    *
    * `ruleDirs` is what {@link matchingRuleDirs} returned, and is passed only
-   * for `kind === 'rule'` - it is the path half of a rule's match test.
+   * for `kind === 'rule'` - it is the path half of a rule's match test. An
+   * implementation is free to ignore it and derive the same thing itself, which
+   * is what one answering both kinds from a single query has to do (see
+   * dir_chart_source.ts); what it must not do is drop the test.
    */
   matchingCounts(
     kind: NodeKind,

@@ -353,8 +353,10 @@ describe('the directory chart', () => {
 
     expect(root.querySelector('.pf-dune-explorer')).not.toBeNull();
     expect(root.textContent).toContain('lib/');
-    // The pane's own filter UI is gone: the rows are already the selection.
-    expect(root.textContent).not.toContain('Filters');
+    // The pane's own filter UI comes along: the rows are one narrowing and the
+    // filter is another, and the source's queries carry both.
+    expect(root.textContent).toContain('Filters');
+    expect(root.querySelector('.pf-dune-explorer__filter')).not.toBeNull();
   });
 
   test('says when the query named no nodes at all', async () => {
