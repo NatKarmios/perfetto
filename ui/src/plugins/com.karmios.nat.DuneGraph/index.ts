@@ -23,7 +23,6 @@ import {
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
   DuneGraphController,
 } from './controller';
-import {exploreDirTree} from './data_explorer_handoff';
 import {registerNodeColumnRenderer} from './node_cell';
 import {registerDirExplorerChart} from './dir_explorer_chart';
 import {registerNodeGraphChart} from './node_graph_chart';
@@ -49,10 +48,11 @@ export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
   static readonly description =
     'Explore the Dune build graph extracted from the trace.';
-  // For the directory-tree hand-off (data_explorer_handoff.ts), which calls
-  // into the Data Explorer's public API. Declaring it orders the two plugins'
-  // onTraceLoad but does *not* enable the dependency, so the hand-off still
-  // checks that it is enabled before reaching for it.
+  // For the Data Explorer hand-off (data_explorer_handoff.ts), which calls
+  // into that plugin's public API, and for the chart types registered below.
+  // Declaring it orders the two plugins' onTraceLoad but does *not* enable the
+  // dependency, so the hand-off still checks that it is enabled before
+  // reaching for it.
   static readonly dependencies = [DataExplorerPlugin];
 
   /**
@@ -179,21 +179,6 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#MaterialiseEdges`,
       name: 'Dune: materialise edge table',
       callback: () => controller.buildEdgeMirror(),
-    });
-
-    // The build seen as directories rather than as nodes: hands `dune_dir`
-    // (see sql_graph.ts) to the Data Explorer as a ready-made dashboard whose
-    // one item is a collapsible tree of the build's directories. Loads the
-    // graph first if it isn't loaded, reporting that in the side panel - hence
-    // revealing it before the wait. See data_explorer_handoff.ts.
-    trace.commands.registerCommand({
-      id: `${PLUGIN_ID}#ExploreDirTree`,
-      name: 'Dune: explore directory tree in Data Explorer',
-      callback: () => {
-        void exploreDirTree(trace, controller, () =>
-          trace.sidePanel.showTab(SIDE_PANEL_URI),
-        );
-      },
     });
 
     // Re-prints the per-phase timing/heap breakdown of the last few loads to

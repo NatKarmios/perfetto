@@ -19,15 +19,14 @@
  * unknown node type, a one-sided edge, a root that isn't one - is silently
  * dropped on load rather than caught by the compiler.
  *
- * The appending half is where the risk is. A merge that renumbers, drops or
- * subtly rewires what the user already had would be destructive and invisible:
- * a dashboard item names its data source by *node id*, so an id that moved is a
- * dashboard that renders nothing. Hence the "untouched" assertions below.
+ * Merging is where the risk is. A merge that renumbers, drops or subtly rewires
+ * what the user already had would be destructive and invisible: a dashboard
+ * item names its data source by *node id*, so an id that moved is a dashboard
+ * that renders nothing. Hence the "untouched" assertions below.
  *
- * The two paths also differ in what they add - the replacing one exports to a
- * dashboard, the appending one groups and exports nothing - and both halves of
- * that are asserted here, since nothing else would notice a source that quietly
- * started publishing itself again.
+ * What is added is asserted just as closely - a group, and no dashboard export
+ * - since nothing else would notice a source that quietly started publishing
+ * itself.
  */
 
 import {registerCoreNodes} from '../dev.perfetto.DataExplorer/query_builder/core_nodes';
@@ -44,7 +43,6 @@ import {
   appendExploreSourceToGraph,
   exploreColumnType,
   exploreSelect,
-  exploreSourceGraph,
 } from './explore_source';
 import {NODE_SOURCE} from './node_source';
 
@@ -86,6 +84,51 @@ function parse(json: string): ParsedGraph {
   return JSON.parse(json) as ParsedGraph;
 }
 
+/**
+ * A graph of the kind a source is appended *into*: a chain the user built and
+ * published to a dashboard themselves, with ids 0, 1, 2.
+ *
+ * Written out here rather than generated, because nothing in the plugin builds
+ * a `dashboard` node any more - which is the point. What these tests need from
+ * it is precisely that it is somebody else's work: its ids, its export and its
+ * name have to come back out of a merge exactly as they went in.
+ */
+function existingUserGraph(source: ExploreSource): string {
+  return JSON.stringify({
+    nodes: [
+      {
+        nodeId: '0',
+        type: 'sql_source',
+        state: {sql: exploreSelect(source)},
+        nextNodes: ['1'],
+      },
+      {
+        nodeId: '1',
+        type: 'modify_columns',
+        state: {
+          selectedColumns: source.columns.map((c) => ({
+            name: c.name,
+            checked: true,
+            type: exploreColumnType(c),
+            typeUserModified: true,
+          })),
+        },
+        primaryInputId: '0',
+        nextNodes: ['2'],
+      },
+      {
+        nodeId: '2',
+        type: 'dashboard',
+        state: {exportName: source.exportName},
+        primaryInputId: '1',
+        nextNodes: [],
+      },
+    ],
+    rootNodeIds: ['0'],
+    selectedNodeId: '0',
+  });
+}
+
 describe('exploreSelect', () => {
   it('is one SELECT, aliased where a column is an expression', () => {
     expect(exploreSelect(TOY_SOURCE)).toBe(
@@ -110,50 +153,11 @@ describe('exploreColumnType', () => {
   });
 });
 
-describe('exploreSourceGraph', () => {
-  it('passes the Data Explorer structural validation', () => {
-    expect(
-      validateSerializedGraph(exploreSourceGraph(TOY_SOURCE).json).errors,
-    ).toEqual([]);
-  });
-
-  it('numbers its nodes from zero and reports the ids it used', () => {
-    // Zero because this payload *replaces* the graph, so there is nothing to
-    // avoid; that it reports them at all is what lets a dashboard item point
-    // at the export node without writing a number down twice.
-    const {json, ids} = exploreSourceGraph(TOY_SOURCE);
-    expect(parse(json).nodes.map((n) => n.nodeId)).toEqual([
-      ids.sourceNodeId,
-      ids.columnsNodeId,
-      ids.exportNodeId,
-    ]);
-  });
-
-  it("declares its column types as the user's own, so a run cannot erase them", () => {
-    // Without typeUserModified, ModifyColumnsNode.onPrevNodesUpdated() rebuilds
-    // selectedColumns from the source's finalCols - which a freshly run
-    // sql_source reports untyped - and every duration and node chip in the grid
-    // silently becomes a bare integer. See explore_source.ts.
-    const columns = parse(exploreSourceGraph(TOY_SOURCE).json).nodes[1]
-      .state as {
-      selectedColumns: Array<{type: unknown; typeUserModified: boolean}>;
-    };
-    expect(columns.selectedColumns.map((c) => c.typeUserModified)).toEqual([
-      true,
-      true,
-    ]);
-    expect(columns.selectedColumns.map((c) => c.type)).toEqual([
-      {kind: 'int'},
-      {kind: 'duration'},
-    ]);
-  });
-});
-
 describe('appendExploreSourceToGraph', () => {
   it('seeds from scratch when there is no graph to append to', () => {
     // getActiveGraphJson() returns undefined for an empty tab, and '' for one
     // that has been emptied. Either way the button does what it always does -
-    // the same grouped, unexported chain, not the command's payload.
+    // the same grouped, unexported chain it appends to a graph in progress.
     const empty = JSON.stringify({nodes: [], rootNodeIds: []});
     const expected = appendExploreSourceToGraph(empty, TOY_SOURCE).json;
     expect(appendExploreSourceToGraph(undefined, TOY_SOURCE).json).toBe(
@@ -203,7 +207,7 @@ describe('appendExploreSourceToGraph', () => {
   });
 
   it('allocates ids above everything already in the graph', () => {
-    const before = exploreSourceGraph(DIR_TREE_SOURCE).json; // ids 0, 1, 2
+    const before = existingUserGraph(DIR_TREE_SOURCE); // ids 0, 1, 2
     const {json, ids} = appendExploreSourceToGraph(before, NODE_SOURCE);
     expect(ids).toEqual({
       sourceNodeId: '3',
@@ -266,7 +270,7 @@ describe('appendExploreSourceToGraph', () => {
   it('leaves everything already in the graph exactly as it was', () => {
     // Node ids especially: a dashboard item names its source by node id, so a
     // renumbered export node is a dashboard that renders nothing.
-    const before = parse(exploreSourceGraph(DIR_TREE_SOURCE).json);
+    const before = parse(existingUserGraph(DIR_TREE_SOURCE));
     // Plus the things a real graph carries that this builder never writes.
     const withUserState = JSON.stringify({
       ...before,
@@ -298,7 +302,7 @@ describe('appendExploreSourceToGraph', () => {
   it('selects the group it just added', () => {
     // The group, not the SQL node inside it: on the graph tab the inner nodes
     // are not drawn, so selecting one would look like nothing happened.
-    const before = exploreSourceGraph(DIR_TREE_SOURCE).json;
+    const before = existingUserGraph(DIR_TREE_SOURCE);
     const {json, ids} = appendExploreSourceToGraph(before, NODE_SOURCE);
     expect(parse(json).selectedNodeId).toBe(ids.groupNodeId);
   });
@@ -316,6 +320,32 @@ describe('appendExploreSourceToGraph', () => {
     expect(names).toEqual(['Toy', 'Toy 2', 'Toy 3']);
   });
 
+  it("declares its column types as the user's own, so a run cannot erase them", () => {
+    // Without typeUserModified, ModifyColumnsNode.onPrevNodesUpdated() rebuilds
+    // selectedColumns from the source's finalCols - which a freshly run
+    // sql_source reports untyped - and every duration and node chip in the grid
+    // silently becomes a bare integer. See explore_source.ts.
+    const columns = parse(
+      appendExploreSourceToGraph(undefined, TOY_SOURCE).json,
+    ).nodes[1].state as {
+      selectedColumns: Array<{
+        type: unknown;
+        checked: boolean;
+        typeUserModified: boolean;
+      }>;
+    };
+    expect(columns.selectedColumns.map((c) => c.typeUserModified)).toEqual([
+      true,
+      true,
+    ]);
+    // An omitted or false `checked` exports nothing at all.
+    expect(columns.selectedColumns.every((c) => c.checked)).toBe(true);
+    expect(columns.selectedColumns.map((c) => c.type)).toEqual([
+      {kind: 'int'},
+      {kind: 'duration'},
+    ]);
+  });
+
   it('refuses a graph it does not understand rather than replacing it', () => {
     expect(() => appendExploreSourceToGraph('{"nope": 1}', TOY_SOURCE)).toThrow(
       /not in the expected format/,
@@ -323,13 +353,13 @@ describe('appendExploreSourceToGraph', () => {
     expect(() => appendExploreSourceToGraph('not json', TOY_SOURCE)).toThrow();
   });
 
-  it("produces a graph the Data Explorer accepts, next to the command's", () => {
-    const before = exploreSourceGraph(DIR_TREE_SOURCE).json;
+  it("produces a graph the Data Explorer accepts, next to the user's", () => {
+    const before = existingUserGraph(DIR_TREE_SOURCE);
     const {json, ids} = appendExploreSourceToGraph(before, NODE_SOURCE);
     expect(validateSerializedGraph(json).errors).toEqual([]);
 
     const state = deserializeState(json, trace, sqlModules);
-    // The replaced graph's chain and the appended group, so two roots - a merge
+    // The graph that was there and the appended group, so two roots - a merge
     // that lost one would show up here as a chain silently missing.
     expect(state.rootNodes).toHaveLength(2);
     expect(state.selectedNodes).toEqual(new Set([ids.groupNodeId]));

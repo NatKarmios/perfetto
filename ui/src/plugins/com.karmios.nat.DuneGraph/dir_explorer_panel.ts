@@ -185,32 +185,6 @@ interface DirExplorerPanelAttrs {
    * there to light up.
    */
   readonly filteredDirId?: number;
-
-  /**
-   * The pane's own filter was applied, changed, or cleared: this is what it now
-   * is and how many members it matched.
-   *
-   * The other half of the same split as `onFilterToDir`. The pane owns the
-   * filter UI - the path box, the Filters menu, the chip - and a Data Explorer
-   * chart wants the *other* cards narrowed to whatever that filter matched, so
-   * the pane reports the change and the caller decides what to do about it (see
-   * dir_explorer_chart.ts, which turns it into a brush over the matching node
-   * ids).
-   *
-   * Both arguments are needed and neither can be recovered from the other: the
-   * filter is what the caller has to act on, and the count is the only thing
-   * that says how expensive acting would be *before* the ids are fetched - a
-   * loose filter matches most of the build.
-   *
-   * `matchCount` is 0 for an inactive filter, which is the pane saying its rows
-   * are no longer a filtered subset of anything - not "the filter matched
-   * nothing". Called on the apply that lands, not on the keystroke: the filter
-   * is submitted on Enter and the tree is built from queries, so this arrives
-   * with the tree it describes.
-   *
-   * Absent in the side panel, where there is nothing else to narrow.
-   */
-  readonly onFilterChange?: (filter: MemberFilter, matchCount: number) => void;
 }
 
 // One directory's child directories, once asked for.
@@ -403,7 +377,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
             icon: 'close',
             compact: true,
             title: this.clearTitle(),
-            onclick: () => this.clearFilter(attrs),
+            onclick: () => this.clearFilter(),
           }),
         ),
     );
@@ -544,7 +518,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         icon: 'clear',
         disabled: !filterActive(this.filter),
         onclick: () => {
-          this.clearFilter(attrs);
+          this.clearFilter();
           attrs.controller.requestRedraw();
         },
       }),
@@ -700,7 +674,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     // there is - the rows already are the selection - so it takes this path
     // like any other and the tree gets built from the source's counts.
     if (!filterActive(filter) && !attrs.source.rowDriven) {
-      this.clearFilter(attrs);
+      this.clearFilter();
       attrs.controller.requestRedraw();
       return;
     }
@@ -735,20 +709,12 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.children.clear();
       this.members.clear();
       this.expanded = remapKeys(this.expanded, tree);
-      // Reported here rather than by the caller of `apply`, so that it arrives
-      // with the tree that describes it and carries that tree's count - which
-      // is only known now. `matchCount` is the total over the whole tree, i.e.
-      // exactly what a caller narrowing something else has to act on.
-      attrs.onFilterChange?.(filter, tree.matchCount);
     })()
       .catch((e) => {
         this.filterError = `Could not apply the filter: ${errorText(e)}`;
         this.filter = {};
         this.tree = undefined;
         this.ruleDirs = undefined;
-        // The filter is gone, so anything narrowed to it is narrowed to
-        // something that is not on screen - said the same way clearing it is.
-        attrs.onFilterChange?.({}, 0);
       })
       .finally(() => {
         this.filterLoading = false;
@@ -756,18 +722,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       });
   }
 
-  /**
-   * Drops the filter entirely, box and all.
-   *
-   * Takes `attrs` only to report the change: clearing is a filter change like
-   * any other, and a caller narrowed to what the filter matched has to hear
-   * about it - otherwise the surface stays narrowed to something that is no
-   * longer on screen. A row-driven source then rebuilds its unfiltered tree
-   * from the render (see `renderBody`), which reports again with the count of
-   * everything the query named; the inactive filter reported here is what says
-   * "no longer a subset", and that is what a caller acts on.
-   */
-  private clearFilter(attrs: DirExplorerPanelAttrs): void {
+  /** Drops the filter entirely, box and all. */
+  private clearFilter(): void {
     this.draft = '';
     this.filter = {};
     this.tree = undefined;
@@ -775,7 +731,6 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.filterError = undefined;
     this.children.clear();
     this.members.clear();
-    attrs.onFilterChange?.({}, 0);
   }
 
   private renderBody(attrs: DirExplorerPanelAttrs): m.Children {

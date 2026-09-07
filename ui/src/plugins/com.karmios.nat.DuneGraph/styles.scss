@@ -1052,29 +1052,16 @@
   // So the flex children below can shrink under their content instead of
   // pushing the card's scroll out.
   min-height: 0;
-  // A column, because the tree can be preceded by a note. The pane takes
-  // whatever is left over.
+  // A column, so the pane takes the whole card rather than its content's
+  // height.
   display: flex;
   flex-direction: column;
 
   &__pane {
     flex: 1;
     // Without this the pane's own scroll container cannot shrink below its
-    // content and the note is pushed out of the card.
+    // content and it pushes the card's scroll out.
     min-height: 0;
-  }
-
-  // Why the pane's filter did not narrow the other cards - too many matches to
-  // brush, or a query that failed. Said once, at the top of the card next to
-  // the filter box that caused it, and muted: it is a footnote about the rest
-  // of the dashboard, not a problem with the tree, which is drawn either way.
-  &__note {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 4px;
-    font-size: 11px;
-    color: var(--pf-color-text-muted);
   }
 }
 

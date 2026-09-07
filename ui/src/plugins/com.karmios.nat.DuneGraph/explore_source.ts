@@ -14,28 +14,18 @@
 
 /**
  * One of the mirror's tables, offered to the Data Explorer as a data source the
- * user can put on a dashboard - the mechanism shared by every such offer
- * (dir_tree_graph.ts's directories, node_source.ts's nodes). What varies
+ * user can query and put on a dashboard - the mechanism shared by every such
+ * offer (dir_tree_graph.ts's directories, node_source.ts's nodes). What varies
  * between them is a table name, a column list and a name; the *shape* of the
  * hand-off is all here.
  *
- * Each source becomes a two-node chain:
+ * Each source becomes a two-node chain, wrapped in a group named after it:
  *
- *   sql_source (SELECT ... FROM <table>) -> modify_columns
+ *   group [ sql_source (SELECT ... FROM <table>) -> modify_columns ]
  *
- * plus one node that says what is to be done with it, and that node is the
- * whole difference between the two ways of applying a source:
- *
- * - The *replacing* path ({@link exploreSourceGraph}, the command) adds a
- *   `dashboard` export node after the chain, because it also seeds a dashboard
- *   that has to name a published source.
- * - The *appending* path ({@link appendExploreSourceToGraph}, the panel's
- *   buttons) wraps the chain in a named `group` instead, and exports nothing.
- *   See the note on that function for why.
- *
- * The `modify_columns` node looks redundant - a source feeding the export
- * directly is the obvious graph - but it is what makes the seeded dashboard
- * work at all, and the reason is invisible from the dashboard end:
+ * The `modify_columns` node looks redundant - the source alone is the obvious
+ * graph - but it is what makes the chain usable on a dashboard, and the reason
+ * is invisible from the dashboard end:
  *
  * - A dashboard item renders nothing until its data source reports columns
  *   (`DashboardGridView` bails out with "No columns" before it would ever ask
@@ -44,8 +34,8 @@
  * - A `sql_source` node's `finalCols` are *discovered by running it*. They are
  *   empty on a freshly loaded graph, and a source node is `autoExecute: false`,
  *   so nothing runs it until the user presses "Run Query" in the query builder.
- *   Source -> export therefore lands the user on a dashboard that says "No
- *   columns" and needs a manual trip through the graph tab.
+ *   A source published directly would therefore land the user on a dashboard
+ *   that says "No columns" and needs a manual trip through the graph tab.
  * - A `modify_columns` node's `finalCols` come from its *serialized*
  *   `selectedColumns`, and its deserializer has no `postDeserializeLate` hook
  *   that would recompute them from the (still empty) input. So the columns are
@@ -57,11 +47,10 @@
  * decides how the grid renders it: a duration as a duration, and a node id as a
  * node chip (see node_cell.ts's renderer registry).
  *
- * Two ways to apply a source, and the difference is the whole of the panel's
- * split between opening and adding (see DATA_EXPLORER_PLAN.LOCAL.md, phase 5):
- * {@link exploreSourceGraph} builds a graph that *is* the source (the command's
- * replace-and-navigate path), while {@link appendExploreSourceToGraph} merges
- * one into a graph the user is already working in.
+ * There is one way to apply a source - {@link appendExploreSourceToGraph},
+ * which merges it into the graph the user is already working in (see
+ * DATA_EXPLORER_PLAN.LOCAL.md, phase 5). Nothing here ever replaces a graph or
+ * publishes a source to a dashboard by itself; see that function for why.
  *
  * The column list has to match what the SELECT returns; both come from the same
  * declaration below, so they cannot drift. The payload is otherwise *data*, so
@@ -120,20 +109,15 @@ export interface ExploreSourceIds {
   readonly columnsNodeId: string;
 }
 
-/** ...plus the export node the replacing path publishes it through. */
-export interface ExportedSourceIds extends ExploreSourceIds {
-  readonly exportNodeId: string;
-}
-
-/** ...plus the group the appending path wraps it in. */
+/** ...plus the group the chain is wrapped in. */
 export interface GroupedSourceIds extends ExploreSourceIds {
   readonly groupNodeId: string;
 }
 
 /** A serialized graph plus the ids the source's own nodes ended up with. */
-export interface ExploreSourceGraph<Ids extends ExploreSourceIds> {
+export interface ExploreSourceGraph {
   readonly json: string;
-  readonly ids: Ids;
+  readonly ids: GroupedSourceIds;
 }
 
 /**
@@ -163,53 +147,14 @@ export function exploreSelect(source: ExploreSource): string {
 }
 
 /**
- * A graph that is nothing but this source and its dashboard export, with ids
- * from zero - what the "open it" path hands to `setActiveGraphJson`, replacing
- * whatever was there. The export node is the one a seeded dashboard's item
- * names as its data source (see dir_tree_graph.ts).
- *
- * Ungrouped, unlike the appending path: this graph *is* the source, so a group
- * would have nothing to tell it apart from, and it would hide the SELECT that
- * the user is most likely to want to read or edit.
- */
-export function exploreSourceGraph(
-  source: ExploreSource,
-): ExploreSourceGraph<ExportedSourceIds> {
-  const exportNodeId = '2';
-  const {nodes, ids} = chainNodes(source, 0, [exportNodeId]);
-  nodes.push({
-    nodeId: exportNodeId,
-    type: NodeType.kDashboard,
-    state: {exportName: source.exportName},
-    primaryInputId: ids.columnsNodeId,
-    nextNodes: [],
-  });
-  return {
-    json: JSON.stringify(
-      {
-        nodes,
-        // The source node is the only input-less node, so it is the only root.
-        rootNodeIds: [ids.sourceNodeId],
-        // Whoever switches to the graph tab lands on the SQL, which is the one
-        // node worth reading (and editing) here.
-        selectedNodeId: ids.sourceNodeId,
-      },
-      undefined,
-      2,
-    ),
-    ids: {...ids, exportNodeId},
-  };
-}
-
-/**
- * The same chain, merged into a graph the user already has - what the panel's
+ * The chain, merged into the graph the user already has - what the panel's
  * buttons hand back to `setActiveGraphJson`. Everything already in the graph
  * survives untouched, ids and all: the ids are what the user's dashboard items
  * name their data sources by, so renumbering anything would silently detach
  * them.
  *
- * Two differences from the replacing path, both because this lands in the
- * middle of somebody else's work:
+ * Two deliberate choices, both because this lands in the middle of somebody
+ * else's work:
  *
  * - **The chain goes in a group**, named after the source. Appending drops
  *   nodes onto a canvas the user is arranging, and a bare pair of unplaced
@@ -233,10 +178,10 @@ export function exploreSourceGraph(
 export function appendExploreSourceToGraph(
   existing: string | undefined,
   source: ExploreSource,
-): ExploreSourceGraph<GroupedSourceIds> {
+): ExploreSourceGraph {
   const graph = parseGraph(existing);
   const base = firstFreeNodeId(graph.nodes);
-  const {nodes, ids} = chainNodes(source, base, []);
+  const {nodes, ids} = chainNodes(source, base);
   const groupNodeId = String(base + 2);
   nodes.push({
     nodeId: groupNodeId,
@@ -297,15 +242,15 @@ function parseGraph(existing: string | undefined): SerializedGraph {
 }
 
 /**
- * The chain itself, numbered from `base`. Edges are written from both ends
- * (`nextNodes` plus `primaryInputId`), which the graph format requires - a
- * one-sided edge is dropped on load - so the caller passes what follows the
- * chain and the columns node is wired to it here.
+ * The chain itself, numbered from `base`. Its one edge is written from both
+ * ends (`nextNodes` plus `primaryInputId`), which the graph format requires - a
+ * one-sided edge is dropped on load. Nothing follows the columns node: what is
+ * done with the source is the user's call (see
+ * {@link appendExploreSourceToGraph}).
  */
 function chainNodes(
   source: ExploreSource,
   base: number,
-  nextAfterColumns: ReadonlyArray<string>,
 ): {nodes: SerializedNode[]; ids: ExploreSourceIds} {
   const ids: ExploreSourceIds = {
     sourceNodeId: String(base),
@@ -341,7 +286,7 @@ function chainNodes(
         })),
       },
       primaryInputId: ids.sourceNodeId,
-      nextNodes: [...nextAfterColumns],
+      nextNodes: [],
     },
   ];
   return {nodes, ids};

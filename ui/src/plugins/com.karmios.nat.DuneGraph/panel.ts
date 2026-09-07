@@ -121,16 +121,13 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
    *
    * Only while the Data Explorer is the open page, though: "add to the current
    * graph" means nothing anywhere else, and the buttons would be an invitation
-   * to a page the user isn't on. The way *in* is the omnibox command, which
-   * opens the directory tree by replacing the graph and navigating. So: command
-   * = open, these = add in place.
+   * to a page the user isn't on. These buttons are the only way in, so the
+   * hand-off can assume this panel is on screen to report a load in - which is
+   * where a load reports itself anyway.
    *
    * The route is read straight off the URL rather than watched, which is all
    * that's needed - the shell redraws on `hashchange`, so the section appears
    * and disappears with the navigation that caused it.
-   *
-   * No `onLoadNeeded` callback: this panel *is* where a load reports itself, and
-   * clicking one of these means it is already on screen.
    */
   private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
     if (!isExplorePageOpen()) {

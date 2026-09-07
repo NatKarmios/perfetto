@@ -13,25 +13,19 @@
 // limitations under the License.
 
 /**
- * Hand-off to the Data Explorer, in two flavours:
+ * Hand-off to the Data Explorer: {@link appendExploreSource} *adds* one of the
+ * mirror's tables to the graph the user is already working in, as a named
+ * group, and nothing else - no dashboard, no export, no navigation anywhere.
+ * These are the panel's buttons, which only exist while the Data Explorer is
+ * the open page (see panel.ts).
  *
- * - {@link exploreDirTree} *opens* the build's directory tree: it replaces the
- *   active graph and seeds a dashboard, so one click lands the user in front of
- *   the tree with nothing to configure. This is the omnibox command, and the
- *   only way in from outside the Data Explorer.
- * - {@link appendExploreSource} *adds* one of the mirror's tables to the graph
- *   the user is already working in, as a named group, and nothing else - no
- *   dashboard, no export, no navigation anywhere. These are the panel's
- *   buttons, which only exist while the Data Explorer is the open page (see
- *   panel.ts).
- *
- * The JSON both hand over lives in explore_source.ts and its two sources
+ * The JSON they hand over lives in explore_source.ts and its two sources
  * (dir_tree_graph.ts, node_source.ts).
  *
  * This is the only place DuneGraph reaches into another plugin. It goes through
  * the Data Explorer's public `getActiveGraphJson` / `setActiveGraphJson` (the
  * same entry point the Intelletto assistant uses), so nothing here depends on
- * that plugin's internals beyond the documented graph/dashboard formats.
+ * that plugin's internals beyond the documented graph format.
  */
 
 import m from 'mithril';
@@ -40,11 +34,7 @@ import type {Trace} from '../../public/trace';
 import {showModal} from '../../widgets/modal';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import type {DuneGraphController} from './controller';
-import {
-  dirTreeDashboards,
-  dirTreeGraphJson,
-  DIR_TREE_SOURCE,
-} from './dir_tree_graph';
+import {DIR_TREE_SOURCE} from './dir_tree_graph';
 import type {ExploreSource} from './explore_source';
 import {appendExploreSourceToGraph} from './explore_source';
 import {NODE_SOURCE} from './node_source';
@@ -57,42 +47,6 @@ export const APPENDABLE_SOURCES: ReadonlyArray<ExploreSource> = [
   DIR_TREE_SOURCE,
   NODE_SOURCE,
 ];
-
-/**
- * Builds the dir-tree graph and dashboard and navigates to the Data Explorer,
- * replacing whatever graph was there.
- *
- * `dune_node` and the `dune_dir` hierarchy the chart draws it into only exist
- * once the node tier of the SQL mirror has been built (the graph no longer
- * loads with the trace - see controller.ts), so a load is
- * part of the action rather than a precondition to complain about: this runs
- * the controller's own `buildNodeMirror` step, whose progress and failure the
- * side panel already reports. `onLoadNeeded` is called just before that wait,
- * for callers that have to reveal the panel first to make that reporting
- * visible - the panel's own buttons don't need it.
- *
- * A failure of the load is therefore silent here (the panel is saying it). The
- * two ways the hand-off itself can fail - the Data Explorer disabled, or its
- * SQL modules not ready - are modal, because nothing else in the UI is in a
- * position to say so.
- */
-export async function exploreDirTree(
-  trace: Trace,
-  controller: DuneGraphController,
-  onLoadNeeded?: () => void,
-): Promise<void> {
-  const plugin = await ready(trace, controller, onLoadNeeded);
-  if (plugin === undefined) return;
-  try {
-    // Seeds the graph *and* the dashboard, and navigates to #!/explore.
-    plugin.setActiveGraphJson(trace, dirTreeGraphJson(), dirTreeDashboards());
-  } catch (e) {
-    // setActiveGraphJson throws on a graph the Data Explorer won't accept
-    // (which the unit test exists to prevent) and while its SQL modules are
-    // still loading (which retrying fixes).
-    await failed('open the directory tree', getErrorMessage(e));
-  }
-}
 
 /**
  * Adds `source` to the active graph as one named group, leaving everything
@@ -115,9 +69,8 @@ export async function appendExploreSource(
   trace: Trace,
   controller: DuneGraphController,
   source: ExploreSource,
-  onLoadNeeded?: () => void,
 ): Promise<void> {
-  const plugin = await ready(trace, controller, onLoadNeeded);
+  const plugin = await ready(trace, controller);
   if (plugin === undefined) return;
   try {
     const {json} = appendExploreSourceToGraph(
@@ -132,8 +85,17 @@ export async function appendExploreSource(
 }
 
 /**
- * The two preconditions both hand-offs share: the node tier of the mirror is
- * built (building it if not), and the Data Explorer is actually there.
+ * The two preconditions of a hand-off: the node tier of the mirror is built
+ * (building it if not), and the Data Explorer is actually there.
+ *
+ * The tables the sources read only exist once that tier has been built (the
+ * graph no longer loads with the trace - see controller.ts), so a load is part
+ * of the action rather than a precondition to complain about: this runs the
+ * controller's own `buildNodeMirror` step, whose progress and failure the side
+ * panel already reports - and the panel is on screen, since its buttons are the
+ * only way here. A failure of the load is therefore silent. The two ways the
+ * hand-off itself can fail - the Data Explorer disabled, or its SQL modules not
+ * ready - are modal, because nothing else in the UI is in a position to say so.
  *
  * @returns The Data Explorer plugin, or undefined if the hand-off cannot go
  *     ahead - in which case the reason has already been reported, by the side
@@ -142,10 +104,8 @@ export async function appendExploreSource(
 async function ready(
   trace: Trace,
   controller: DuneGraphController,
-  onLoadNeeded?: () => void,
 ): Promise<InstanceType<typeof DataExplorerPlugin> | undefined> {
   if (!controller.nodeMirrorReady) {
-    onLoadNeeded?.();
     await controller.buildNodeMirror();
     // Still not there: the load failed, and the panel shows why.
     if (!controller.nodeMirrorReady) return undefined;

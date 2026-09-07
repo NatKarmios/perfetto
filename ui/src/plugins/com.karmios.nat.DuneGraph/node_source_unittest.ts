@@ -16,23 +16,22 @@
  * The `dune_node` source (node_source.ts). One assertion here is the reason the
  * source exists: that `node_id`'s `JOINID(dune_node.node_id)` type survives the
  * whole trip - our column declaration, the serialized graph, the Data
- * Explorer's loader - and comes back out on the *exported* source's columns,
- * which is what a dashboard grid resolves its renderers from. Losing the type
- * anywhere along the way is not an error, just a column of bare integers where
- * the node chips should be.
+ * Explorer's loader - and comes back out on the columns the appended chain
+ * reports, which is what a `dashboard` node publishes and a grid resolves its
+ * renderers from. Losing the type anywhere along the way is not an error, just
+ * a column of bare integers where the node chips should be.
  *
  * (That such a column renders as a chip is node_cell_unittest.ts's job; this is
  * about the type getting there in the first place.)
  */
 
 import {registerCoreNodes} from '../dev.perfetto.DataExplorer/query_builder/core_nodes';
-import {dashboardRegistry} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import {
   deserializeState,
   validateSerializedGraph,
 } from '../dev.perfetto.DataExplorer/json_handler';
 import type {Trace} from '../../public/trace';
-import {exploreSelect, exploreSourceGraph} from './explore_source';
+import {appendExploreSourceToGraph, exploreSelect} from './explore_source';
 import {DUNE_NODE_JOINID, DUNE_NODE_TABLE} from './node_cell';
 import {DUNE_NODE_COLUMNS, NODE_SOURCE} from './node_source';
 
@@ -89,20 +88,27 @@ describe('NODE_SOURCE', () => {
 describe('the nodes source as a graph', () => {
   it('passes the Data Explorer structural validation', () => {
     expect(
-      validateSerializedGraph(exploreSourceGraph(NODE_SOURCE).json).errors,
+      validateSerializedGraph(
+        appendExploreSourceToGraph(undefined, NODE_SOURCE).json,
+      ).errors,
     ).toEqual([]);
   });
 
-  it('exports node_id as a node reference, before anything has run', () => {
-    const {json, ids} = exploreSourceGraph(NODE_SOURCE);
-    deserializeState(json, trace, sqlModules);
+  it('carries node_id as a node reference, before anything has run', () => {
+    // Read off the chain's end node, which is the group's output port and the
+    // node a `dashboard` would publish: what it reports as `finalCols` is
+    // exactly what an exported source's columns are (see explore_source.ts).
+    // That they are known here, with no query having been run, is the whole
+    // reason for the modify_columns node.
+    const {json, ids} = appendExploreSourceToGraph(undefined, NODE_SOURCE);
+    const state = deserializeState(json, trace, sqlModules);
+    const end = state.rootNodes[0].innerNodes?.find(
+      (n) => n.nodeId === ids.columnsNodeId,
+    );
+    expect(end).toBeDefined();
+    expect(end!.finalCols.map((c) => c.name)).toEqual(columnNames);
 
-    const source = dashboardRegistry.getExportedSource(ids.exportNodeId);
-    expect(source).toBeDefined();
-    expect(source!.name).toBe('Dune nodes');
-    expect(source!.columns.map((c) => c.name)).toEqual(columnNames);
-
-    const byName = new Map(source!.columns.map((c) => [c.name, c.type]));
+    const byName = new Map(end!.finalCols.map((c) => [c.name, c.type]));
     // The point of the whole source.
     expect(byName.get('node_id')).toEqual(DUNE_NODE_JOINID);
     // And the ones that are only worth declaring if they survive too: a slice

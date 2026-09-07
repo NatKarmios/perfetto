@@ -21,9 +21,10 @@
  * client-side, and the failures worth pinning are all silent ones:
  *
  * - an *unbounded* query. The chart's input can be every node in the build
- *   (`SELECT * FROM dune_node` is what the omnibox command seeds), so a query
- *   whose result size follows the input's - rather than the mirror's directory
- *   count, or a member page's `LIMIT` - is the bug this file exists to catch.
+ *   (`SELECT * FROM dune_node` is one button away, the "Dune nodes" source the
+ *   side panel appends), so a query whose result size follows the input's -
+ *   rather than the mirror's directory count, or a member page's `LIMIT` - is
+ *   the bug this file exists to catch.
  * - a count that counts join rows rather than nodes, which double-counts an
  *   input naming a node twice (an edge query has a `src` per edge);
  * - a count keyed on the wrong thing, or a `matchingCounts` that returns
@@ -540,88 +541,6 @@ describe('ChartDirExplorerSource under a member filter', () => {
         has(q, "SELECT id FROM dune_dir WHERE path GLOB '*lib*'"),
       ),
     ).toBe(true);
-  });
-});
-
-describe('ChartDirExplorerSource.matchingNodeIds', () => {
-  // The brush's ids and the tree's counts have to be the *same* selection, or
-  // the count the pane shows is not the size of the set the other cards get
-  // narrowed to. So this is the counts query with the aggregate taken off, and
-  // that is checked by comparing the two statements rather than by re-reading
-  // one of them.
-  const selection = (sql: string) =>
-    sql
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/^SELECT .*? (FROM dune_node n)/, '$1')
-      .replace(/ GROUP BY 1, 2$/, '');
-
-  test('lists the nodes the counts counted, over the same join', async () => {
-    const {source, sql} = sourceOver();
-    await source.matchingCounts('rule', FILTER);
-    await source.matchingNodeIds(FILTER);
-
-    const counts = sql.find(isCountsQuery)!;
-    const ids = sql[sql.length - 1];
-    expect(has(ids, 'SELECT n.node_id AS node_id FROM dune_node n')).toBe(true);
-    expect(selection(ids)).toEqual(selection(counts));
-    // No aggregate, and nothing that would make it a different set: the cap
-    // lives with whoever pays for the ids, not here (see MAX_BRUSH_NODES).
-    expect(ids).not.toContain('count(*)');
-    expect(ids).not.toContain('GROUP BY');
-    expect(ids).not.toMatch(/LIMIT/);
-  });
-
-  test('narrows by both kinds of the filter, on their own columns', async () => {
-    // The reason the brush is a set of ids at all: a dep matches on its label
-    // and a rule on its directory's path, which is a disjunction over two
-    // columns and so is not expressible as one brush predicate.
-    const {source, sql} = sourceOver();
-    await source.matchingNodeIds(FILTER);
-
-    const ids = sql[sql.length - 1];
-    expect(
-      has(
-        ids,
-        "WHERE (n.kind = 'rule' AND (n.dir_id IN (SELECT id FROM dune_dir " +
-          "WHERE path GLOB '*lib*') AND r.outcome IN ('failed-action') " +
-          'AND n.dur_ns >= 10000000))',
-      ),
-    ).toBe(true);
-    expect(
-      has(
-        ids,
-        "OR (n.kind = 'dep' AND (n.label GLOB '*lib*' " +
-          'AND n.dur_ns >= 10000000))',
-      ),
-    ).toBe(true);
-  });
-
-  test('de-duplicates the input rather than the answer', async () => {
-    // An edge query names a node once per edge, so without the DISTINCT the
-    // same id would be brushed several times over.
-    const {source, sql} = sourceOver();
-    await source.matchingNodeIds({});
-
-    const ids = sql[sql.length - 1];
-    expect(
-      has(
-        ids,
-        'JOIN ( SELECT DISTINCT "node_id" AS node_id ' +
-          'FROM (SELECT * FROM results_1) ) q ON q.node_id = n.node_id',
-      ),
-    ).toBe(true);
-  });
-
-  test('reads the ids off the rows, one query and nothing cached', async () => {
-    const {source, sql} = sourceOver({
-      members: [memberRow({node_id: 4}), memberRow({node_id: 9})],
-    });
-    expect(await source.matchingNodeIds({})).toEqual([4, 9]);
-    expect(sql).toHaveLength(1);
-    // Asked for once per filter apply, so nothing is held between calls.
-    await source.matchingNodeIds({});
-    expect(sql).toHaveLength(2);
   });
 });
 
