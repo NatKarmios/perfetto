@@ -317,6 +317,56 @@ export class ChartDirExplorerSource implements DirExplorerSource {
   }
 
   /**
+   * The directory whose subtree `ids` is, or undefined if they are not one.
+   *
+   * The inverse of `subtreeDirIds`, and the way a card reads its own brush back
+   * out of the filters it was persisted as: the brush is a set of `dir_id`s and
+   * nothing records which directory produced it, but a set that came from there
+   * has exactly one member every other member sits under, and that member is
+   * the directory the click named.
+   *
+   * Undefined for anything that is not that - an id this mirror has never heard
+   * of, two unrelated subtrees, a set left over from a graph since rebuilt. The
+   * caller is recovering state it can equally do without, so a set that cannot
+   * be explained is dropped rather than guessed at.
+   *
+   * Careful: `subtreeDirIds` returns only the directories that hold rows, so a
+   * click on a directory holding none of its own is indistinguishable from one
+   * on the deepest descendant that holds them all, and this answers with the
+   * latter. Both brush the same rows; what differs is which row draws pressed.
+   */
+  rootOfDirIds(ids: readonly number[]): number | undefined {
+    const loaded = this.loaded;
+    if (loaded === undefined || ids.length === 0) return undefined;
+    const byId = new Map(loaded.dirs.map((d) => [d.id, d]));
+
+    // The root can only be the shallowest of them, since every other member is
+    // to sit below it. Ties need no special case: where two members are equally
+    // shallow, whichever is picked the other one fails the walk below.
+    let root: DirEntry | undefined;
+    for (const id of ids) {
+      const dir = byId.get(id);
+      if (dir === undefined) return undefined;
+      if (root === undefined || dir.depth < root.depth) root = dir;
+    }
+    if (root === undefined) return undefined;
+
+    // ...and it is the root only if the rest really do sit below it. Each walk
+    // up is bounded by the depth difference and the hierarchy is a tree, so
+    // this terminates without a visited set.
+    const rootId = root.id;
+    const rootDepth = root.depth;
+    for (const id of ids) {
+      let at = byId.get(id);
+      while (at !== undefined && at.depth > rootDepth) {
+        at = at.parentId === undefined ? undefined : byId.get(at.parentId);
+      }
+      if (at?.id !== rootId) return undefined;
+    }
+    return rootId;
+  }
+
+  /**
    * Unreachable: a row-driven source is never descended a level at a time (see
    * the file header and `DirExplorerSource.rowDriven`).
    *

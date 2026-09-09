@@ -50,6 +50,11 @@
  * nothing back - so the answer lives here, in `brushes`, and goes into the pane
  * as `filteredDirId` for it to draw the button pressed.
  *
+ * `brushes` dies with the trace and the brush itself is saved with the tab, so
+ * on the far side of a reload the card has to work out again which directory it
+ * brushed. It reads that back off the persisted filters, which carry the id of
+ * the chart that set them - see `recoverBrushedDir`.
+ *
  * The pane's own path box and Filters menu narrow *this* card's tree and
  * nothing else. Deliberately: a brush is persisted with the tab and the pane's
  * filter is not, so a dashboard reopened after a filter brush came back
@@ -111,6 +116,17 @@ const DIR_ID_COLUMN = 'dir_id';
  */
 interface CardBrush {
   dirId?: number;
+  /**
+   * Whether the persisted filters have already been asked what `dirId` was.
+   *
+   * The brush outlives this map - it is saved with the tab and the map is built
+   * per trace load - so a card coming back from a reload has filters and no
+   * `dirId`, and gets it back from `rootOfDirIds` (see `recoverBrushedDir`).
+   * That answer is a scan of the mirror's directories, so it is taken once and
+   * kept, including when it comes back undefined: a set that could not be
+   * explained this frame will not be explicable the next one either.
+   */
+  recovered?: boolean;
 }
 
 /**
@@ -275,6 +291,7 @@ function renderChartBody(
   }
 
   const brush = cardBrush(brushes, config.id);
+  recoverBrushedDir(ctx, source, config.id, brush);
   return m(
     '.pf-dune-dir-chart__pane',
     m(DirExplorerPanel, {
@@ -297,6 +314,43 @@ function cardBrush(
     brushes.set(chartId, brush);
   }
   return brush;
+}
+
+/**
+ * Fills in `brush.dirId` from the filters the card's own brush was persisted
+ * as, for a card whose brush was set before a reload.
+ *
+ * `brushes` lives for one trace load and the brush it mirrors lives with the
+ * tab, so reopening a dashboard leaves every other card narrowed by a filter
+ * this one no longer knows it set: nothing draws pressed, and the row that
+ * would clear the brush re-applies it instead. The filters are the only record
+ * left, and `chartId` is what makes them readable - a `dir_id` selection
+ * stamped with this chart's id is this card's own brush and no one else's.
+ *
+ * Silent about failure by design. Every step of the way back is optional - the
+ * host may publish no filters at all (the visualisation-node path does not),
+ * the set may not resolve to a directory - and where it stops the card is
+ * exactly the card it was before, brush-blind but working.
+ */
+function recoverBrushedDir(
+  ctx: ChartRenderContext,
+  source: ChartDirExplorerSource,
+  chartId: string,
+  brush: CardBrush,
+): void {
+  if (brush.dirId !== undefined || brush.recovered === true) return;
+  const ids: number[] = [];
+  for (const filter of ctx.brushFilters ?? []) {
+    if (filter.column !== DIR_ID_COLUMN) continue;
+    if (filter.op !== '=' || filter.chartId !== chartId) continue;
+    if (typeof filter.value !== 'number' && typeof filter.value !== 'bigint') {
+      continue;
+    }
+    ids.push(Number(filter.value));
+  }
+  if (ids.length === 0) return;
+  brush.recovered = true;
+  brush.dirId = source.rootOfDirIds(ids);
 }
 
 /**
@@ -325,6 +379,10 @@ function dirFilterHandler(
     return undefined;
   }
   return (dir: DirEntry) => {
+    // Whatever the click does, this card now knows what it brushed first-hand
+    // and has no more use for the persisted filters - which for one frame
+    // after a clear still describe the brush being cleared.
+    brush.recovered = true;
     if (brush.dirId === dir.id) {
       brush.dirId = undefined;
       ctx.node.clearChartFiltersForColumn(DIR_ID_COLUMN);

@@ -51,8 +51,10 @@ import {
   getDefaultChartLabel,
   isValidChartType,
 } from '../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
+import type {DashboardBrushFilter} from '../dev.perfetto.DataExplorer/dashboard/dashboard_registry';
 import type {SqlValue} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
+import type {ChartDirExplorerSource} from './dir_chart_source';
 import {registerDirExplorerChart} from './dir_explorer_chart';
 
 // The type id as the registry sees it. Spelt out rather than imported: it is
@@ -154,23 +156,35 @@ function renderIntoDom(children: m.Children): HTMLElement {
  */
 type Rows = ReadonlyArray<Record<string, unknown>>;
 
+// One row of `dune_dir`. The counts are the same on every directory because
+// nothing here reads them: a row-driven source draws the rows the query named
+// and takes its numbers from those (see dir_chart_source.ts).
+function dirRow(over: Record<string, unknown>) {
+  return {
+    parent_id: undefined,
+    n_rules: 1,
+    n_deps: 0,
+    n_failed: 0,
+    t_rules: 1,
+    t_deps: 0,
+    t_failed: 0,
+    total_dur_ns: 0n,
+    ...over,
+  };
+}
+
+// The mirror's hierarchy: a chain deep enough to have an inside, plus a second
+// root, which is what a set spanning both is not a subtree of. Only `lib` ever
+// holds rows, so it is the only one the pane draws.
+const DIRS = [
+  dirRow({id: 0, name: 'lib', path: 'lib', depth: 0}),
+  dirRow({id: 1, name: 'a', path: 'lib/a', depth: 1, parent_id: 0}),
+  dirRow({id: 2, name: 'b', path: 'lib/a/b', depth: 2, parent_id: 1}),
+  dirRow({id: 3, name: 'bin', path: 'bin', depth: 0}),
+];
+
 function stubEngine(nodes: Rows): Engine {
-  const dirs = [
-    {
-      id: 0,
-      parent_id: undefined,
-      name: 'lib',
-      path: 'lib',
-      depth: 0,
-      n_rules: 1,
-      n_deps: 0,
-      n_failed: 0,
-      t_rules: 1,
-      t_deps: 0,
-      t_failed: 0,
-      total_dur_ns: 0n,
-    },
-  ];
+  const dirs = DIRS;
   return {
     query: async (q: string) => {
       const rows = q.includes('count(*)')
@@ -211,6 +225,9 @@ interface ChartOpts {
   node: ChartColumnProvider;
   config: ChartConfig;
   nodes?: Rows;
+  // What the dashboard has persisted for this card's data source, which is
+  // where a brush set before a reload is still on record.
+  brushFilters?: ReadonlyArray<DashboardBrushFilter>;
 }
 
 async function renderChart(opts: ChartOpts): Promise<HTMLElement> {
@@ -225,12 +242,17 @@ async function renderChart(opts: ChartOpts): Promise<HTMLElement> {
  * Rendered into one root throughout, so the pane's component instance - and
  * with it the filter it is holding - survives between steps.
  */
-async function chartRunner(
-  opts: ChartOpts,
-): Promise<{root: HTMLElement; step: () => Promise<void>}> {
+async function chartRunner(opts: ChartOpts): Promise<{
+  root: HTMLElement;
+  step: () => Promise<void>;
+  source: ChartDirExplorerSource;
+}> {
   const def = getChartTypeDefinition(CHART_TYPE);
   const entry: ChartLoaderEntry = {key: 'k'};
-  const ctx = {node: opts.node} as unknown as ChartRenderContext;
+  const ctx = {
+    node: opts.node,
+    brushFilters: opts.brushFilters,
+  } as unknown as ChartRenderContext;
   def?.createLoader(
     stubEngine(opts.nodes ?? []),
     'SELECT * FROM results_1',
@@ -245,7 +267,7 @@ async function chartRunner(
   m.render(root, def?.render(ctx, opts.config, entry));
   await step();
   await step();
-  return {root, step};
+  return {root, step, source: entry.custom as ChartDirExplorerSource};
 }
 
 // The pane's per-row narrowing button, whichever way its toggle is pointing.
@@ -500,6 +522,74 @@ describe('the directory chart narrowing toggle', () => {
     expect(clears).toEqual(['dir_id', 'dir_id']);
     expect(button().classList.contains('pf-active')).toBe(false);
     expect(button().querySelector('.pf-filled')).toBeNull();
+  });
+
+  test('picks its own brush back up after the tab is reopened', async () => {
+    // What survives a reload is the filter, not the card's memory of setting
+    // it: the map holding that dies with the trace. A card that cannot read the
+    // filter back is stuck - nothing draws pressed and the one button that
+    // would clear the brush re-applies it instead.
+    const brushes: Array<{column: string; values: SqlValue[]}> = [];
+    const clears: string[] = [];
+    register(loadedController());
+    const {root, step} = await chartRunner({
+      node: fakeNode(['node_id', 'dir_id'], brushes, [], clears),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+      brushFilters: [
+        {column: 'dir_id', op: '=', value: 0, chartId: config().id},
+      ],
+    });
+
+    const button = () => narrowButton(root)!;
+    expect(button().classList.contains('pf-active')).toBe(true);
+
+    button().click();
+    await step();
+
+    // The way back, and not a second helping of the filter already there.
+    expect(clears).toEqual(['dir_id']);
+    expect(brushes).toEqual([]);
+    expect(button().classList.contains('pf-active')).toBe(false);
+  });
+});
+
+/**
+ * Reading a `dir_id` selection back as the directory it came from - the half of
+ * the recovery above that knows the hierarchy (see `rootOfDirIds`).
+ */
+describe('resolving a brushed set of directories', () => {
+  // A source with the fixture's hierarchy loaded, taken the way the host builds
+  // one so that the load has actually run.
+  async function loadedSource(): Promise<ChartDirExplorerSource> {
+    register(loadedController());
+    const {source} = await chartRunner({
+      node: fakeNode(['node_id', 'dir_id']),
+      config: config('node_id'),
+      nodes: [nodeRow()],
+    });
+    return source;
+  }
+
+  test('names the directory a subtree hangs off', async () => {
+    const source = await loadedSource();
+
+    expect(source.rootOfDirIds([0, 1, 2])).toBe(0);
+    expect(source.rootOfDirIds([1, 2])).toBe(1);
+    // A single directory is its own subtree, which is what a brush on a leaf
+    // comes back as.
+    expect(source.rootOfDirIds([2])).toBe(2);
+  });
+
+  test('declines a set that is not one subtree', async () => {
+    const source = await loadedSource();
+
+    // Two roots, then a root and something under a different one, then an id
+    // this mirror does not have - hand-edited state, or a graph rebuilt since.
+    expect(source.rootOfDirIds([0, 3])).toBeUndefined();
+    expect(source.rootOfDirIds([2, 3])).toBeUndefined();
+    expect(source.rootOfDirIds([1, 99])).toBeUndefined();
+    expect(source.rootOfDirIds([])).toBeUndefined();
   });
 });
 
