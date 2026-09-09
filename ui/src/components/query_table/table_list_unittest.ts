@@ -13,33 +13,10 @@
 // limitations under the License.
 
 import m from 'mithril';
-import {TableList} from './table_list';
-import type {
-  SqlModules,
-  SqlTable,
-} from '../dev.perfetto.SqlModules/sql_modules';
+import {TableList, type TableListEntry} from './table_list';
 
-function makeSqlModules(names: string[]): SqlModules {
-  const tables = names.map(
-    (name) =>
-      ({
-        name,
-        description: '',
-        type: 'table',
-        columns: [],
-        getTableColumns: () => [],
-      }) as unknown as SqlTable,
-  );
-  return {
-    listTables: () => tables,
-    listModules: () => [],
-    listTablesNames: () => names,
-    getTable: () => undefined,
-    getModuleForTable: () => undefined,
-    isModuleDisabled: () => false,
-    getDisabledModules: () => new Set<string>(),
-    ensureInitialized: async () => {},
-  } as unknown as SqlModules;
+function makeTables(names: string[]): TableListEntry[] {
+  return names.map((name) => ({name, description: '', columns: []}));
 }
 
 // Types `text` into the search box one character at a time, then deletes it,
@@ -106,8 +83,10 @@ describe('TableList', () => {
     names.splice(40, 0, names[3]);
     names.splice(70, 0, names[8]);
 
-    const sqlModules = makeSqlModules(names);
-    const comp = {view: () => m(TableList, {sqlModules})};
+    const tables = makeTables(names);
+    const comp = {
+      view: () => m(TableList, {sections: [{title: 'Tables', tables}]}),
+    };
     const root = document.createElement('div');
     document.body.appendChild(root);
     m.render(root, m(comp));

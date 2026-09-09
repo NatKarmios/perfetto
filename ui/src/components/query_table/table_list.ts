@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import './table_list.scss';
 import m from 'mithril';
 import {fuzzySearch, type FuzzySegment} from '../../base/fuzzy';
 import {Accordion, AccordionSection} from '../../widgets/accordion';
@@ -19,18 +20,50 @@ import {Button} from '../../widgets/button';
 import {CopyToClipboardButton} from '../../widgets/copy_to_clipboard_button';
 import {Icon} from '../../widgets/icon';
 import {TextInput} from '../../widgets/text_input';
-import type {
-  SqlModules,
-  SqlTable,
-} from '../dev.perfetto.SqlModules/sql_modules';
 import {
   perfettoSqlTypeIcon,
   perfettoSqlTypeToString,
 } from '../../trace_processor/perfetto_sql_type';
+import type {PerfettoSqlType} from '../../trace_processor/perfetto_sql_type';
 import {EmptyState} from '../../widgets/empty_state';
 
+// What this list needs to know about a column. `SqlColumn` from SqlModules
+// satisfies it structurally, so a caller with a stdlib catalogue passes its
+// tables straight through; a caller documenting tables it created itself (the
+// Dune plugin's `dune_*` mirror, say) writes the same shape by hand.
+export interface TableListColumn {
+  readonly name: string;
+  readonly description?: string;
+  readonly type?: PerfettoSqlType;
+}
+
+// What this list needs to know about a table. `SqlTable` satisfies this too -
+// deliberately a structural subset of it rather than an import, so that
+// components/ doesn't depend on a plugin.
+export interface TableListEntry {
+  readonly name: string;
+  readonly description?: string;
+  // `INCLUDE PERFETTO MODULE <key>;`, prepended to the generated query and
+  // offered for copying. Absent for a table that is already in scope.
+  readonly includeKey?: string;
+  readonly columns: ReadonlyArray<TableListColumn>;
+  // SQL to open when the "run" button is pressed, in place of the generated
+  // `SELECT <columns> FROM <name>`. For an entry that can't simply be selected
+  // from - a table function, whose name is a call needing arguments - the
+  // generated form would land the user with SQL that doesn't run.
+  readonly exampleQuery?: string;
+}
+
+// One titled group of tables. Sections are rendered in the order given, each
+// under its own heading; a section that no longer matches the search filter is
+// dropped rather than shown empty.
+export interface TableListSection {
+  readonly title: string;
+  readonly tables: ReadonlyArray<TableListEntry>;
+}
+
 interface FilteredTable {
-  readonly table: SqlTable;
+  readonly table: TableListEntry;
   readonly segments: readonly FuzzySegment[];
 }
 
@@ -41,7 +74,7 @@ function renderHighlightedName(segments: readonly FuzzySegment[]): m.Children {
 }
 
 export interface TableListAttrs {
-  readonly sqlModules: SqlModules;
+  readonly sections: ReadonlyArray<TableListSection>;
   // Called when user wants to query a table in a new tab
   onQueryTable?(tableName: string, query: string): void;
 }
@@ -50,24 +83,15 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
   private searchQuery = '';
 
   view({attrs}: m.CVnode<TableListAttrs>): m.Children {
-    const tables = attrs.sqlModules.listTables();
-
-    // Filter tables using fuzzy search (results ordered by relevance)
     const searchTerm = this.searchQuery.trim();
-    let filteredTables: readonly FilteredTable[];
-    if (searchTerm === '') {
-      filteredTables = tables.map((table) => ({
-        table,
-        segments: [{matching: false, value: table.name}],
-      }));
-    } else {
-      filteredTables = fuzzySearch(tables, (t) => t.name, searchTerm).map(
-        (result) => ({
-          table: result.item,
-          segments: result.segments,
-        }),
-      );
-    }
+    const sections = attrs.sections
+      .map((section) => ({
+        title: section.title,
+        tables: filterTables(section.tables, searchTerm),
+      }))
+      // A section whose tables all filtered out says nothing useful, so it
+      // goes rather than leaving a run of empty headings behind.
+      .filter((section) => section.tables.length > 0);
 
     return m(
       '.pf-simple-table-list',
@@ -80,13 +104,30 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
           this.searchQuery = value;
         },
       }),
-      filteredTables.length > 0
+      sections.length > 0
         ? m(
             '.pf-simple-table-list__items',
-            m(
-              Accordion,
-              this.renderSections(filteredTables, attrs.onQueryTable),
-            ),
+            sections.map((section) => [
+              // Only worth a heading when there's more than one group to tell
+              // apart; a single-section list is just a list of tables.
+              attrs.sections.length > 1 &&
+                m(
+                  '.pf-simple-table-list__section-title',
+                  section.title,
+                  m(
+                    'span.pf-simple-table-list__section-count',
+                    section.tables.length,
+                  ),
+                ),
+              m(
+                Accordion,
+                this.renderSections(
+                  section.title,
+                  section.tables,
+                  attrs.onQueryTable,
+                ),
+              ),
+            ]),
           )
         : m(EmptyState, {
             title: 'No matching tables found',
@@ -95,6 +136,7 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
   }
 
   private renderSections(
+    sectionTitle: string,
     filteredTables: ReadonlyArray<FilteredTable>,
     onQueryTable?: (tableName: string, query: string) => void,
   ): m.Children {
@@ -106,7 +148,12 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
     return filteredTables.map(({table, segments}) => {
       const dup = nameCounts.get(table.name) ?? 0;
       nameCounts.set(table.name, dup + 1);
-      const key = dup === 0 ? table.name : `${table.name} (${dup})`;
+      // Section-qualified, so the same table name appearing in two sections
+      // can't collide either.
+      const key =
+        dup === 0
+          ? `${sectionTitle}/${table.name}`
+          : `${sectionTitle}/${table.name} (${dup})`;
       return m(
         AccordionSection,
         {
@@ -122,8 +169,27 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
   }
 }
 
+// Fuzzy-filters one section's tables, ordered by relevance, keeping the match
+// segments so the name can be highlighted. An empty term keeps everything in
+// its given order.
+function filterTables(
+  tables: ReadonlyArray<TableListEntry>,
+  searchTerm: string,
+): readonly FilteredTable[] {
+  if (searchTerm === '') {
+    return tables.map((table) => ({
+      table,
+      segments: [{matching: false, value: table.name}],
+    }));
+  }
+  return fuzzySearch(tables, (t) => t.name, searchTerm).map((result) => ({
+    table: result.item,
+    segments: result.segments,
+  }));
+}
+
 interface TableContentAttrs {
-  readonly table: SqlTable;
+  readonly table: TableListEntry;
   onQueryTable?(tableName: string, query: string): void;
 }
 
@@ -212,7 +278,9 @@ const TableContent: m.Component<TableContentAttrs> = {
   },
 };
 
-function generateQuery(table: SqlTable): string {
+function generateQuery(table: TableListEntry): string {
+  if (table.exampleQuery !== undefined) return table.exampleQuery;
+
   const lines: string[] = [];
 
   // Add INCLUDE statement if needed
