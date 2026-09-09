@@ -34,7 +34,7 @@ import {Tabs, type TabsTab} from '../../widgets/tabs';
 import {Stack, StackAuto} from '../../widgets/stack';
 import {Anchor} from '../../widgets/anchor';
 import SqlModulesPlugin from '../dev.perfetto.SqlModules';
-import {TableList} from './table_list';
+import {TableList} from '../../components/query_table/table_list';
 import {ResultsTable} from './results_table';
 
 const HIDE_PERFETTO_SQL_AGENT_BANNER_KEY = 'hidePerfettoSqlAgentBanner';
@@ -372,7 +372,7 @@ export class QueryPage implements m.ClassComponent<QueryPageAttrs> {
     }
 
     return m(TableList, {
-      sqlModules,
+      sections: [{title: 'Tables', tables: sqlModules.listTables()}],
       onQueryTable: (tableName, query) => {
         attrs.onTabAdd?.(tableName, query, true);
       },
