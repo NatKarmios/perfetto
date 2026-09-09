@@ -12,14 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {DashboardChartView, buildWhereClause} from './dashboard_chart_view';
+import m from 'mithril';
+import {
+  DashboardChartView,
+  buildWhereClause,
+  columnForChartType,
+} from './dashboard_chart_view';
+import {Dashboard, type DashboardAttrs} from './dashboard';
 import {
   type DashboardBrushFilter,
+  type DashboardDataSource,
+  type DashboardItem,
   parseBrushFilters,
 } from './dashboard_registry';
 import type {ChartColumnProvider} from '../query_builder/charts/chart_renderers';
 import type {ChartConfig} from '../query_builder/nodes/visualisation_node';
 import type * as chartTypeRegistry from '../query_builder/charts/chart_type_registry';
+import {
+  type ChartTypeDefinition,
+  getChartableColumns,
+  registerChartType,
+} from '../query_builder/charts/chart_type_registry';
+import {renderChartConfigPopup} from '../query_builder/charts/chart_config_popup';
+import type {ColumnInfo} from '../query_builder/column_info';
+import type {Trace} from '../../../public/trace';
 
 // `ensureLoader` hands the SQL it builds to `createChartLoaders`, and the
 // adapter a chart's renderers brush through to `renderChartByType`. Intercept
@@ -237,5 +253,149 @@ describe('a chart does not filter itself by its own brush', () => {
     const d = dashboard([config('c1')]);
     d.restore([{column: 'node_id', op: '=', value: 1}]);
     expect(d.frame(0).query).toEqual('SELECT * FROM tbl WHERE node_id = 1');
+  });
+});
+
+describe('the column a chart carries across a type switch', () => {
+  // Both places a chart's type can be switched - the dashboard's edit panel
+  // and the chart config popup - defer to `columnForChartType`, so a type that
+  // reads its primary column as something specific (a node id, say) is not
+  // left on whatever the previous type happened to point at.
+  const cols: ColumnInfo[] = [
+    {name: 'name', checked: false, type: {kind: 'string'}},
+    {name: 'dur', checked: false, type: {kind: 'int'}},
+    {name: 'node_id', checked: false, type: {kind: 'int'}},
+  ];
+
+  const TEST_TYPE = 'test-switch-chart';
+  const TEST_LABEL = 'Test Switch Chart';
+
+  function makeDefinition(
+    overrides: Partial<ChartTypeDefinition> = {},
+  ): ChartTypeDefinition {
+    return {
+      type: TEST_TYPE,
+      label: TEST_LABEL,
+      icon: 'science',
+      supportsAggregation: false,
+      supportsBinning: false,
+      // As both Dune chart types are: every column counts as chartable, which
+      // is exactly why "the current column is still valid" cannot be the whole
+      // answer.
+      requiresNumericDimension: false,
+      primaryColumnLabel: 'Node id column',
+      supportsYColumn: false,
+      supportsGroupColumn: false,
+      supportsSizeColumn: false,
+      description: `Description for ${TEST_TYPE}`,
+      createLoader: () => {},
+      render: () => null,
+      defaultLabel: (config) => `Test: ${config.column}`,
+      ...overrides,
+    };
+  }
+
+  /** A type that asks for `node_id`, as the Dune chart types do. */
+  function registerTypeWantingNodeId(): Disposable {
+    return registerChartType(makeDefinition({defaultColumn: () => 'node_id'}));
+  }
+
+  function render(child: m.Children): HTMLElement {
+    const root = document.createElement('div');
+    m.render(root, child);
+    return root;
+  }
+
+  test('is what the new type asks for, over a valid current column', () => {
+    using _reg = registerTypeWantingNodeId();
+
+    expect(columnForChartType(TEST_TYPE, 'name', cols)).toEqual('node_id');
+  });
+
+  test('is the current column for a type that asks for nothing', () => {
+    using _reg = registerChartType(makeDefinition());
+
+    expect(columnForChartType(TEST_TYPE, 'name', cols)).toEqual('name');
+  });
+
+  test('is nothing when the new type cannot chart the current column', () => {
+    // A histogram needs a numeric dimension, and `name` is a string.
+    expect(columnForChartType('histogram', 'name', cols)).toEqual('');
+  });
+
+  test('is what the config popup switches to', () => {
+    using _reg = registerTypeWantingNodeId();
+
+    const config: ChartConfig = {id: 'c1', column: 'name', chartType: 'bar'};
+    const updates: Partial<Omit<ChartConfig, 'id'>>[] = [];
+    const node: ChartColumnProvider = {
+      sourceCols: cols,
+      getChartableColumns: (type) => getChartableColumns(type, cols),
+      clearChartFiltersForColumn: () => {},
+      setBrushSelection: () => {},
+      addRangeFilter: () => {},
+      updateChart: (_id, update) => updates.push(update),
+      removeChart: () => {},
+      attrs: {chartConfigs: [config]},
+    };
+
+    const root = render(renderChartConfigPopup({node}, config, () => {}));
+    // The type picker is the one <select> offering chart types rather than
+    // columns.
+    const select = Array.from(root.querySelectorAll('select')).find(
+      (s) => s.querySelector(`option[value="${TEST_TYPE}"]`) !== null,
+    );
+    expect(select).not.toBeUndefined();
+    select!.value = TEST_TYPE;
+    select!.dispatchEvent(new Event('change'));
+
+    expect(updates).toEqual([{chartType: TEST_TYPE, column: 'node_id'}]);
+  });
+
+  test('is what the dashboard edit panel switches to', () => {
+    using _reg = registerTypeWantingNodeId();
+
+    const source: DashboardDataSource = {
+      name: 'src',
+      nodeId: 's1',
+      graphId: 'g1',
+      tableName: 'tbl',
+      columns: cols.map(({name, type}) => ({name, type})),
+    };
+    const config: ChartConfig = {id: 'c1', column: 'name', chartType: 'bar'};
+    let updated: ChartConfig | undefined;
+    const attrs: DashboardAttrs = {
+      dashboardId: 'd1',
+      trace: {engine: {}} as unknown as Trace,
+      items: [{kind: 'chart', sourceNodeId: source.nodeId, config}],
+      sources: [source],
+      brushFilters: new Map(),
+      onItemsChange: (newItems: DashboardItem[]) => {
+        const item = newItems.find((i) => i.kind === 'chart');
+        updated = item?.kind === 'chart' ? item.config : undefined;
+      },
+      onBrushFiltersChange: () => {},
+    };
+
+    // Which chart the panel edits, and the panel itself, are the dashboard's
+    // own state: reach past it rather than drive the whole canvas.
+    const dashboard = new Dashboard() as unknown as {
+      editingChart: {itemId: string; source: DashboardDataSource};
+      renderEditPanel: (attrs: DashboardAttrs) => m.Children;
+    };
+    dashboard.editingChart = {itemId: config.id, source};
+
+    const root = render(dashboard.renderEditPanel(attrs));
+    const card = Array.from(
+      root.querySelectorAll<HTMLElement>('button.pf-chart-type-picker__card'),
+    ).find((b) => b.textContent?.includes(TEST_LABEL));
+    expect(card).not.toBeUndefined();
+    card!.click();
+
+    expect(updated).toEqual({
+      id: config.id,
+      column: 'node_id',
+      chartType: TEST_TYPE,
+    });
   });
 });

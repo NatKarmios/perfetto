@@ -456,3 +456,30 @@ export function createDefaultChartConfig(
     chartType,
   };
 }
+
+/**
+ * The column a chart should carry after switching to `newType`: what the type
+ * asks for, else the current column if the new type can chart it, else nothing.
+ *
+ * `defaultColumn` wins over a "still valid" current column deliberately - a
+ * type with `requiresNumericDimension: false` calls every column valid, so
+ * without this the hook that exists to stop a chart landing on a column it
+ * cannot read is defeated on exactly the types that need it.
+ *
+ * `columns` is the query's whole column list, which is what `defaultColumn` is
+ * handed on the creation side too (see `createDefaultChartConfig` and
+ * `VisualisationNode.addChart`); only the "can chart it" test filters it.
+ */
+export function columnForChartType(
+  newType: ChartType,
+  currentColumn: string,
+  columns: ReadonlyArray<ColumnInfo>,
+): string {
+  const preferred = getChartTypeDefinition(newType)?.defaultColumn?.(columns);
+  if (preferred !== undefined) return preferred;
+  return getChartableColumns(newType, columns).some(
+    (c) => c.name === currentColumn,
+  )
+    ? currentColumn
+    : '';
+}
