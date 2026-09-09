@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import type {QueryNode} from '../query_node';
+import {dashboardRegistry} from '../dashboard/dashboard_registry';
 import type {QueryExecutionService} from './query_execution_service';
 
 /**
@@ -90,5 +91,14 @@ export class CleanupManager {
     // Step 2 (async): Drop all materialized tables in TP.
     // Safe to call after Step 1 because all JS resources are already disposed.
     await this.queryExecutionService.dropAllMaterializations();
+
+    // Step 3: tell the dashboards their rows have gone. This unmount is not
+    // necessarily the end of the session - the Data Explorer's component is
+    // rebuilt on a route change, and on any restructuring of the page around
+    // it (toggling a side panel changes the vnode above it, for instance) -
+    // and dashboard items outlive it via the exported-source pool. Without
+    // this they come back still naming the tables just dropped and query them
+    // for the rest of the session. Global, like the drop above.
+    dashboardRegistry.invalidateTableNames();
   }
 }
