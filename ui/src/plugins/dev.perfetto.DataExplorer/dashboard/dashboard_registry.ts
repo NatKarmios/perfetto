@@ -200,6 +200,29 @@ class ExportedSourcesPool {
     return [...this.sources.values()].filter((s) => s.graphId === graphId);
   }
 
+  /**
+   * Forget where every source's rows currently live, keeping the sources
+   * themselves.
+   *
+   * Called when the materialized tables are dropped (see
+   * `CleanupManager.cleanupAll`). Dropping them without this leaves every
+   * source naming a table that no longer exists, and every dashboard item
+   * built on one querying it - `no such table: _exp_mat_...` - with no way
+   * back, because nothing re-materializes a node whose result is already
+   * published.
+   *
+   * The columns are deliberately kept. An item with columns but no table asks
+   * its source to execute (see `DashboardChartView`/`DashboardGridView`), so
+   * clearing just the table name is what makes the next render recover;
+   * clearing the columns too would make the items bail out earlier, before
+   * they ask.
+   */
+  invalidateTableNames(): void {
+    for (const source of this.sources.values()) {
+      source.tableName = undefined;
+    }
+  }
+
   clear(): void {
     this.sources.clear();
   }

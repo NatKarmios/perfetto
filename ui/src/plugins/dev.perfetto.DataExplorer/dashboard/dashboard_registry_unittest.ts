@@ -645,3 +645,37 @@ describe('findNonOverlappingPosition', () => {
     expect(pos.row).toBeGreaterThan(0);
   });
 });
+
+describe('invalidateTableNames', () => {
+  // Dropping the materialized tables without this leaves every source naming
+  // a table that no longer exists, and every dashboard item built on one
+  // querying it for the rest of the session (see CleanupManager.cleanupAll).
+  function source(nodeId: string) {
+    return {
+      nodeId,
+      name: nodeId,
+      graphId: 'g',
+      columns: [{name: 'node_id'}],
+      tableName: `_exp_mat_${nodeId}`,
+    } as unknown as Parameters<typeof dashboardRegistry.setExportedSource>[0];
+  }
+
+  test('forgets every table name but keeps the sources', () => {
+    dashboardRegistry.setExportedSource(source('a'));
+    dashboardRegistry.setExportedSource(source('b'));
+
+    dashboardRegistry.invalidateTableNames();
+
+    for (const id of ['a', 'b']) {
+      const s = dashboardRegistry.getExportedSource(id);
+      expect(s).toBeDefined();
+      expect(s?.tableName).toBeUndefined();
+      // Kept: an item with columns but no table asks its source to execute,
+      // which is what makes the next render recover. Without them it would
+      // bail out before asking.
+      expect(s?.columns).toHaveLength(1);
+    }
+
+    dashboardRegistry.clear();
+  });
+});
