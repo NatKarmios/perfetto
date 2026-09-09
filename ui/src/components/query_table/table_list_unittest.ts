@@ -67,6 +67,27 @@ function makeNames(): string[] {
   return names;
 }
 
+// Finds the accordion row for a table by its displayed name. Deliberately
+// located by name rather than by position, so the multi-section tests below
+// don't depend on the DOM shape they're guarding.
+function findRow(root: HTMLElement, name: string): HTMLDetailsElement[] {
+  const rows = Array.from(
+    root.querySelectorAll<HTMLDetailsElement>('.pf-accordion__item'),
+  );
+  return rows.filter(
+    (row) =>
+      row.querySelector('.pf-simple-table-list__item-name')?.textContent ===
+      name,
+  );
+}
+
+// Expands a row the way a click on its summary would: <details> flips `open`
+// and fires `toggle`, which is what AccordionSection listens to.
+function expandRow(row: HTMLDetailsElement) {
+  row.open = true;
+  row.dispatchEvent(new Event('toggle'));
+}
+
 describe('TableList', () => {
   afterEach(() => {
     document.body.innerHTML = '';
@@ -101,5 +122,59 @@ describe('TableList', () => {
         typeSearch(root, comp, t);
       }
     }).not.toThrow();
+  });
+
+  test('keeps a row expanded when an earlier section filters out', () => {
+    // Sections are dropped when their tables all filter out, so the sections
+    // that survive shift up. Unless each section keeps its identity across
+    // renders, the survivor is diffed against a different section's accordion,
+    // whose rows are keyed under another title - so every row is rebuilt and
+    // silently collapses.
+    const comp = {
+      view: () =>
+        m(TableList, {
+          sections: [
+            {title: 'Zebras', tables: makeTables(['zebra_x', 'zebra_y'])},
+            {title: 'Quokkas', tables: makeTables(['quokka_a', 'quokka_b'])},
+          ],
+        }),
+    };
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    m.render(root, m(comp));
+
+    const [row] = findRow(root, 'quokka_a');
+    expandRow(row);
+    m.render(root, m(comp));
+    expect(findRow(root, 'quokka_a')[0].open).toBe(true);
+
+    // Types 'quokka' - which empties the Zebras section - then clears it again.
+    typeSearch(root, comp, 'quokka');
+
+    expect(findRow(root, 'quokka_a')[0].open).toBe(true);
+  });
+
+  test('renders a table name that appears in two sections', () => {
+    // Row keys are qualified by section title precisely so that the same table
+    // name in two sections doesn't collide and crash the keyed diff.
+    const comp = {
+      view: () =>
+        m(TableList, {
+          sections: [
+            {title: 'Stdlib', tables: makeTables(['shared_table', 'a_only'])},
+            {title: 'Plugin', tables: makeTables(['shared_table', 'b_only'])},
+          ],
+        }),
+    };
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    expect(() => {
+      m.render(root, m(comp));
+      typeSearch(root, comp, 'shared');
+    }).not.toThrow();
+
+    expect(root.querySelectorAll('.pf-accordion__item')).toHaveLength(4);
+    expect(findRow(root, 'shared_table')).toHaveLength(2);
   });
 });

@@ -27,6 +27,13 @@
     overflow-x: hidden;
   }
 
+  // A keyed wrapper per section, so a section filtering out doesn't shift its
+  // neighbours onto each other's Accordion instances. `display: contents` keeps
+  // the sticky heading below positioning against the scrolling `&__items`.
+  &__section {
+    display: contents;
+  }
+
   // A group heading, shown only when the caller supplied more than one section.
   // Sticky so the group a table belongs to stays visible while scrolling a long
   // list of them.
