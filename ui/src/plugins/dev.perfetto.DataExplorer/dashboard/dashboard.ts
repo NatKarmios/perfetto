@@ -47,6 +47,7 @@ import {
 } from './dashboard_registry';
 import {
   DashboardChartView,
+  columnForChartType,
   createDefaultChartConfig,
 } from './dashboard_chart_view';
 import {ResizeHandle} from '../../../widgets/resize_handle';
@@ -431,13 +432,13 @@ export class Dashboard implements m.ClassComponent<DashboardAttrs> {
         m('.pf-dashboard__panel-section-subtitle', 'Chart Type'),
         renderChartTypePickerGrid((newType) => {
           if (newType === config.chartType) return;
-          const newChartableColumns = adapter.getChartableColumns(newType);
-          const columnStillValid = newChartableColumns.some(
-            (c) => c.name === config.column,
-          );
           adapter.updateChart(config.id, {
             chartType: newType,
-            column: columnStillValid ? config.column : '',
+            column: columnForChartType(
+              newType,
+              config.column,
+              adapter.sourceCols,
+            ),
           });
         }, config.chartType),
         m('.pf-dashboard__panel-section-subtitle', 'Settings'),

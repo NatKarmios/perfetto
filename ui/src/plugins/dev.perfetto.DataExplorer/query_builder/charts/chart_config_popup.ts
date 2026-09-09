@@ -23,6 +23,7 @@ import type {ChartAggregation} from '../../../../components/widgets/charts/chart
 import {Select} from '../../../../widgets/select';
 import {Form, FormLabel} from '../../../../widgets/form';
 import type {ChartColumnProvider} from './chart_renderers';
+import {columnForChartType} from '../../dashboard/dashboard_chart_view';
 
 interface ColumnInfo {
   readonly name: string;
@@ -123,14 +124,13 @@ export function renderChartConfigPopup(
                 const target = e.target as HTMLSelectElement;
                 const newType = target.value;
                 if (!isValidChartType(newType)) return;
-                const newChartableColumns =
-                  ctx.node.getChartableColumns(newType);
-                const columnStillValid = newChartableColumns.some(
-                  (c) => c.name === config.column,
-                );
                 ctx.node.updateChart(config.id, {
                   chartType: newType,
-                  column: columnStillValid ? config.column : '',
+                  column: columnForChartType(
+                    newType,
+                    config.column,
+                    ctx.node.sourceCols,
+                  ),
                 });
               },
             },
