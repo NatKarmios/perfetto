@@ -89,17 +89,6 @@ class DashboardChartAdapter implements ChartColumnProvider {
   private pendingClearedColumns = new Set<string>();
   private callbacks: DashboardChartCallbacks;
   private config: ChartConfig;
-  // Columns this chart has brushed itself. A chart must not filter its own
-  // data by its own brush: `brushFilters` is keyed by *source* node, and
-  // `flushFilters` writes a chart's own selection into its own source's entry,
-  // so without this the chart reads its own brush straight back as an input
-  // filter - re-running its query, and on a chart that rebuilds state from
-  // that query, throwing away what the brush was expressing.
-  //
-  // `isDriverChart` was meant to be this guard, but it is only true once a
-  // consumer exists (see `getConsumersOf`), so a chart with nothing below a
-  // divider was left filtering itself.
-  private readonly ownColumns = new Set<string>();
 
   constructor(
     source: DashboardDataSource,
@@ -128,11 +117,6 @@ class DashboardChartAdapter implements ChartColumnProvider {
     return this.cols;
   }
 
-  /** Columns this chart brushed, and so must not filter itself by. */
-  get brushedColumns(): ReadonlySet<string> {
-    return this.ownColumns;
-  }
-
   getChartableColumns(chartType: ChartType): ReadonlyArray<ColumnInfo> {
     if (
       chartType === 'histogram' ||
@@ -159,6 +143,10 @@ class DashboardChartAdapter implements ChartColumnProvider {
     // share columns with the same name. Also clear columns that were
     // explicitly cleared (pendingClearedColumns) even if no new filters
     // were added for them.
+    //
+    // Filters travel as they are, `chartId` included: a chart on a linked
+    // source has a different id and so still consumes the filter, which is
+    // what cross-datasource brushing means.
     const touchedColumns = new Set([
       ...this.filters.map((f) => f.column),
       ...this.pendingClearedColumns,
@@ -189,20 +177,17 @@ class DashboardChartAdapter implements ChartColumnProvider {
 
   clearChartFiltersForColumn(column: string): void {
     this.clearColumnLocally(column);
-    // No longer ours, so this chart may consume a filter another one puts on
-    // that column again.
-    this.ownColumns.delete(column);
     this.flushFilters();
   }
 
   setBrushSelection(column: string, values: SqlValue[]): void {
     this.clearColumnLocally(column);
-    if (values.length > 0) this.ownColumns.add(column);
+    const chartId = this.config.id;
     for (const value of values) {
       if (value === null) {
-        this.filters.push({column, op: 'is null'});
+        this.filters.push({column, op: 'is null', chartId});
       } else {
-        this.filters.push({column, op: '=', value});
+        this.filters.push({column, op: '=', value, chartId});
       }
     }
     this.flushFilters();
@@ -211,9 +196,9 @@ class DashboardChartAdapter implements ChartColumnProvider {
 
   addRangeFilter(column: string, min: SqlValue, max: SqlValue): void {
     this.clearColumnLocally(column);
-    this.ownColumns.add(column);
-    this.filters.push({column, op: '>=', value: min});
-    this.filters.push({column, op: '<', value: max});
+    const chartId = this.config.id;
+    this.filters.push({column, op: '>=', value: min, chartId});
+    this.filters.push({column, op: '<', value: max, chartId});
     this.flushFilters();
     m.redraw();
   }
@@ -366,20 +351,20 @@ export class DashboardChartView implements m.ClassComponent<DashboardChartViewAt
     // might have been about to:
     // - It is a driver (above a divider), where the brush is for the cards
     //   below and this one shows the selection as an overlay instead.
-    // - It brushed a column itself. `brushFilters` is keyed by source node and
-    //   a chart's own selection is written into its own source's entry, so its
+    // - The filter is its own. `brushFilters` is keyed by source node and a
+    //   chart's own selection is written into its own source's entry, so its
     //   brush would otherwise come straight back as an input filter. That
     //   re-runs its query, which for a chart that rebuilds state from the
-    //   query means discarding whatever the brush was expressing.
+    //   query means discarding whatever the brush was expressing. Ownership
+    //   rides on the filter (`chartId`), so it is exactly as long-lived as the
+    //   filter it describes and survives a reload with it.
     // Also drop filters naming columns the current source hasn't got, which
     // happens after switching the chart's data source.
     const validColumns = new Set(attrs.source.columns.map((c) => c.name));
-    const ownColumns = this.cachedAdapter?.brushedColumns;
     const filters = attrs.isDriverChart
       ? []
       : (attrs.brushFilters.get(attrs.source.nodeId) ?? []).filter(
-          (f) =>
-            validColumns.has(f.column) && ownColumns?.has(f.column) !== true,
+          (f) => validColumns.has(f.column) && f.chartId !== config.id,
         );
     const filterKey = JSON.stringify(filters);
 
