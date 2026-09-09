@@ -38,7 +38,10 @@ import {
 import {ResultsPanelEmptyState} from '../query_builder/widgets';
 import type {SqlValue} from '../../../trace_processor/query_result';
 import {isQuantitativeType} from '../../../trace_processor/perfetto_sql_type';
-import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
+import {
+  quoteIdentifier,
+  sqlValue,
+} from '../../../components/widgets/datagrid/sql_utils';
 
 export interface DashboardChartViewAttrs {
   trace: Trace;
@@ -394,6 +397,10 @@ export function buildWhereClause(
 
   const clauses: string[] = [];
   for (const [column, colFilters] of byColumn) {
+    // Quote rather than validate the column name: an aggregation's output name
+    // is free text, so `my count` or `end` are legitimate columns that a
+    // validator would turn into an error the user cannot act on.
+    const col = quoteIdentifier(column);
     const eqValues: SqlValue[] = [];
     let hasNull = false;
     const rangeConditions: string[] = [];
@@ -405,19 +412,19 @@ export function buildWhereClause(
         hasNull = true;
       } else {
         // >= or <
-        rangeConditions.push(`${column} ${f.op} ${sqlValue(f.value ?? null)}`);
+        rangeConditions.push(`${col} ${f.op} ${sqlValue(f.value ?? null)}`);
       }
     }
 
     if (eqValues.length > 0 || hasNull) {
       const parts: string[] = [];
       if (eqValues.length === 1) {
-        parts.push(`${column} = ${sqlValue(eqValues[0])}`);
+        parts.push(`${col} = ${sqlValue(eqValues[0])}`);
       } else if (eqValues.length > 1) {
-        parts.push(`${column} IN (${eqValues.map(sqlValue).join(', ')})`);
+        parts.push(`${col} IN (${eqValues.map(sqlValue).join(', ')})`);
       }
       if (hasNull) {
-        parts.push(`${column} IS NULL`);
+        parts.push(`${col} IS NULL`);
       }
       clauses.push(parts.length > 1 ? `(${parts.join(' OR ')})` : parts[0]);
     }
