@@ -40,6 +40,7 @@ import type {SQLSingleValueLoader} from '../../../../components/widgets/charts/s
 import {Scorecard} from '../../../../components/widgets/charts/scorecard';
 import {EmptyState} from '../../../../widgets/empty_state';
 import type {SqlValue} from '../../../../trace_processor/query_result';
+import type {DashboardBrushFilter} from '../../dashboard/dashboard_registry';
 import {isIntegerColumn, getNumericFormatter} from './chart_column_formatters';
 import type {ChartAggregation} from '../../../../components/widgets/charts/chart_utils';
 
@@ -111,6 +112,12 @@ export interface ChartRenderContext {
   readonly onFilterChange?: () => void;
   /** When set, charts that support grid lines will render them. */
   readonly gridLines?: 'horizontal' | 'vertical' | 'both';
+  /**
+   * The brush filters currently held for this chart's data source, so a
+   * renderer that brushes can recognise its own (see `chartId`). Populated by
+   * the dashboard host; undefined where nothing publishes them.
+   */
+  readonly brushFilters?: ReadonlyArray<DashboardBrushFilter>;
 }
 
 /**
