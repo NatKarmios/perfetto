@@ -1145,8 +1145,22 @@ function dirView(): string {
  * does; `ts` / `dur_ns` come off the same row, which makes the join a
  * primary-key probe per process slice rather than something the view has to
  * store. The duration is named `dur_ns` rather than `dur` so the query tab
- * prints it as a duration (see `DURATION_COLS` in query_results.ts) - it is
- * `slice.dur` verbatim, which is already nanoseconds.
+ * prints it as a duration (see `DURATION_COLS` in query_results.ts) -
+ * `slice.dur` is already nanoseconds, so the only thing done to it is the
+ * `nullif` below.
+ *
+ * That `nullif(s.dur, -1)` is what keeps this column honest. Perfetto stores an
+ * unfinished slice's duration as `-1`, and publishing that sentinel as a
+ * duration would have `ORDER BY dur_ns` sort the still-running processes of a
+ * Ctrl-C'd build first and have the query tab render `Duration.humanise(-1n)` -
+ * a negative duration. NULL is both the truth ("no duration yet") and what the
+ * rest of the mirror already says: every other duration here comes from
+ * `_dune_timing.dur_ns`, which is NULL when the span never finished.
+ *
+ * The same normalisation appears again as the `it.dur >= 0n` guard behind
+ * {@link ProcessDetails}, and stays there: `scalarsForRule` (process_sql.ts)
+ * reads `s.dur` off `slice` joined to the raw `_dune_process` table, so it never
+ * passes through this view and this `nullif` cannot cover it.
  *
  * `node_id` is typed `LONG` and not `JOINID(dune_node.node_id)`, for the same
  * reason `dune_node.dir_id` is: the mirror doesn't declare its own
@@ -1178,7 +1192,9 @@ function processView(space: NodeSpace): string {
         rule_id LONG,
         node_id LONG
       ) AS
-      SELECT s.id AS slice_id, s.ts AS ts, s.dur AS dur_ns,
+      -- nullif: perfetto's -1 for a slice that never finished, normalised to
+      -- NULL so this reads like every other duration in the mirror.
+      SELECT s.id AS slice_id, s.ts AS ts, nullif(s.dur, -1) AS dur_ns,
         p.rule_id AS rule_id, n.node_id AS node_id
       FROM ${PROCESS_TABLE} p
       JOIN slice s ON s.id = p.slice_id

@@ -431,9 +431,20 @@ describe('sql_graph process view', () => {
   });
 
   it('names the duration dur_ns, so the query tab prints it as one', async () => {
-    // `slice.dur` verbatim, which is already nanoseconds; the name is what
-    // query_results.ts's DURATION_COLS matches on.
-    expect(await processView()).toContain('s.dur AS dur_ns');
+    // `slice.dur` is already nanoseconds; the name is what query_results.ts's
+    // DURATION_COLS matches on.
+    expect(await processView()).toContain('AS dur_ns');
+  });
+
+  it('publishes an unfinished slice as a NULL duration, not -1', async () => {
+    // Perfetto's sentinel for a slice that never finished. Left verbatim it
+    // would sort the running processes of a Ctrl-C'd build first under
+    // `ORDER BY dur_ns`, and - since the column is in DURATION_COLS - be
+    // rendered as a negative duration. NULL is what the rest of the mirror
+    // says, `_dune_timing.dur_ns` included.
+    const stmt = await processView();
+    expect(stmt).toContain('nullif(s.dur, -1) AS dur_ns');
+    expect(stmt).not.toContain('s.dur AS dur_ns');
   });
 
   it('drops the view with the tier', async () => {
