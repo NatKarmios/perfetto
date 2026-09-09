@@ -24,8 +24,9 @@
  * - a missing `SELECT DISTINCT`, which spends the cap on repeats and reports an
  *   edge count as a node count (an edge query has a `src` per edge, not per
  *   node);
- * - a missing `ORDER BY`, which makes the capped set a different arbitrary set
- *   each time the query re-runs, so the card redraws a different graph;
+ * - a missing `ORDER BY`, which lets the rows arrive in a different order each
+ *   time the query re-runs, and a rank in the layout keeps the order it was
+ *   given, so the card redraws the same nodes as a different picture;
  * - an un-quoted column name, which comes from a dashboard-persisted config and
  *   so is user data;
  * - a version that doesn't move between loads, which is the panel's relayout
@@ -35,11 +36,7 @@
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../trace_processor/engine';
 import type {DuneGraphController} from './controller';
-import {
-  ChartNodeGraphSource,
-  NODE_GRAPH_HARD_LIMIT,
-  NODE_GRAPH_SOFT_CAP,
-} from './node_graph_source';
+import {ChartNodeGraphSource, NODE_GRAPH_MAX_NODES} from './node_graph_source';
 
 // A stub engine that records every statement and answers each from `handler`.
 // Rows are read through the real `iter` protocol, so the column names the
@@ -120,14 +117,16 @@ function makeSource(
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('the node graph chart query', () => {
-  test('is bounded by the soft cap, whatever the input names', () => {
+  test('is bounded by the cap, whatever the input names', () => {
     const {source} = makeSource();
-    expect(source.sql()).toContain(`LIMIT ${NODE_GRAPH_SOFT_CAP}`);
+    expect(source.sql()).toContain(`LIMIT ${NODE_GRAPH_MAX_NODES}`);
   });
 
-  test('counts the whole input alongside the capped page', () => {
+  test('counts the whole input, not the rows it kept', () => {
     // The window function is what makes this one query rather than two: it is
-    // computed over the full join, and the LIMIT applies after it.
+    // computed over the full join, and the LIMIT applies after it. `total` is
+    // therefore exact, which is what lets the chart tell "these rows are the
+    // whole answer" from "there is more than can be drawn".
     const {source} = makeSource();
     expect(source.sql()).toContain('count(*) OVER () AS total');
   });
@@ -145,7 +144,7 @@ describe('the node graph chart query', () => {
     expect(sql).toContain(`FROM (${QUERY})`);
   });
 
-  test('orders the capped set, so it is the same set every time', () => {
+  test('orders the rows, so a re-run draws the same picture', () => {
     const {source} = makeSource();
     expect(source.sql()).toContain('ORDER BY n.node_id');
   });
@@ -270,15 +269,5 @@ describe('ChartNodeGraphSource', () => {
     await settle();
 
     expect(source.state.phase).toBe('idle');
-  });
-});
-
-describe('the caps', () => {
-  test('leave room for a graph that lays out at all', () => {
-    // Both numbers are justified in node_graph_source.ts against the layout's
-    // geometry; what is pinned here is only that they stay in the order the
-    // chart's two states assume - a hard limit at or below the cap would make
-    // the "showing N of M" state unreachable.
-    expect(NODE_GRAPH_SOFT_CAP).toBeLessThan(NODE_GRAPH_HARD_LIMIT);
   });
 });

@@ -23,7 +23,7 @@
  * every node it draws has to cross into the browser as a row. A query's rows
  * are unbounded - a bare `SELECT ... FROM dune_node` names all 818k nodes of
  * the monorepo trace - so the transfer is bounded explicitly, by
- * {@link NODE_GRAPH_SOFT_CAP}, and the count that says whether the cap bit is
+ * {@link NODE_GRAPH_MAX_NODES}, and the count that says whether the cap bit is
  * computed alongside it with `count(*) OVER ()`:
  *
  * ```sql
@@ -49,21 +49,27 @@
  * not per node), and without it the cap would be spent on repeats and `total`
  * would count edges while calling them nodes.
  *
- * `ORDER BY n.node_id` is there for the capped case: which nodes survive is
- * arbitrary either way, but it must at least be the *same* arbitrary set from
- * one load to the next, or the card would redraw a different graph each time
- * the query re-ran. It costs nothing - it is the order the mirror's primary key
- * is already in.
+ * `total` is therefore exact whatever the `LIMIT` did, and that is what makes
+ * the cap an all-or-nothing one: when `total` is within it, the rows that came
+ * back are not a page of the answer but the whole of it - every node the query
+ * named, and so every edge between them. Past it the chart draws nothing and
+ * says the number instead; the reasoning for that is at the refusal itself, in
+ * node_graph_chart.ts.
  *
- * ## Why there are caps here when the directory chart has none
+ * `ORDER BY n.node_id` is what makes a re-run redraw the same picture. Rows
+ * reach graph_layout.ts in the order they arrive and a rank keeps that order
+ * (there is no crossing reduction to impose one), so an unordered join would
+ * lay the same nodes out differently from one load to the next. It costs
+ * nothing - it is the order the mirror's primary key is already in.
+ *
+ * ## Why there is a cap here when the directory chart has none
  *
  * The directory chart deliberately has no cap: its `GROUP BY` collapses any
  * input to at most two rows per directory before anything leaves the engine, so
  * its tree is bounded by `dune_dir` (~19k rows) rather than by the query. This
  * one is bounded by nothing at all, and what it feeds - graph_layout.ts - is a
- * hand-rolled layered layout with no crossing reduction. So both numbers are
- * about what that layout and the SVG it becomes can actually carry; see each of
- * them below.
+ * hand-rolled layered layout with no crossing reduction. So the number is about
+ * what that layout and the SVG it becomes can actually carry; see below.
  */
 
 import {getErrorMessage} from '../../base/errors';
@@ -74,7 +80,13 @@ import type {DuneGraphController} from './controller';
 import type {NodeId} from './graph';
 
 /**
- * How many nodes the chart will draw at once.
+ * How many nodes the chart will draw at once - and so, since it draws all of
+ * them or none, the most a query may name before the card refuses it.
+ *
+ * One number rather than a soft cap and a hard one, because a graph drawn from
+ * part of what was asked for is not a thinner answer, it is a wrong one: which
+ * part survives is not arbitrary, and the drawn edges are only those with both
+ * ends inside it. node_graph_chart.ts makes that argument where it acts on it.
  *
  * This is the cost ceiling, and it is what stops a query naming most of the
  * build from freezing the tab. Three things set it, and they agree on a few
@@ -97,29 +109,11 @@ import type {NodeId} from './graph';
  *   crossings. Well before the two limits above, the picture stops being one.
  *
  * 400 rather than 200 because the pathological case - every node on one rank -
- * is not the usual one: a layered build subgraph spreads over many ranks, and
- * the cap has to be worth having on the graphs that do lay out.
+ * is not the usual one: a layered build subgraph spreads over many ranks, and a
+ * cap set for the worst case would turn away graphs that lay out perfectly
+ * well.
  */
-export const NODE_GRAPH_SOFT_CAP = 400;
-
-/**
- * How many nodes a query may name before the chart refuses to draw any of them.
- *
- * Ten times the cap, i.e. the point at which fewer than one node in ten would
- * be drawn. Past it the card would not be showing a graph of the query at all -
- * it would be showing an arbitrary 400 nodes out of tens of thousands, with
- * every edge to a dropped node silently missing, which reads as a sparse build
- * rather than as a sample of a dense one. That is a worse answer than no
- * answer, so past this the chart says the number and asks for a narrower query
- * instead.
- *
- * Deliberately not a cost ceiling - {@link NODE_GRAPH_SOFT_CAP} is already
- * that, and it holds whatever this is set to, because it is the `LIMIT` on the
- * one query and so on everything downstream of it. This is the honesty ceiling:
- * the point past which a capped picture stops being a fair look at what was
- * asked for.
- */
-export const NODE_GRAPH_HARD_LIMIT = NODE_GRAPH_SOFT_CAP * 10;
+export const NODE_GRAPH_MAX_NODES = 400;
 
 /**
  * Monotonic across every source in the process, and the reason this is a module
@@ -140,17 +134,20 @@ let nextVersion = 1;
  * A discriminated union rather than a bag of optional fields because the chart
  * switches on it exhaustively: each phase is a different thing to show, and
  * "the query named no nodes" has to be distinguishable from "not asked yet".
- * The two caps are *not* phases - they are read off `total`, which the chart
- * has to have anyway to say "400 of 3,912".
+ * The cap is *not* a phase - the chart reads it off `total`, which is what says
+ * whether the rows in hand are the whole answer or a fragment of a larger one.
  */
 export type NodeSetState =
   | {readonly phase: 'idle'}
   | {readonly phase: 'loading'}
   | {
       readonly phase: 'ready';
-      /** The nodes to draw: at most {@link NODE_GRAPH_SOFT_CAP} of them. */
+      /**
+       * The nodes to draw: at most {@link NODE_GRAPH_MAX_NODES} of them, and
+       * every node the query named whenever `total` is within that.
+       */
       readonly nodes: readonly NodeId[];
-      /** How many the query named in all, before the cap. */
+      /** How many the query named in all. Exact whatever the `LIMIT` did. */
       readonly total: number;
       /** See {@link nextVersion}. */
       readonly version: number;
@@ -222,7 +219,7 @@ export class ChartNodeGraphSource {
   }
 
   /**
-   * The one query, and the only place the caps enter SQL. See the file header
+   * The one query, and the only place the cap enters SQL. See the file header
    * for the shape and for why each part of it is there.
    *
    * Nothing is thrown at the caller: a failed load is a thing the card shows,
@@ -272,7 +269,7 @@ export class ChartNodeGraphSource {
         FROM (${this.query})
       ) q ON q.node_id = n.node_id
       ORDER BY n.node_id
-      LIMIT ${NODE_GRAPH_SOFT_CAP}
+      LIMIT ${NODE_GRAPH_MAX_NODES}
     `;
   }
 }

@@ -22,10 +22,15 @@
  * The states around the graph get the same attention as the graph, because they
  * are what a misconfigured or over-broad chart shows and each of them is a
  * different thing to fix: no graph loaded, a primary column that holds no node
- * ids, no results table yet, a query whose rows name no nodes, a query that
- * names more than the layout can draw, and a query that names more than can
- * honestly be sampled. The alternative to all six is a blank card, which says
- * none of it.
+ * ids, no results table yet, a query whose rows name no nodes, and a query that
+ * names more nodes than the layout can draw. The alternative to all five is a
+ * blank card, which says none of it.
+ *
+ * The cap is all-or-nothing, so the boundary is pinned from both sides: a query
+ * naming exactly {@link NODE_GRAPH_MAX_NODES} is drawn, one node more is
+ * refused. A refusal that crept a node early would hide graphs that draw
+ * perfectly well, and one that crept a node late would draw a truncated set as
+ * if it were the answer.
  *
  * The registration lifecycle gets the same treatment as the directory chart's:
  * registering a chart type twice throws, so the failure mode a plugin can
@@ -57,7 +62,7 @@ import type {DuneGraphController} from './controller';
 import type {NodeId} from './graph';
 import {dep, rule, testGraph} from './graph_test_helper';
 import {registerNodeGraphChart} from './node_graph_chart';
-import {NODE_GRAPH_HARD_LIMIT, NODE_GRAPH_SOFT_CAP} from './node_graph_source';
+import {NODE_GRAPH_MAX_NODES} from './node_graph_source';
 
 // The type id as the registry sees it. Spelt out rather than imported: it is
 // persisted in dashboards, so a test that moved with it would not notice it
@@ -67,6 +72,22 @@ const CHART_TYPE = 'dune-node-graph';
 // r1 -> {a, b}: three nodes, two edges, which is all the pane needs to draw
 // something recognisable.
 const g = testGraph([rule('r1', {staticDeps: ['a', 'b']}), dep('a'), dep('b')]);
+
+// A graph exactly the size of the cap - one rule and its 399 deps - so the
+// boundary can be tested as the card really meets it, with `total` equal to
+// the number of nodes handed over rather than standing in for a larger set.
+const CAP_DEP_NAMES = Array.from(
+  {length: NODE_GRAPH_MAX_NODES - 1},
+  (_, i) => `d${i}`,
+);
+const capSized = testGraph([
+  rule('r1', {staticDeps: CAP_DEP_NAMES}),
+  ...CAP_DEP_NAMES.map((name) => dep(name)),
+]);
+const capSizedIds: readonly NodeId[] = [
+  capSized.id('r1'),
+  ...CAP_DEP_NAMES.map((name) => capSized.id(name)),
+];
 
 // Registrations are global, so an assertion that throws before its `unload()`
 // would poison every test after it. Registered ones are collected here instead
@@ -357,39 +378,53 @@ describe('the node graph chart', () => {
     expect(root.querySelector('circle')).toBeNull();
   });
 
-  test('draws the capped set and says how much it is of', async () => {
-    // The soft cap has bitten: the card still draws, but the count in its own
-    // toolbar is the honest one rather than the size of what came back.
-    register(loadedController());
+  test('draws a query that names exactly the cap, entire', async () => {
+    // The boundary from the drawing side, and the property the cap exists to
+    // give: at the cap the rows are every node the query named, so all of them
+    // are on screen and the toolbar's "N of M" form never appears.
+    register(fakeController({nodeMirrorReady: true, graph: capSized.graph}));
     const root = await renderChart({
       node: fakeNode(['node_id']),
       config: config('node_id'),
-      nodes: [g.id('a'), g.id('b')],
-      total: NODE_GRAPH_HARD_LIMIT - 1,
+      nodes: capSizedIds,
+      total: NODE_GRAPH_MAX_NODES,
     });
 
-    expect(root.querySelectorAll('circle').length).toBe(2);
-    expect(root.textContent).toContain(
-      `2 of ${NODE_GRAPH_HARD_LIMIT - 1} node`,
-    );
+    expect(root.querySelectorAll('circle').length).toBe(NODE_GRAPH_MAX_NODES);
+    expect(root.textContent).not.toContain('Too many nodes to draw');
   });
 
-  test('refuses a query that names more than it can sample', async () => {
-    // Past the hard limit the capped set is under a tenth of the answer, so
-    // almost every edge in it would point at a node that isn't there.
+  test('refuses a query that names one node more than the cap', async () => {
+    // One past the boundary, where a sample would be the misleading thing: the
+    // nodes that fit are the low ids, which are the rules, and no edge in a
+    // Dune graph joins two rules.
     register(loadedController());
     const root = await renderChart({
       node: fakeNode(['node_id']),
       config: config('node_id'),
       nodes: [g.id('a'), g.id('b')],
-      total: NODE_GRAPH_HARD_LIMIT + 1,
+      total: NODE_GRAPH_MAX_NODES + 1,
     });
 
     expect(root.textContent).toContain('Too many nodes to draw');
-    expect(root.textContent).toContain(String(NODE_GRAPH_HARD_LIMIT + 1));
-    expect(root.textContent).toContain(String(NODE_GRAPH_SOFT_CAP));
     // Nothing is drawn: the refusal is the whole card.
     expect(root.querySelector('circle')).toBeNull();
+  });
+
+  test('says how many nodes the query actually named', async () => {
+    // The count comes from `total`, not from the rows that survived the LIMIT,
+    // which is the only reason the refusal is worth reading: it is what says
+    // how much narrowing the query needs.
+    register(loadedController());
+    const root = await renderChart({
+      node: fakeNode(['node_id']),
+      config: config('node_id'),
+      nodes: [g.id('a'), g.id('b')],
+      total: 9_001,
+    });
+
+    expect(root.textContent).toContain('9001 Dune nodes');
+    expect(root.textContent).toContain(String(NODE_GRAPH_MAX_NODES));
   });
 
   test('waits for the host to produce a results table', () => {

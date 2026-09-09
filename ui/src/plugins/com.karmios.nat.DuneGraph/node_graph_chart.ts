@@ -39,21 +39,18 @@
  * Read exactly as the directory chart reads it, through the same shared offer
  * to switch to a column that actually holds node ids - see chart_node_column.ts.
  *
- * ## The caps, which this chart has and the directory chart doesn't
+ * ## The cap, which this chart has and the directory chart doesn't
  *
  * The directory chart's tree is bounded by the mirror however large its query
  * is, so it needs no cap. This one is bounded by nothing: it draws a dot per
  * node, so the query's size is the card's size. graph_layout.ts is a hand-rolled
  * layered layout with no crossing reduction and the pane rebuilds every dot and
- * every edge on every frame of a pan, so there are two limits, both justified in
- * node_graph_source.ts where they live:
- *
- * - {@link NODE_GRAPH_SOFT_CAP}, past which the card draws the first 400 nodes
- *   and says so in its own toolbar ("400 of 3,912 nodes"), rather than pretending
- *   the sample is the answer;
- * - {@link NODE_GRAPH_HARD_LIMIT}, past which fewer than one node in ten would
- *   be drawn, so the card refuses and names the number instead of showing an
- *   arbitrary tenth of a graph.
+ * every edge on every frame of a pan, so there is a limit -
+ * {@link NODE_GRAPH_MAX_NODES}, justified in node_graph_source.ts where it
+ * lives - and it is all or nothing. A query within it is drawn entire, every
+ * node it named and every edge between them; a query past it is refused by
+ * name rather than sampled down to size, for the reason given at the refusal
+ * below.
  */
 
 import m from 'mithril';
@@ -77,11 +74,7 @@ import type {DuneGraphController} from './controller';
 import {renderMirrorNotLoaded} from './dir_explorer_panel';
 import {GraphPanel} from './graph_panel';
 import {plural} from './graph';
-import {
-  ChartNodeGraphSource,
-  NODE_GRAPH_HARD_LIMIT,
-  NODE_GRAPH_SOFT_CAP,
-} from './node_graph_source';
+import {ChartNodeGraphSource, NODE_GRAPH_MAX_NODES} from './node_graph_source';
 
 /**
  * The chart type identifier. Dashboards persist this as a bare string and
@@ -256,31 +249,33 @@ function renderChartBody(
     );
   }
 
-  // The refusal. Note what it does *not* do: it does not draw the capped set
-  // anyway with a warning above it. At this size the capped set is a tenth of
-  // the answer or less, so almost every edge in it points at a node that isn't
-  // there - which does not read as a sample of a dense graph, it reads as a
-  // sparse one. Naming the number and asking for a narrower query is the more
-  // useful answer.
-  if (state.total > NODE_GRAPH_HARD_LIMIT) {
+  // The refusal, and the whole reason the cap is all-or-nothing rather than a
+  // sample with a warning over it: a partial picture of a build graph is not a
+  // thinner answer, it is a misleading one, and here systematically so. The
+  // node set is capped by `ORDER BY node_id LIMIT`, node ids *are* the kind
+  // partition (rules are `[0, ruleCount)`, see sql_graph.ts), and no edge in
+  // this graph joins two rules - so the nodes that would survive are the
+  // rules, and the picture would be several hundred dots with not one line
+  // between them. That does not read as a corner of a dense graph; it reads as
+  // a build with no dependencies in it. Naming the number and asking for a
+  // narrower query is the more useful answer, and the only honest one.
+  if (state.total > NODE_GRAPH_MAX_NODES) {
     return m(
       EmptyState,
       {icon: 'filter_alt', title: 'Too many nodes to draw'},
       m(
         '.pf-dune-graph__load-note',
         `This query names ${plural(state.total, 'Dune node')}, and the graph ` +
-          `is laid out by hand up to ${NODE_GRAPH_HARD_LIMIT}. Drawing the ` +
-          `${NODE_GRAPH_SOFT_CAP} this card can show would leave out more ` +
-          'than nine nodes in ten, along with every edge that touches one of ' +
-          'them. Narrow the query - by directory, by rule, or by whatever ' +
-          'made you ask - and the graph of what is left will be readable too.',
+          `is laid out by hand up to ${NODE_GRAPH_MAX_NODES}. Drawing part of ` +
+          'them would not be a smaller version of the answer: the nodes that ' +
+          'fit are the ones with no dependencies between them, so the card ' +
+          'would show a scatter of unconnected dots. Narrow the query - by ' +
+          'directory, by rule, or by whatever made you ask - and the graph of ' +
+          'what is left will be readable too.',
       ),
     );
   }
 
-  // The soft cap needs nothing here: the pane's own toolbar says "400 of 3,912
-  // nodes" when `total` outruns what it was given, which is the one place a
-  // count is already on screen.
   return m(GraphPanel, {
     controller,
     nodes: {
