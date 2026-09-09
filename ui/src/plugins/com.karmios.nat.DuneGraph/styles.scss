@@ -1040,6 +1040,10 @@
     flex: 1;
   }
 
+  &__sidebar {
+    height: 100%;
+  }
+
   &__history {
     height: 100%;
     overflow: auto;

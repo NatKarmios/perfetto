@@ -29,7 +29,13 @@ import {HotkeyGlyphs} from '../../widgets/hotkey_glyphs';
 import {SplitPanel} from '../../widgets/split_panel';
 import {Stack, StackAuto} from '../../widgets/stack';
 import {Tabs, type TabsTab} from '../../widgets/tabs';
+import {
+  TableList,
+  type TableListEntry,
+} from '../../components/query_table/table_list';
+import SqlModulesPlugin from '../dev.perfetto.SqlModules';
 import type {DuneGraphController} from './controller';
+import {duneTableSections} from './dune_tables';
 import {DuneQueryResults} from './query_results';
 
 // One editor tab: an editor buffer plus the results view it runs into. Every
@@ -221,7 +227,7 @@ export class DuneQueryPage {
         m('.pf-dune-query-page__tab-spacer'),
         m(Button, {
           icon: this.sidebarVisible ? 'right_panel_close' : 'right_panel_open',
-          title: this.sidebarVisible ? 'Hide history' : 'Show history',
+          title: this.sidebarVisible ? 'Hide sidebar' : 'Show sidebar',
           active: this.sidebarVisible,
           onclick: () => {
             this.sidebarVisible = !this.sidebarVisible;
@@ -241,9 +247,56 @@ export class DuneQueryPage {
         controlledPanel: 'second',
         minSize: 100,
         firstPanel: editorTabs,
-        secondPanel: this.renderHistory(),
+        secondPanel: this.renderSidebar(),
       }),
     );
+  }
+
+  // History and the table reference, as the core query page's sidebar has
+  // them. Uncontrolled `Tabs`: which one is showing is a passing preference,
+  // not state anything else needs to read.
+  private renderSidebar(): m.Children {
+    return m(Tabs, {
+      className: 'pf-dune-query-page__sidebar',
+      tabs: [
+        {
+          key: 'history',
+          title: 'History',
+          leftIcon: 'history',
+          content: this.renderHistory(),
+        },
+        {
+          key: 'tables',
+          title: 'Tables',
+          leftIcon: 'table_chart',
+          content: this.renderTables(),
+        },
+      ],
+    });
+  }
+
+  // The `dune_*` surface, then the trace's own stdlib. Opening a table puts
+  // its query in a *new* tab (rather than replacing the active one, as the
+  // history does): you go to the reference to start something, not to redo it.
+  private renderTables(): m.Children {
+    return m(TableList, {
+      sections: duneTableSections(this.stdlibTables()),
+      onQueryTable: (tableName, query) => this.addTab(tableName, query, true),
+    });
+  }
+
+  // The stdlib catalogue, or undefined while it is still loading - or when the
+  // SqlModules plugin is disabled, which is allowed: it is a declared
+  // dependency of ours for ordering, not a hard requirement, and the Dune
+  // sections are useful without it.
+  private stdlibTables(): ReadonlyArray<TableListEntry> | undefined {
+    if (!this.trace.plugins.isPluginEnabled(SqlModulesPlugin.id)) {
+      return undefined;
+    }
+    return this.trace.plugins
+      .getPlugin(SqlModulesPlugin)
+      .getSqlModules()
+      ?.listTables();
   }
 
   // A plain string title, deliberately: `Tabs` only offers inline rename on

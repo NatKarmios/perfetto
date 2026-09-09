@@ -18,6 +18,7 @@ import type {App} from '../../public/app';
 import type {PerfettoPlugin} from '../../public/plugin';
 import type {Trace} from '../../public/trace';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
+import SqlModulesPlugin from '../dev.perfetto.SqlModules';
 import {
   AUTO_LOAD_ROW_LIMIT_SETTING,
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
@@ -48,12 +49,13 @@ export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
   static readonly description =
     'Explore the Dune build graph extracted from the trace.';
-  // For the Data Explorer hand-off (data_explorer_handoff.ts), which calls
-  // into that plugin's public API, and for the chart types registered below.
-  // Declaring it orders the two plugins' onTraceLoad but does *not* enable the
-  // dependency, so the hand-off still checks that it is enabled before
-  // reaching for it.
-  static readonly dependencies = [DataExplorerPlugin];
+  // DataExplorerPlugin is for the hand-off (data_explorer_handoff.ts), which
+  // calls into that plugin's public API, and for the chart types registered
+  // below; SqlModulesPlugin is for the query page's "Tables" sidebar, which
+  // lists the trace's stdlib alongside our own `dune_*` surface. Declaring
+  // either orders its onTraceLoad before ours but does *not* enable it, so
+  // both call sites still check that it is enabled before reaching for it.
+  static readonly dependencies = [DataExplorerPlugin, SqlModulesPlugin];
 
   /**
    * Registers the one number the user is asked about: how big a build graph
