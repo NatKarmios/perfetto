@@ -150,6 +150,33 @@ function count(): string {
   return root.querySelector('.pf-dune-graph__graph-count')?.textContent ?? '';
 }
 
+/**
+ * A `pointer*` event the pane's handlers accept. jsdom 25 has no
+ * `PointerEvent`, so this is a `MouseEvent` of the right type with `pointerId`
+ * bolted on - mithril dispatches on the type alone, and `pointerId` is only
+ * ever handed straight to the capture calls (see {@link svg}).
+ */
+function pointerEvent(type: string, x: number, y: number): Event {
+  const e = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: y,
+  }) as MouseEvent & {pointerId: number};
+  e.pointerId = 1;
+  return e;
+}
+
+// The pane's <svg>, with jsdom's missing pointer-capture methods stubbed in -
+// the pane captures the pointer once a drag passes the threshold, and calling
+// through to `undefined` would throw before the pan ever happened.
+function svg(): SVGSVGElement {
+  const el = root.querySelector('svg') as SVGSVGElement;
+  el.setPointerCapture = () => {};
+  el.releasePointerCapture = () => {};
+  return el;
+}
+
 function injected(
   nodes: readonly NodeId[],
   over: Partial<GraphPanelNodes> = {},
@@ -284,6 +311,86 @@ describe('the graph pane over an injected node set', () => {
     root
       .querySelector('circle')
       ?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+
+    expect(state.visited).toEqual([g.id('a')]);
+  });
+});
+
+/**
+ * The seam between panning and clicking, which share the same press. A drag
+ * has to swallow the click its release produces - otherwise every pan would
+ * navigate to whatever dot happened to be under the cursor - without swallowing
+ * anything else, and the release need not be over a dot at all.
+ *
+ * The browser's ordering, which the pane relies on: `pointerdown` ->
+ * `pointermove` -> `pointerup` -> `click`, with the click going to whatever the
+ * release landed on (the `<svg>` itself, for empty canvas).
+ *
+ * The interesting case is the last of those: nothing consumes the suppression
+ * flag when the click reaches no dot. That it does not then eat the *next*
+ * click on a node is pinned below, and holds for two independent reasons -
+ * `onPointerUp` reassigns the flag on every release and `onPointerDown` clears
+ * it - so these pass with either one alone. They are here to keep it that way.
+ */
+describe('the graph pane between a pan and a click', () => {
+  // A press well past DRAG_THRESHOLD, released over `over` - the <svg> for a
+  // release on empty canvas, a dot for one on a node.
+  function pan(over: Element): void {
+    const el = svg();
+    el.dispatchEvent(pointerEvent('pointerdown', 0, 0));
+    el.dispatchEvent(pointerEvent('pointermove', 40, 40));
+    over.dispatchEvent(pointerEvent('pointerup', 40, 40));
+  }
+
+  // The bare `click` a release produces. It has no press of its own in front of
+  // it, because it belongs to the gesture that just ended.
+  function releaseClick(over: Element): void {
+    over.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+  }
+
+  // A fresh, complete press on a dot, in the order a browser sends it. The
+  // leading `pointerdown` is the whole point: a click never arrives without
+  // one, and it is where the pane drops a stale suppression. No pointer capture
+  // is involved, since a press that doesn't move is never a pan.
+  function clickDot(): void {
+    const dot = root.querySelector('circle')!;
+    dot.dispatchEvent(pointerEvent('pointerdown', 40, 40));
+    dot.dispatchEvent(pointerEvent('pointerup', 40, 40));
+    releaseClick(dot);
+  }
+
+  test('swallows the click a pan released over a dot produces', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    const dot = root.querySelector('circle')!;
+    pan(dot);
+    releaseClick(dot);
+
+    expect(state.visited).toEqual([]);
+  });
+
+  test('lets the press after such a pan through', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    const dot = root.querySelector('circle')!;
+    pan(dot);
+    releaseClick(dot);
+    clickDot();
+
+    expect(state.visited).toEqual([g.id('a')]);
+  });
+
+  test('does not eat the next click after a pan onto empty canvas', () => {
+    // The release lands on the <svg>, so the click it produces reaches no dot
+    // and `onNodeClick` never runs - the flag is still set when the next press
+    // begins. That press must navigate all the same, or a pan that happened to
+    // end between two dots would cost the user their next click.
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    const el = svg();
+    pan(el);
+    releaseClick(el);
+    clickDot();
 
     expect(state.visited).toEqual([g.id('a')]);
   });

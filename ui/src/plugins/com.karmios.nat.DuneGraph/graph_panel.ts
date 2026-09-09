@@ -142,7 +142,9 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   private startY = 0;
   private lastX = 0;
   private lastY = 0;
-  // Set on a drag-release so the ensuing click doesn't navigate.
+  // Set on a drag-release so the ensuing click doesn't navigate. The click it
+  // suppresses need not land on a dot, so `onNodeClick` is not the only place
+  // it is cleared: the next press clears it too (see onPointerDown).
   private suppressClick = false;
 
   // Hover overlay: the node under the cursor, plus the live <svg> element used
@@ -389,6 +391,15 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     if (e.button !== 0) return;
     this.pointerDown = true;
     this.panning = false;
+    // Belt and braces: a pan that ended over empty canvas leaves its click on
+    // the <svg>, where no dot consumes the flag. Nothing leaks today, because
+    // onPointerUp *assigns* it (`= this.panning`) and so a plain press clears
+    // one on the way past - but clearing it where the gesture starts makes the
+    // flag's lifetime the gesture's rather than a side effect of that
+    // assignment. Safe because a release's own click is ordered before the
+    // next pointerdown (pointerdown -> pointermove -> pointerup -> click), so
+    // this cannot rob `onNodeClick` of a flag meant for it.
+    this.suppressClick = false;
     this.startX = e.clientX;
     this.startY = e.clientY;
     this.lastX = e.clientX;
