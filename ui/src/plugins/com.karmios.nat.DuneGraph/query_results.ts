@@ -93,10 +93,11 @@ const NODE_DETAIL_COLS = ['kind', 'orig_id', 'label'];
 const FORCED_BY_KIND_COL = 'forced_by_kind';
 const FORCED_BY_TARGET_COL = 'forced_by_target';
 
-// Nanosecond-duration columns from `dune_node`/`dune_rule` (see sql_graph.ts):
+// Nanosecond-duration columns from `dune_node`/`dune_rule`/`dune_edge_blocked`
+// (see sql_graph.ts):
 // rendered as a human duration (e.g. "88ms") rather than a raw integer, in
 // both table mode (`buildSchema`) and tree mode (`formatExtraValue`).
-const DURATION_COLS = new Set(['dur_ns', 'action_dur_ns']);
+const DURATION_COLS = new Set(['dur_ns', 'action_dur_ns', 'blocked_ns']);
 
 // Preferred default "Group by" column in tree mode, most to least specific.
 const GROUP_COL_PRIORITY = [NODE_COL, SRC_COL, DST_COL, SLICE_ID_COL];
@@ -427,7 +428,9 @@ export class DuneQueryResults {
           'dune_children/dune_parents(node_id), or forced-only ' +
           'dune_forcers/dune_forced(node_id) - any node_id / src / dst / ' +
           'slice_id column becomes addable. To see transitive forcing on a ' +
-          'result, LEFT JOIN dune_forced()/dune_forcers() USING (dst).',
+          'result, LEFT JOIN dune_forced()/dune_forcers() USING (dst); for ' +
+          'how long an edge held its source up, query dune_edge_blocked or ' +
+          'wrap any src/dst result in dune_blocked!(…).',
       );
     }
 

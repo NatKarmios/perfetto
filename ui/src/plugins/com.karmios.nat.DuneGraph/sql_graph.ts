@@ -162,6 +162,17 @@
  *   columns, which is what retired the packed `flags` integer this tier used to
  *   carry. The relation functions read none of this: they read the arms
  *   directly (see {@link edgeArms}).
+ * - `dune_edge_blocked(src, dst, forced, edge_kind, dyn_deps_stage,
+ *   blocked_ns)` — `dune_edge` with the blocked time on each edge: how long the
+ *   prerequisite `dst` and the waiting `src` were live at the same moment, i.e.
+ *   how much of `src`'s span `dst` accounts for. Equivalently
+ *   `dune_blocked!(dune_edge)`, the macro being the general form - it takes any
+ *   table with `src` / `dst` node ids (a filtered edge set, a relation
+ *   function's result, a hand-written pair list), passes its columns through
+ *   and appends `blocked_ns`. 0 means the two spans do not overlap at all, NULL
+ *   that an endpoint has no timing; a node's edges must not be *summed*,
+ *   because deps build in parallel. See {@link blockedMacro}, and
+ *   {@link spanView} for what a node's span is taken to be.
  * - `_dune_core(core_id, first_rowid, n)` /
  *   `_dune_core_member(core_id, dep_node_id)` — the shared *cores*: the common
  *   member prefix of the popular dep sets (688 cores holding 125,583 members on
@@ -306,6 +317,13 @@ const NODE_ORIG_ID_INDEX = '_dune_node_orig_id';
 const DIR_TABLE = 'dune_dir';
 const RAW_DIR_TABLE = '_dune_dir';
 const RULE_DIR_TABLE = '_dune_rule_dir';
+// A node's span as a half-open interval, and the macro that intersects two of
+// them across an edge (see {@link spanView} / {@link blockedMacro}).
+const SPAN_VIEW = '_dune_span';
+const BLOCKED_MACRO = 'dune_blocked';
+// `dune_edge` with the macro already applied. Built with the edge tier, since
+// that is the tier it reads (see {@link edgeBlockedView}).
+const EDGE_BLOCKED_VIEW = 'dune_edge_blocked';
 
 /**
  * Rows per `INSERT ... VALUES (row), (row), ...`.
@@ -1170,6 +1188,106 @@ function processView(space: NodeSpace): string {
 }
 
 /**
+ * A node's span as a half-open interval `[ts, end_ts)`, for the one purpose
+ * that needs two spans at once: {@link blockedMacro}.
+ *
+ * Deliberately *not* a slice of `dune_node`, which already publishes `ts` and
+ * `dur_ns`. Reading them off that view would drag its two `dune_string` probes
+ * (a node's label, a forcer's target) along for the ride - SQLite does not
+ * eliminate a join whose columns nothing selects - and the blocked macro probes
+ * a node per *endpoint*, i.e. twice per edge row. This view joins only what an
+ * interval needs, so an endpoint costs three primary-key probes
+ * (`_dune_node` -> `_dune_timing` -> `slice`) and no string lookup.
+ *
+ * The interval is the same one the timeline track draws (see graph_track.ts):
+ * `ts` is the *start* instant's own timestamp and the length is the lifecycle
+ * `dur_ns`, not `finish.ts - start.ts`. That is not interchangeable - a span
+ * collapsed to a single `-resolved` instant has no distinct finish timestamp at
+ * all, so the subtraction would call it zero-length - and it is what makes a
+ * blocked time agree with what the user sees on the track.
+ *
+ * `dur_ns IS NULL` means the span never finished (a trace truncated mid-build),
+ * so `end_ts` runs to `trace_end()` - the node really was still in flight when
+ * the trace stopped, and it is how the track renders it (`dur = -1`). A node
+ * with no lifecycle timing at all is simply absent: the joins are INNER, and
+ * the macro's LEFT JOIN onto this view is what turns that into a NULL.
+ *
+ * Only the node's *canonical* (earliest) occurrence has a span here, as
+ * everywhere else in the mirror - see `n_occurrences` on `dune_node`.
+ */
+function spanView(space: NodeSpace): string {
+  return `
+      CREATE PERFETTO VIEW ${SPAN_VIEW}(
+        node_id LONG,
+        ts LONG,
+        end_ts LONG
+      ) AS
+      SELECT n.node_id AS node_id, s.ts AS ts,
+        coalesce(s.ts + t.dur_ns, trace_end()) AS end_ts
+      FROM ${RAW_NODE_TABLE} n
+      JOIN ${TIMING_TABLE} t
+        ON t.kind = ${timingKindExpr('n', space)} AND t.key = n.orig_id
+      JOIN slice s ON s.id = coalesce(t.start_slice_id, t.finish_slice_id)
+  `;
+}
+
+/**
+ * `dune_blocked!(edges)`: any table with `src` / `dst` node id columns, plus a
+ * `blocked_ns` column saying how long `dst` held `src` up.
+ *
+ * An edge means "src depends on dst", so dst is the prerequisite and src is the
+ * one waiting. The two nodes' spans (see {@link spanView}) therefore overlap
+ * exactly over the stretch where src was already live and dst was still being
+ * built, and `blocked_ns` is the length of that intersection:
+ *
+ *   blocked_ns = max(0, min(src_end, dst_end) - max(src_ts, dst_ts))
+ *
+ * Zero and NULL mean different things. Zero is a real answer - the spans are
+ * disjoint, so dst cost src nothing (it was already built, or came out of the
+ * cache before src started). NULL means at least one endpoint has no lifecycle
+ * timing to compare, so the question has no answer for that edge; SQLite's
+ * multi-argument `min`/`max` propagate the NULL for us.
+ *
+ * Input columns are passed through untouched (`e.*`), so this composes with
+ * anything edge-shaped, the relation functions included - their result carries
+ * `src`/`dst` too:
+ *
+ *   SELECT * FROM dune_blocked!(
+ *     (SELECT * FROM dune_edge WHERE src = 42)) ORDER BY blocked_ns DESC
+ *   SELECT * FROM dune_blocked!(dune_children(42))
+ *
+ * **Do not sum it over a node's edges.** Deps build in parallel, so their
+ * blocked intervals overlap each other and adding them up double-counts: a rule
+ * blocked for 1 s on ten deps built concurrently sums to 10 s. `max(blocked_ns)`
+ * is the honest per-node figure (the longest single wait); a true "how long was
+ * this node blocked at all" needs the *union* of the intervals, which is an
+ * interval-intersect problem and not something a per-edge column can answer.
+ *
+ * Named `blocked_ns`, not `blocked`, for both of the reasons the mirror's other
+ * durations are: it says what the unit is, and the query tab renders a
+ * `*_dur_ns`-style column as a human duration (see `DURATION_COLS` in
+ * query_results.ts) rather than a raw integer.
+ *
+ * `CREATE OR REPLACE` because macros cannot be dropped - there is no
+ * `DROP PERFETTO MACRO` - so a stale one would otherwise survive a rebuild.
+ */
+function blockedMacro(): string {
+  return `
+      CREATE OR REPLACE PERFETTO MACRO ${BLOCKED_MACRO}(
+        edges TableOrSubquery
+      )
+      RETURNS TableOrSubquery AS
+      (
+        SELECT e.*,
+          max(0, min(es.end_ts, ds.end_ts) - max(es.ts, ds.ts)) AS blocked_ns
+        FROM ($edges) e
+        LEFT JOIN ${SPAN_VIEW} es ON es.node_id = e.src
+        LEFT JOIN ${SPAN_VIEW} ds ON ds.node_id = e.dst
+      )
+  `;
+}
+
+/**
  * Builds the node tier of the mirror (`dune_string` / `dune_node` / `dune_rule`
  * / `dune_dep` / `dune_rule_target` / `dune_dir` / `dune_process`, plus the
  * timing table they
@@ -1200,6 +1318,7 @@ export async function buildNodeMirror(
       DEP_TABLE,
       DIR_TABLE,
       PROCESS_VIEW,
+      SPAN_VIEW,
     ]) {
       await engine.tryQuery(`DROP VIEW IF EXISTS ${view}`);
     }
@@ -1462,6 +1581,13 @@ export async function buildNodeMirror(
     `);
     await engine.query(dirView());
     await engine.query(processView(space));
+    // The span view and the macro over it: cheap to define, and defining the
+    // macro here rather than with the edge tier keeps it usable over any
+    // src/dst-shaped table (a hand-written one included) while only the node
+    // tier is up. A macro body is expanded, not resolved, at CREATE time, so
+    // the order of these two does not matter.
+    await engine.query(spanView(space));
+    await engine.query(blockedMacro());
   });
 
   return {
@@ -1981,6 +2107,33 @@ function edgeView(): string {
 }
 
 /**
+ * `dune_edge_blocked`: {@link edgeView} with {@link blockedMacro} already
+ * applied, so the whole edge relation carries a `blocked_ns` column.
+ *
+ * Pure convenience - `dune_blocked!(dune_edge)` is the same query - but it is
+ * the form worth having by name, because "which edges cost time" is the
+ * question the column exists to answer and a view is what an ad-hoc query, a
+ * saved query, or the query tab can name.
+ *
+ * The same caution applies as to `dune_edge` itself: the relation is 28.8M rows
+ * on a monorepo-scale trace and this adds two span probes to each of them, so
+ * it is something to filter (`WHERE src = ...`, a join against a node set), not
+ * something to `SELECT *` from.
+ */
+function edgeBlockedView(): string {
+  return `
+    CREATE PERFETTO VIEW ${EDGE_BLOCKED_VIEW}(
+      src LONG,
+      dst LONG,
+      forced LONG,
+      edge_kind STRING,
+      dyn_deps_stage LONG,
+      blocked_ns LONG
+    ) AS
+    SELECT * FROM ${BLOCKED_MACRO}!(${EDGE_TABLE})`;
+}
+
+/**
  * Builds the edge tier of the mirror (`dune_edge` + the relation functions +
  * `distances()`) on top of an already-built {@link SqlNodeMirror}, whose
  * `node_id` space the edge endpoints live in.
@@ -2064,6 +2217,7 @@ export async function buildEdgeMirror(
 
   // Drop the views first: they read from the raw tables materializeTable
   // recreates.
+  await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_BLOCKED_VIEW}`);
   await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
   await engine.tryQuery(`DROP VIEW IF EXISTS ${ALL_EDGE_VIEW}`);
 
@@ -2208,6 +2362,7 @@ export async function buildEdgeMirror(
   await phase(opts, 'sql: create edge views', async () => {
     await engine.query(allEdgeView());
     await engine.query(edgeView());
+    await engine.query(edgeBlockedView());
   });
 
   await phase(opts, 'sql: create relation functions', async () => {
@@ -2246,6 +2401,8 @@ export async function buildEdgeMirror(
       for (const {name} of RELATION_FUNCTIONS) {
         await engine.tryQuery(`DROP TABLE IF EXISTS ${name}`);
       }
+      // Before EDGE_TABLE, which it selects from.
+      await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_BLOCKED_VIEW}`);
       await engine.tryQuery(`DROP VIEW IF EXISTS ${EDGE_TABLE}`);
       await engine.tryQuery(`DROP VIEW IF EXISTS ${ALL_EDGE_VIEW}`);
       // Ours, on someone else's table (see above).

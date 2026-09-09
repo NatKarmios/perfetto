@@ -442,6 +442,107 @@ describe('sql_graph process view', () => {
   });
 });
 
+describe('sql_graph blocked time', () => {
+  // Five rules again, so the inlined rule/dep boundary is 5.
+  const graph = () =>
+    testGraph([rule('1'), rule('2'), rule('3'), rule('4'), rule('5'), dep('a')])
+      .graph;
+
+  // The one statement containing `needle`.
+  const statement = async (needle: string) => {
+    const sql = await capture(graph());
+    const stmt = sql.find((q) => q.includes(needle));
+    expect(stmt).toBeDefined();
+    return stmt!;
+  };
+
+  const spanView = () => statement('CREATE PERFETTO VIEW _dune_span');
+  const macro = () => statement('PERFETTO MACRO dune_blocked');
+  const blockedView = () => statement('CREATE PERFETTO VIEW dune_edge_blocked');
+
+  it('takes a span from the start instant plus the lifecycle duration', async () => {
+    // Not `finish.ts - start.ts`: a span collapsed to one `-resolved` instant
+    // has no distinct finish timestamp, and this is the interval the timeline
+    // track draws.
+    const stmt = await spanView();
+    expect(stmt).toContain('s.ts AS ts');
+    expect(stmt).toContain('coalesce(s.ts + t.dur_ns, trace_end()) AS end_ts');
+  });
+
+  it('runs an unfinished span to the end of the trace', async () => {
+    // A NULL `dur_ns` is a span the trace was truncated in the middle of, so
+    // the node really was still live at `trace_end()` - same as the track's
+    // `dur = -1`.
+    expect(await spanView()).toContain('trace_end()');
+  });
+
+  it('keys the span on the same (kind, orig_id) the timing table stores', async () => {
+    const stmt = await spanView();
+    expect(stmt).toContain('t.kind = iif(n.node_id < 5,');
+    expect(stmt).toContain('t.key = n.orig_id');
+  });
+
+  it('drops a node with no timing rather than giving it a NULL span', async () => {
+    // INNER, unlike `dune_node`'s LEFT joins: the macro's own LEFT JOIN onto
+    // this view is what turns "no timing" into a NULL `blocked_ns`.
+    const stmt = await spanView();
+    expect(stmt).toContain('JOIN _dune_timing t');
+    expect(stmt).not.toContain('LEFT JOIN _dune_timing');
+    expect(stmt).not.toContain('LEFT JOIN slice');
+  });
+
+  it('resolves the span without touching the string table', async () => {
+    // The whole reason this is not a slice of `dune_node`: SQLite does not
+    // eliminate a join nothing selects from, and the macro probes a node twice
+    // per edge row.
+    expect(await spanView()).not.toContain('dune_string');
+  });
+
+  it('intersects the two endpoints spans', async () => {
+    // blocked = max(0, min(ends) - max(starts)), i.e. the stretch where the
+    // waiting `src` was live and the prerequisite `dst` was still building.
+    expect(await macro()).toContain(
+      'max(0, min(es.end_ts, ds.end_ts) - max(es.ts, ds.ts)) AS blocked_ns',
+    );
+  });
+
+  it('joins a span per endpoint, LEFT so an untimed edge stays', async () => {
+    const stmt = await macro();
+    expect(stmt).toContain('LEFT JOIN _dune_span es ON es.node_id = e.src');
+    expect(stmt).toContain('LEFT JOIN _dune_span ds ON ds.node_id = e.dst');
+  });
+
+  it('passes the input table through, so it composes', async () => {
+    // `e.*` over a `TableOrSubquery` is what lets it wrap a filtered edge set
+    // or a relation function's result, not just `dune_edge`.
+    const stmt = await macro();
+    expect(stmt).toContain('edges TableOrSubquery');
+    expect(stmt).toContain('SELECT e.*,');
+    expect(stmt).toContain('FROM ($edges) e');
+  });
+
+  it('replaces the macro rather than dropping it', async () => {
+    // There is no DROP PERFETTO MACRO, so a stale one would survive a rebuild.
+    expect(await macro()).toContain('CREATE OR REPLACE PERFETTO MACRO');
+  });
+
+  it('exposes dune_edge_blocked as the macro over dune_edge', async () => {
+    const stmt = await blockedView();
+    expect(stmt).toContain('SELECT * FROM dune_blocked!(dune_edge)');
+    expect(stmt).toContain('blocked_ns LONG');
+  });
+
+  it('drops both with their tiers, before what they read', async () => {
+    const sql = await capture(graph());
+    expect(sql).toContain('DROP VIEW IF EXISTS _dune_span');
+    // Ahead of `dune_edge`, which it selects from.
+    const drops = sql.filter((q) => q.startsWith('DROP VIEW IF EXISTS dune_'));
+    expect(drops.indexOf('DROP VIEW IF EXISTS dune_edge_blocked')).toBeLessThan(
+      drops.indexOf('DROP VIEW IF EXISTS dune_edge'),
+    );
+  });
+});
+
 describe('sql_graph phase manifests', () => {
   // NODE_MIRROR_PHASES / EDGE_MIRROR_PHASES are hand-written (see their doc for
   // why they are not a descriptor array the builders are driven from), so this
