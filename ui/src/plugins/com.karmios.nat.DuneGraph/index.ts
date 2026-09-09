@@ -233,6 +233,17 @@ export default class implements PerfettoPlugin {
       render: () => queryPage.render(),
     });
 
+    // A reload comes back on the page's own URL, but the core navigates to the
+    // trace's landing page - the timeline - once every plugin's onTraceLoad has
+    // run (see getInitialRoute() in core/load_trace.ts), which would bounce the
+    // reader off the page they reloaded. Suggesting the route we came in on
+    // keeps a reload where it was. Priority 10 is the "generic alternative
+    // landing page" tier, below the format-specific pages that have a real
+    // claim on what the trace is.
+    if (trace.getCurrentRoute().page === QUERY_PAGE_ROUTE) {
+      trace.initialPage.suggest(QUERY_PAGE_ROUTE, 10);
+    }
+
     trace.sidebar.addMenuItem({
       section: 'current_trace',
       text: 'Dune Query (SQL)',
