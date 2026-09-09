@@ -14,6 +14,10 @@
 
 import type {Mock, Mocked} from 'vitest';
 import {CleanupManager} from './cleanup_manager';
+import {
+  type DashboardDataSource,
+  dashboardRegistry,
+} from '../dashboard/dashboard_registry';
 import type {QueryExecutionService} from './query_execution_service';
 import type {QueryNode} from '../query_node';
 import {TableSourceNode} from './nodes/sources/table_source';
@@ -110,6 +114,33 @@ describe('CleanupManager', () => {
       expect(
         mockQueryExecutionService.dropAllMaterializations,
       ).toHaveBeenCalledTimes(1);
+    });
+
+    it('should only invalidate the given graph tab', async () => {
+      // dropAllMaterializations belongs to the closing tab's service and drops
+      // only that tab's tables, so another tab's sources must keep theirs.
+      function source(nodeId: string, graphId: string) {
+        return {
+          nodeId,
+          name: nodeId,
+          graphId,
+          columns: [{name: 'node_id'}],
+          tableName: `_exp_mat_${nodeId}`,
+        } as unknown as DashboardDataSource;
+      }
+      dashboardRegistry.setExportedSource(source('a', 'tab-a'));
+      dashboardRegistry.setExportedSource(source('b', 'tab-b'));
+
+      await cleanupManager.cleanupAll([], 'tab-a');
+
+      expect(
+        dashboardRegistry.getExportedSource('a')?.tableName,
+      ).toBeUndefined();
+      expect(dashboardRegistry.getExportedSource('b')?.tableName).toBe(
+        '_exp_mat_b',
+      );
+
+      dashboardRegistry.clear();
     });
   });
 
