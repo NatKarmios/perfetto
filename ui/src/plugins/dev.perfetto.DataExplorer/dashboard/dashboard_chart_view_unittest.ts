@@ -72,7 +72,9 @@ describe('buildWhereClause', () => {
       {column: 'dur', op: '>=', value: 10},
       {column: 'dur', op: '<', value: 20},
     ];
-    expect(buildWhereClause(filters)).toEqual(' WHERE dur >= 10 AND dur < 20');
+    expect(buildWhereClause(filters)).toEqual(
+      ' WHERE "dur" >= 10 AND "dur" < 20',
+    );
   });
 
   test('quotes a string range', () => {
@@ -81,7 +83,7 @@ describe('buildWhereClause', () => {
       {column: 'path', op: '<', value: 'dir0'},
     ];
     expect(buildWhereClause(filters)).toEqual(
-      " WHERE path >= 'dir/' AND path < 'dir0'",
+      ' WHERE "path" >= \'dir/\' AND "path" < \'dir0\'',
     );
   });
 
@@ -91,7 +93,7 @@ describe('buildWhereClause', () => {
       {column: 'name', op: '<', value: "it's a lot"},
     ];
     expect(buildWhereClause(filters)).toEqual(
-      " WHERE name >= 'it''s' AND name < 'it''s a lot'",
+      " WHERE \"name\" >= 'it''s' AND \"name\" < 'it''s a lot'",
     );
   });
 
@@ -99,7 +101,7 @@ describe('buildWhereClause', () => {
     const filters: DashboardBrushFilter[] = [
       {column: 'name', op: '=', value: "it's"},
     ];
-    expect(buildWhereClause(filters)).toEqual(" WHERE name = 'it''s'");
+    expect(buildWhereClause(filters)).toEqual(" WHERE \"name\" = 'it''s'");
   });
 
   test('folds same-column equality filters into an IN', () => {
@@ -107,7 +109,9 @@ describe('buildWhereClause', () => {
       {column: 'name', op: '=', value: 'a'},
       {column: 'name', op: '=', value: "b'c"},
     ];
-    expect(buildWhereClause(filters)).toEqual(" WHERE name IN ('a', 'b''c')");
+    expect(buildWhereClause(filters)).toEqual(
+      " WHERE \"name\" IN ('a', 'b''c')",
+    );
   });
 
   test('combines nulls and equality with OR', () => {
@@ -116,7 +120,27 @@ describe('buildWhereClause', () => {
       {column: 'name', op: 'is null'},
     ];
     expect(buildWhereClause(filters)).toEqual(
-      " WHERE (name = 'a' OR name IS NULL)",
+      ' WHERE ("name" = \'a\' OR "name" IS NULL)',
+    );
+  });
+
+  // An aggregation's output name is free text, so a column can be anything the
+  // user typed - a name with a space, or a bare SQL keyword. Quoting keeps the
+  // clause valid instead of turning a legal column into a syntax error.
+  test('quotes a column name with a space in it', () => {
+    const filters: DashboardBrushFilter[] = [
+      {column: 'my count', op: '=', value: 3},
+    ];
+    expect(buildWhereClause(filters)).toEqual(' WHERE "my count" = 3');
+  });
+
+  test('quotes a column named after a SQL keyword', () => {
+    const filters: DashboardBrushFilter[] = [
+      {column: 'end', op: '>=', value: 10},
+      {column: 'end', op: '<', value: 20},
+    ];
+    expect(buildWhereClause(filters)).toEqual(
+      ' WHERE "end" >= 10 AND "end" < 20',
     );
   });
 });
@@ -236,7 +260,7 @@ describe('a chart does not filter itself by its own brush', () => {
     const d = dashboard([config('c1'), config('c2')]);
     d.frame(0).node.setBrushSelection('node_id', [1]);
     d.frame(1).node.setBrushSelection('node_id', [2]);
-    expect(d.frame(0).query).toEqual('SELECT * FROM tbl WHERE node_id = 2');
+    expect(d.frame(0).query).toEqual('SELECT * FROM tbl WHERE "node_id" = 2');
     expect(d.frame(1).query).toEqual('SELECT * FROM tbl');
   });
 
@@ -246,13 +270,13 @@ describe('a chart does not filter itself by its own brush', () => {
     const d = dashboard([config('c1'), config('c2')]);
     d.restore([{column: 'node_id', op: '=', value: 1, chartId: 'c1'}]);
     expect(d.frame(0).query).toEqual('SELECT * FROM tbl');
-    expect(d.frame(1).query).toEqual('SELECT * FROM tbl WHERE node_id = 1');
+    expect(d.frame(1).query).toEqual('SELECT * FROM tbl WHERE "node_id" = 1');
   });
 
   test('consumes an unowned filter, as everything saved before this did', () => {
     const d = dashboard([config('c1')]);
     d.restore([{column: 'node_id', op: '=', value: 1}]);
-    expect(d.frame(0).query).toEqual('SELECT * FROM tbl WHERE node_id = 1');
+    expect(d.frame(0).query).toEqual('SELECT * FROM tbl WHERE "node_id" = 1');
   });
 });
 
