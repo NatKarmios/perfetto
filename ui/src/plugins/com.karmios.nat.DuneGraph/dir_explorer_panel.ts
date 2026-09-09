@@ -275,7 +275,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     if (source !== this.cachedSource || source.version !== this.cachedVersion) {
       this.cachedSource = source;
       this.cachedVersion = source.version;
-      this.reset();
+      this.reset(attrs);
     }
     return m(
       '.pf-dune-graph.pf-dune-explorer',
@@ -284,7 +284,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  private reset(): void {
+  private reset(attrs: DirExplorerPanelAttrs): void {
     this.children.clear();
     this.members.clear();
     this.expanded.clear();
@@ -301,6 +301,29 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.roots = undefined;
     this.rootsLoading = false;
     this.rootsError = undefined;
+    // The filter survived, but everything derived from it was just dropped, and
+    // the pane is only coherent while the two agree: the tree would otherwise
+    // render from the source's unfiltered counts while the member queries still
+    // carried the filter, and `dirPathMatches` - with no `ruleDirs` left to
+    // consult - would claim every directory's path matched. So re-apply it, and
+    // let the tree, `ruleDirs` and the member queries all describe the one
+    // filter again.
+    //
+    // Only where `apply` has something to do. An empty filter on a hierarchy
+    // source is not a filter at all, and `apply` early-returns to `clearFilter`
+    // for it - which is the unfiltered lazy descent this has already set up,
+    // except that it would also empty the draft box the user may still be
+    // typing in.
+    // A row-driven source's empty filter *is* its tree, so that one goes
+    // through (see `apply`).
+    //
+    // `filterLoading` is cleared above rather than below for the same reason:
+    // `apply` bails on a busy pane, so a reset arriving mid-apply would
+    // otherwise drop the re-apply and leave the pane in exactly the split state
+    // this is here to avoid.
+    if (filterActive(this.filter) || attrs.source.rowDriven) {
+      this.apply(attrs, this.filter);
+    }
   }
 
   /**
@@ -935,13 +958,25 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   ): m.Children {
     if (count === 0 && narrowTo === undefined) return undefined;
     const where = dir.path === '' ? TOP_LEVEL_LABEL : dir.path;
-    // Whether *this* directory is the one the caller's filter names, which is
-    // what turns the button below into a toggle. Compared by id rather than by
-    // path because that is what was handed out and what comes back, and because
-    // a compressed row's directory is the deepest of the run it swallowed - the
+    // Whether *this* row is the one the caller's filter names, which is what
+    // turns the button below into a toggle. Compared by id rather than by path
+    // because that is what was handed out and what comes back, and because a
+    // compressed row's directory is the deepest of the run it swallowed - the
     // path on screen names several (see `dirLabel`).
-    const narrowedHere =
-      attrs.filteredDirId !== undefined && attrs.filteredDirId === dir.id;
+    //
+    // Which is also why the id has to go through `rowIdFor` first, exactly as
+    // the expansion set does (see `remapKeys`): compression re-decides which
+    // directory a row is keyed on every rebuild, so the id handed out with the
+    // brush can name a directory that some row has since swallowed. `undefined`
+    // back means nothing matching is under the brushed directory at all, which
+    // is the honest answer - no row draws pressed, because that directory has
+    // no row.
+    const narrowedTo = attrs.filteredDirId;
+    const narrowedRow =
+      narrowedTo === undefined
+        ? undefined
+        : (this.tree?.rowIdFor(narrowedTo) ?? narrowedTo);
+    const narrowedHere = narrowedRow !== undefined && narrowedRow === dir.id;
     return m(
       'span.pf-dune-tree__group-actions',
       // The buttons are not part of the row's collapse toggle. This is what

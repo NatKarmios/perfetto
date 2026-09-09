@@ -284,22 +284,55 @@ describe('DirExplorerPanel narrowing toggle', () => {
     expect(button.getAttribute('title')).toContain('Stop narrowing');
   });
 
-  test('leaves it unpressed for any other directory', async () => {
-    // Deliberately id 0, which is `_build` - a directory the compressed row
-    // above swallowed. The row is keyed on the deepest of the run (id 2), and
-    // that is the id handed to `onFilterToDir`, so it is the id that has to
-    // come back for the button to light up.
+  test('leaves it unpressed when the brushed directory has no row', async () => {
+    // Deliberately `bin`, which holds 40 deps in the mirror and none of the
+    // query's rows: nothing matching is under it, so it gets no row at all and
+    // `rowIdFor` says so by returning undefined. Nothing draws pressed, which
+    // is the honest answer - the brushed directory is not on screen, rather
+    // than some other row owning the brush.
     const root = await renderPane({
       controller: fakeController(),
       source: rowDrivenSource(),
       onFilterToDir: () => {},
-      filteredDirId: 0,
+      filteredDirId: 3,
     });
 
     const button = narrowButton(root)!;
     expect(button.classList.contains('pf-active')).toBe(false);
     expect(button.querySelector('.pf-filled')).toBeNull();
     expect(button.getAttribute('title')).toContain('Narrow everything else');
+  });
+
+  test('presses the row that swallowed the brushed directory', async () => {
+    // The brush names `_build`, which under these rows is swallowed by the
+    // compressed row for `_build/default`. Comparing the id raw pressed
+    // nothing, which left the toggle with no way back: clicking any row
+    // re-brushed that row instead of clearing the brush.
+    const narrowed: DirEntry[] = [];
+    const attrs = {
+      controller: fakeController(),
+      source: twoBranchRowDrivenSource(),
+      onFilterToDir: (d: DirEntry) => narrowed.push(d),
+      filteredDirId: 0,
+    };
+    const root = await renderPane(attrs);
+    // Opened, so that the directories under the compressed row have rows - and
+    // therefore buttons - of their own to be told apart from it.
+    dirHeader(root)?.click();
+    await rerender(root, attrs);
+    expect(dirNames(root)).toEqual(['_build/default/', 'bin/', 'lib/']);
+
+    const buttons = narrowButtons(root);
+    expect(buttons.map((b) => b.classList.contains('pf-active'))).toEqual([
+      true,
+      false,
+      false,
+    ]);
+
+    // And the click reports the row's own directory, since that is the one the
+    // caller can hand back as `filteredDirId` next time.
+    buttons[0].click();
+    expect(narrowed.map((d) => d.path)).toEqual(['_build/default']);
   });
 
   test('reports a click on the pressed button like any other', async () => {
@@ -410,6 +443,120 @@ describe('DirExplorerPanel over a hierarchy source', () => {
 });
 
 /**
+ * What a source replacement does to the pane, which is not quite what it looks
+ * like: the filter is the user's input and survives, so everything derived from
+ * it has to be rebuilt rather than merely dropped. Half a rebuild is silent -
+ * the tree draws the source's unfiltered counts while the member queries below
+ * it still carry the filter.
+ */
+describe('DirExplorerPanel across a source replacement', () => {
+  test('re-applies the filter it kept', async () => {
+    const {source, reload, members} = reloadableHierarchySource();
+    const attrs = {controller: fakeController(), source};
+    const root = await renderPane(attrs);
+
+    typeFilter(root, 'a.ml');
+    await rerender(root, attrs);
+    expect(chipCount(root)).toBe('2 matching');
+
+    // A graph reload: the mirror is rebuilt from scratch, so the pane throws
+    // away every id it was holding and starts again.
+    reload();
+    await rerender(root, attrs);
+
+    // The chip has a reach to report, which it only has from a tree...
+    expect(chipCount(root)).toBe('2 matching');
+    // ...and the row's numbers are the filter's: `lib` holds 5 deps and the
+    // filter matched 2 of them, where an unfiltered tree would say "5 deps".
+    expect(rowCounts(root)).toContain('2 of 5 deps');
+
+    // The member query is asked under the same filter, `dirPathMatches`
+    // included. This fake's filter matches no rule directory, so `lib`'s path
+    // did not match - and a pane that kept the filter without rebuilding
+    // `ruleDirs` would pass `true` here and quietly let every rule match.
+    dirHeader(root)?.click();
+    await rerender(root, attrs);
+    expect(members).toHaveLength(1);
+    expect(members[0].filter.path?.text).toBe('a.ml');
+    expect(members[0].dirPathMatches).toBe(false);
+  });
+
+  test('rebuilds a row-driven tree with nothing typed', async () => {
+    // A row-driven source's rows *are* its filter, so there is no typed filter
+    // to re-apply and the tree still has to come back (see `rowDriven`).
+    let version = 1;
+    const source: DirExplorerSource = {
+      ...rowDrivenSource(),
+      get version() {
+        return version;
+      },
+    };
+    const attrs = {controller: fakeController(), source};
+    const root = await renderPane(attrs);
+    expect(rowCounts(root)).toContain('1 of 3 rules');
+
+    version++;
+    await rerender(root, attrs);
+
+    expect(dirNames(root)).toEqual(['_build/default/lib/']);
+    // Qualified again, which only a rebuilt tree can say: without one the row
+    // would show the mirror's bare "3 rules".
+    expect(rowCounts(root)).toContain('1 of 3 rules');
+  });
+});
+
+/**
+ * A hierarchy source that can be replaced under the pane, and that records what
+ * its member queries were asked for.
+ *
+ * Its filter reaches deps only - no rule directory matches, and the rule counts
+ * come back empty with it - which is what makes `dirPathMatches` observable: a
+ * pane that lost its `ruleDirs` answers `true` for every directory instead of
+ * `false` for this one.
+ */
+function reloadableHierarchySource(): {
+  source: DirExplorerSource;
+  reload: () => void;
+  members: ReadonlyArray<{filter: MemberFilter; dirPathMatches: boolean}>;
+} {
+  let version = 1;
+  const members: Array<{filter: MemberFilter; dirPathMatches: boolean}> = [];
+  const source: DirExplorerSource = {
+    ...hierarchySource([]),
+    get version() {
+      return version;
+    },
+    matchingRuleDirs: async () => new Set<number>(),
+    matchingCounts: async (kind) =>
+      kind === 'rule' ? new Map() : new Map([[2, 2]]),
+    dirMembers: async (_id, _kind, _limit, _offset, filter, dirPathMatches) => {
+      members.push({filter, dirPathMatches});
+      return MEMBERS.filter((entry) => entry.kind === 'dep');
+    },
+  };
+  return {source, reload: () => version++, members};
+}
+
+/**
+ * A row-driven source whose rows land in *both* of `_build/default`'s children,
+ * so the compressed root row is `_build/default` and the two directories under
+ * it get rows of their own - three narrowing buttons to tell apart, and a
+ * swallowed `_build` above them.
+ */
+function twoBranchRowDrivenSource(): DirExplorerSource {
+  return {
+    ...rowDrivenSource(),
+    matchingCounts: async (kind: NodeKind) =>
+      kind === 'rule'
+        ? new Map([[2, 1]])
+        : new Map([
+            [2, 2],
+            [3, 4],
+          ]),
+  };
+}
+
+/**
  * A row-driven source that records what it was asked for and actually narrows
  * itself when handed a filter, which is what the pane's filter UI expects of
  * one.
@@ -467,10 +614,29 @@ function typeFilter(root: HTMLElement, text: string): void {
 // thing that distinguishes it from the bulk pair beside it. Matched loosely
 // because the title says which way the toggle would go ("Narrow everything else
 // to …" / "Stop narrowing …"), and both are this button.
-function narrowButton(root: HTMLElement): HTMLElement | undefined {
-  return Array.from(root.querySelectorAll('button')).find((b) =>
+function narrowButtons(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll('button')).filter((b) =>
     /narrow/i.test(b.getAttribute('title') ?? ''),
   );
+}
+
+function narrowButton(root: HTMLElement): HTMLElement | undefined {
+  return narrowButtons(root)[0];
+}
+
+// What the active filter's chip says about its reach, or undefined where there
+// is no chip. `''` is a distinct and wrong answer - a chip with nothing in it -
+// which is why this does not flatten the two together.
+function chipCount(root: HTMLElement): string | undefined {
+  return (
+    root.querySelector('.pf-dune-explorer__filter-count')?.textContent ??
+    undefined
+  );
+}
+
+// The first directory row's numbers.
+function rowCounts(root: HTMLElement): string {
+  return root.querySelector('.pf-dune-tree__group-count')?.textContent ?? '';
 }
 
 // The active filter chip's dismiss button, which is how the filter is cleared
