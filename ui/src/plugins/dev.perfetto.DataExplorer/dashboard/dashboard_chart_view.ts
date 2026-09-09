@@ -326,6 +326,10 @@ export class DashboardChartView implements m.ClassComponent<DashboardChartViewAt
       node: adapter,
       onFilterChange: () => m.redraw(),
       gridLines: attrs.gridLines,
+      // The same entry `ensureLoader` reads, unfiltered: a renderer that
+      // brushes needs to see its own filters (the ones the loader drops) to
+      // recover what it brushed after a reload.
+      brushFilters: attrs.brushFilters.get(attrs.source.nodeId),
     };
     return renderChartByType(ctx, config, entry);
   }
