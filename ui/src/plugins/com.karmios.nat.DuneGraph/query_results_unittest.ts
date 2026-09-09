@@ -13,12 +13,22 @@
 // limitations under the License.
 
 import m from 'mithril';
-import type {Row, SqlValue} from '../../trace_processor/query_result';
+import type {Deferred} from '../../base/deferred';
+import {defer} from '../../base/deferred';
+import type {Result} from '../../base/result';
+import type {Trace} from '../../public/trace';
+import type {Engine} from '../../trace_processor/engine';
+import type {
+  QueryResult,
+  Row,
+  SqlValue,
+} from '../../trace_processor/query_result';
 import type {DuneGraphController} from './controller';
 import type {BuildGraph, NodeId} from './graph';
 import {dep, rule, testGraph} from './graph_test_helper';
 import type {TreeLeafEntry} from './query_results';
 import {
+  DuneQueryResults,
   buildNodeTreeItems,
   formatExtraParts,
   formatExtraValue,
@@ -356,5 +366,202 @@ describe('sliceLink', () => {
     const root = render(sliceLink(controller, undefined, 'not-an-id', 'x'));
     expect(root.querySelector('a')).toBeNull();
     expect(root.textContent).toBe('x');
+  });
+});
+
+// A panel wired to an engine and a controller that answer nothing on their own:
+// `queries` collects one deferred per SQL query issued (via the engine, so
+// `runQueryForQueryTable` runs for real), `sliceLookups` one per follow-up
+// `slice_id` resolution. Nothing settles until a test says so, which is what
+// lets these tests stop inside `runQuery` - between the query coming back and
+// its slice ids resolving - and look at what the panel would draw there.
+interface QueryHarness {
+  readonly results: DuneQueryResults;
+  readonly queries: Deferred<Result<QueryResult>>[];
+  readonly sliceLookups: Deferred<Map<number, NodeId>>[];
+}
+
+function queryHarness(): QueryHarness {
+  const queries: Deferred<Result<QueryResult>>[] = [];
+  const sliceLookups: Deferred<Map<number, NodeId>>[] = [];
+  const trace = {
+    engine: {
+      tryQuery: () => {
+        const d = defer<Result<QueryResult>>();
+        queries.push(d);
+        return d;
+      },
+    } as unknown as Engine,
+  } as unknown as Trace;
+  const controller = {
+    graph,
+    // A loaded node mirror, so `missingTables` lets the query through.
+    nodeMirrorReady: true,
+    graphStep: {error: undefined},
+    nodesForSliceIds: () => {
+      const d = defer<Map<number, NodeId>>();
+      sliceLookups.push(d);
+      return d;
+    },
+    nodeForNodeId: () => undefined,
+    goToNode: async () => {},
+    goToSlice: async () => {},
+  } as unknown as DuneGraphController;
+  return {
+    results: new DuneQueryResults(trace, controller),
+    queries,
+    sliceLookups,
+  };
+}
+
+// The engine's answer to one query: `rows`' own keys as the result columns,
+// read back through a cursor, as `runQueryForQueryTable` expects. Only the
+// methods it calls are here - a real `QueryResult` is a wasm protobuf reader
+// with no plain-object constructor (see controller_unittest.ts).
+function okRows(rows: readonly Row[]): Result<QueryResult> {
+  const value = {
+    columns: () => Object.keys(rows[0] ?? {}),
+    numRows: () => rows.length,
+    elapsedTimeMs: () => 0,
+    error: () => undefined,
+    statementCount: () => 1,
+    statementWithOutputCount: () => 1,
+    lastStatementSql: () => 'select …',
+    iter: () => {
+      let i = 0;
+      return {
+        valid: () => i < rows.length,
+        next: () => {
+          i++;
+        },
+        get: (col: string) => rows[i][col],
+      };
+    },
+  };
+  return {ok: true, value: value as unknown as QueryResult};
+}
+
+// A query that never ran: trace processor's own refusal, which
+// `runQueryForQueryTable` turns into a response carrying `error`.
+function queryFailure(message: string): Result<QueryResult> {
+  return {ok: false, error: message, value: undefined};
+}
+
+// Yields to the event loop, draining the microtasks a just-settled deferred
+// woke, so `runQuery` has reached its next unsettled await by the time the test
+// looks at the panel again.
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// What the results pane would show right now, as text.
+function renderText(results: DuneQueryResults): string {
+  return render(results.render()).textContent ?? '';
+}
+
+describe('DuneQueryResults.runQuery', () => {
+  // The pane's "nothing has been run yet" state, which a settled or in-flight
+  // query must never show.
+  const EMPTY_STATE = 'Run a SQL query';
+
+  it('stays loading across the slice_id lookup, never showing the empty state', async () => {
+    const h = queryHarness();
+    const frames: string[] = [];
+
+    const done = h.results.runQuery('select slice_id from dune_node');
+    await settle();
+    frames.push(renderText(h.results));
+
+    // The window the pane used to flash its empty state in: the query is back,
+    // its slice ids are not.
+    h.queries[0].resolve(okRows([{slice_id: 222}]));
+    await settle();
+    expect(h.results.isLoading).toBe(true);
+    frames.push(renderText(h.results));
+
+    h.sliceLookups[0].resolve(new Map());
+    await done;
+    frames.push(renderText(h.results));
+
+    expect(frames[0]).toContain('Running query…');
+    expect(frames[1]).toContain('Running query…');
+    for (const frame of frames) expect(frame).not.toContain(EMPTY_STATE);
+    expect(h.results.isLoading).toBe(false);
+    expect(frames[2]).toContain('Returned 1 rows');
+  });
+
+  it('shows a failed slice_id lookup as an error instead of rejecting', async () => {
+    const h = queryHarness();
+
+    const done = h.results.runQuery('select slice_id from dune_node');
+    await settle();
+    h.queries[0].resolve(okRows([{slice_id: 222}]));
+    await settle();
+    h.sliceLookups[0].reject(new Error('no such table: dune_slice'));
+
+    // Every caller fires `runQuery` with `void`, so a rejection here would go
+    // unhandled and leave the pane with nothing to show.
+    await expect(done).resolves.toBeUndefined();
+    expect(h.results.isLoading).toBe(false);
+    const text = renderText(h.results);
+    expect(text).toContain('Could not resolve the slice_id column');
+    expect(text).toContain('no such table: dune_slice');
+    expect(text).not.toContain(EMPTY_STATE);
+  });
+
+  it('keeps a superseded query’s result out of the pane', async () => {
+    const h = queryHarness();
+
+    // Two queries in flight: the Run button disables itself while one runs,
+    // but Mod+Enter and the history's play button don't.
+    const first = h.results.runQuery('select 111');
+    await settle();
+    const second = h.results.runQuery('select 222');
+    await settle();
+    expect(h.queries.length).toBe(2);
+
+    // The newer one settles all the way through first…
+    h.queries[1].resolve(okRows([{slice_id: 222}]));
+    await settle();
+    h.sliceLookups[0].resolve(new Map());
+    await second;
+
+    // …and only then does the older one come back, with a differently-shaped
+    // result.
+    h.queries[0].resolve(okRows([{slice_id: 111}, {slice_id: 112}]));
+    await settle();
+
+    // Dropped before it even asks for its own slice ids, which is also why
+    // awaiting it below returns rather than hanging on a second lookup.
+    expect(h.sliceLookups.length).toBe(1);
+    const text = renderText(h.results);
+    expect(text).toContain('select 222');
+    expect(text).not.toContain('select 111');
+    expect(text).toContain('Returned 1 rows');
+    await first;
+  });
+
+  it('keeps a superseded query’s failure out of the pane', async () => {
+    const h = queryHarness();
+
+    const first = h.results.runQuery('select 111');
+    await settle();
+    const second = h.results.runQuery('select 222');
+    await settle();
+
+    h.queries[1].resolve(okRows([{slice_id: 222}]));
+    await settle();
+    h.sliceLookups[0].resolve(new Map());
+    await second;
+
+    // `render` checks `error` before the result, so an error landing here would
+    // read as the newer, successful query having failed.
+    h.queries[0].resolve(queryFailure('no such column: 111'));
+    await first;
+
+    const text = renderText(h.results);
+    expect(text).not.toContain('no such column: 111');
+    expect(text).toContain('select 222');
+    expect(text).toContain('Returned 1 rows');
   });
 });

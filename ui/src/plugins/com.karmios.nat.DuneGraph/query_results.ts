@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import m from 'mithril';
+import {getErrorMessage} from '../../base/errors';
 import {Icons} from '../../base/semantic_icons';
 import {shortUuid} from '../../base/uuid';
 import type {Trace} from '../../public/trace';
@@ -317,6 +318,15 @@ export class DuneQueryResults {
   // Bumped per query so the DataGrid remounts, dropping column/sort state tied
   // to the previous result's shape and re-applying `initialColumns`.
   private queryId = 0;
+  // Bumped per `runQuery` call, so a call whose query comes back after a newer
+  // one started can tell it has been superseded and drop its result. Gating the
+  // callers instead wouldn't cover it: the Run button disables itself while a
+  // query runs, but the editor's Mod+Enter and the history's play button fire
+  // regardless (see query_page.ts), so two queries really can be in flight -
+  // and without this the slower one gets the last word, a *failed* first query
+  // painting its error over the second's good rows (which `render` reads as a
+  // failure, since it checks `error` before the result).
+  private epoch = 0;
 
   // Table/tree toggle. Sticky across queries (forced back to 'table' in
   // `render` when a result has no node-bearing column to group by).
@@ -354,6 +364,7 @@ export class DuneQueryResults {
   }
 
   async runQuery(query: string): Promise<void> {
+    const epoch = ++this.epoch;
     this.loading = true;
     this.error = undefined;
     this.response = undefined;
@@ -375,19 +386,47 @@ export class DuneQueryResults {
     }
 
     const response = await runQueryForQueryTable(query, this.trace.engine);
-    this.loading = false;
+    // A newer call has already reset every field below and owns them from here
+    // on, so a superseded one bows out without writing anything - `loading`
+    // included, since what it now describes is the newer query still running.
+    if (epoch !== this.epoch) return;
     if (response.error !== undefined) {
+      this.loading = false;
       this.error = response.error;
     } else {
-      this.response = response;
       // Resolve the `slice_id` column (if any) before rendering, so the cell
       // renderers - and the CSV formatters, and the bulk actions - can stay
-      // synchronous. A no-op query when the column isn't present.
-      this.nodesBySliceId = await this.controller.nodesForSliceIds(
-        sliceIdsIn(response, [SLICE_ID_COL]),
-      );
+      // synchronous. A no-op query when the column isn't present. Unlike the
+      // query above (which reports its errors in the response) this one goes
+      // through the engine and can throw, so it's caught here: every caller
+      // fires `runQuery` with `void`, and an unhandled rejection would leave
+      // the pane with no error to show and nothing on the way.
+      let nodesBySliceId: Map<number, NodeId>;
+      try {
+        nodesBySliceId = await this.controller.nodesForSliceIds(
+          sliceIdsIn(response, [SLICE_ID_COL]),
+        );
+      } catch (e) {
+        if (epoch !== this.epoch) return;
+        this.loading = false;
+        const message = getErrorMessage(e);
+        this.error = `Could not resolve the slice_id column: ${message}`;
+        this.queryId++;
+        m.redraw();
+        return;
+      }
+      if (epoch !== this.epoch) return;
+      // One commit point, with `loading` held true until the last of it is in
+      // place. Assigning as we go would open a window - the whole of the
+      // resolve above - in which a redraw (and the editor redraws on every
+      // keystroke) finds no loading flag, no error and no result, which
+      // `render` can only read as "nothing has been run yet"; on a large graph
+      // the results pane visibly flashes back to its empty state.
+      this.response = response;
+      this.nodesBySliceId = nodesBySliceId;
       this.dataSource = new InMemoryDataSource(response.rows);
       this.mappable = this.mappableNodes(response);
+      this.loading = false;
     }
     this.queryId++;
     m.redraw();
