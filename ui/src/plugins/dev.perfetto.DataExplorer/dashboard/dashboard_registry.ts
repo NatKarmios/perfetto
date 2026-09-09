@@ -216,9 +216,19 @@ class ExportedSourcesPool {
    * clearing just the table name is what makes the next render recover;
    * clearing the columns too would make the items bail out earlier, before
    * they ask.
+   *
+   * `graphId` is the id of the graph tab whose tables were dropped: only that
+   * tab's sources are invalidated, leaving the other tabs' charts alone rather
+   * than sending them back through a full materialization for tables that are
+   * still there. Omit it to invalidate every source - the right thing when the
+   * caller cannot name a single owner, e.g. when the whole component goes
+   * away. A source whose owning tab has never rendered has no `graphId`
+   * (`DashboardNode.graphId` is stamped during render) so it is skipped by a
+   * scoped call; it has no materialized table to forget either.
    */
-  invalidateTableNames(): void {
+  invalidateTableNames(graphId?: string): void {
     for (const source of this.sources.values()) {
+      if (graphId !== undefined && source.graphId !== graphId) continue;
       source.tableName = undefined;
     }
   }

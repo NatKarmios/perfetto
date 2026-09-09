@@ -81,8 +81,9 @@ export class CleanupManager {
    * Used when clearing all nodes or on component unmount.
    *
    * @param allNodes All nodes in the graph
+   * @param graphId The id of the graph tab being cleaned up, if known
    */
-  async cleanupAll(allNodes: QueryNode[]): Promise<void> {
+  async cleanupAll(allNodes: QueryNode[], graphId?: string): Promise<void> {
     // Step 1 (synchronous): Dispose JS resources (intervals, subscriptions).
     // This is synchronous and completes before Step 2 starts, ensuring no JS
     // code (e.g., timers, callbacks) tries to access tables during cleanup.
@@ -98,7 +99,10 @@ export class CleanupManager {
     // it (toggling a side panel changes the vnode above it, for instance) -
     // and dashboard items outlive it via the exported-source pool. Without
     // this they come back still naming the tables just dropped and query them
-    // for the rest of the session. Global, like the drop above.
-    dashboardRegistry.invalidateTableNames();
+    // for the rest of the session. Scoped to `graphId`, like the drop above:
+    // `dropAllMaterializations` is this tab's service and drops only this
+    // tab's tables, so invalidating another tab's sources would send its
+    // charts back through a full materialization for nothing.
+    dashboardRegistry.invalidateTableNames(graphId);
   }
 }

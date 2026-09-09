@@ -650,11 +650,11 @@ describe('invalidateTableNames', () => {
   // Dropping the materialized tables without this leaves every source naming
   // a table that no longer exists, and every dashboard item built on one
   // querying it for the rest of the session (see CleanupManager.cleanupAll).
-  function source(nodeId: string) {
+  function source(nodeId: string, graphId = 'g') {
     return {
       nodeId,
       name: nodeId,
-      graphId: 'g',
+      graphId,
       columns: [{name: 'node_id'}],
       tableName: `_exp_mat_${nodeId}`,
     } as unknown as Parameters<typeof dashboardRegistry.setExportedSource>[0];
@@ -675,6 +675,35 @@ describe('invalidateTableNames', () => {
       // bail out before asking.
       expect(s?.columns).toHaveLength(1);
     }
+
+    dashboardRegistry.clear();
+  });
+
+  test('with no argument still forgets every tab', () => {
+    // The unmount path invalidates per tab and relies on the union covering
+    // everything, but a caller with no single owner still gets the global
+    // sweep.
+    dashboardRegistry.setExportedSource(source('a', 'tab-a'));
+    dashboardRegistry.setExportedSource(source('b', 'tab-b'));
+
+    dashboardRegistry.invalidateTableNames();
+
+    expect(dashboardRegistry.getExportedSource('a')?.tableName).toBeUndefined();
+    expect(dashboardRegistry.getExportedSource('b')?.tableName).toBeUndefined();
+
+    dashboardRegistry.clear();
+  });
+
+  test('scoped to a graph leaves the other tabs alone', () => {
+    dashboardRegistry.setExportedSource(source('a', 'tab-a'));
+    dashboardRegistry.setExportedSource(source('b', 'tab-b'));
+
+    dashboardRegistry.invalidateTableNames('tab-a');
+
+    expect(dashboardRegistry.getExportedSource('a')?.tableName).toBeUndefined();
+    expect(dashboardRegistry.getExportedSource('b')?.tableName).toBe(
+      '_exp_mat_b',
+    );
 
     dashboardRegistry.clear();
   });

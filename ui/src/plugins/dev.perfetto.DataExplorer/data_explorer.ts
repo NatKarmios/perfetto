@@ -986,13 +986,15 @@ export class DataExplorer implements m.ClassComponent<DataExplorerAttrs> {
           (vnode.dom as HTMLElement).focus();
         },
         onremove: () => {
-          // Clean up all materialized tables for all tabs in parallel
+          // Clean up all materialized tables for all tabs in parallel. Each
+          // call is scoped to its own tab; the union covers every tab, so
+          // nothing is missed by not invalidating globally here.
           void Promise.all(
             [...this.tabServices].map(([tabId, services]) => {
               const tab = tabs.find((t) => t.id === tabId);
               const rootNodes = tab ? getAllNodes(tab.state.rootNodes) : [];
               return services.cleanupManager
-                .cleanupAll(rootNodes)
+                .cleanupAll(rootNodes, tabId)
                 .catch((e) => console.warn(`Tab ${tabId} cleanup failed:`, e));
             }),
           ).finally(() => this.tabServices.clear());
@@ -1041,7 +1043,7 @@ export class DataExplorer implements m.ClassComponent<DataExplorerAttrs> {
             const tab = tabs.find((t) => t.id === key);
             const rootNodes = tab ? getAllNodes(tab.state.rootNodes) : [];
             void services.cleanupManager
-              .cleanupAll(rootNodes)
+              .cleanupAll(rootNodes, key)
               .catch((e) => console.warn(`Tab ${key} cleanup failed:`, e));
             this.tabServices.delete(key);
           }
