@@ -317,6 +317,22 @@ describe('parseBrushFilters', () => {
     expect(result.get('n1')).toHaveLength(4);
   });
 
+  test('keeps the owning chart id', () => {
+    const raw = {n1: [{column: 'x', op: '=', value: 1, chartId: 'c1'}]};
+    const result = parseBrushFilters(raw);
+    expect(result.get('n1')).toEqual([
+      {column: 'x', op: '=', value: 1, chartId: 'c1'},
+    ]);
+  });
+
+  test('drops a malformed owner but keeps the filter', () => {
+    // The filter still says something; an unowned one is what everything
+    // saved before charts stamped their id reads as anyway.
+    const raw = {n1: [{column: 'x', op: '=', value: 1, chartId: 7}]};
+    const result = parseBrushFilters(raw as Record<string, unknown[]>);
+    expect(result.get('n1')).toEqual([{column: 'x', op: '=', value: 1}]);
+  });
+
   test('returns empty map for empty input', () => {
     const result = parseBrushFilters({});
     expect(result.size).toBe(0);

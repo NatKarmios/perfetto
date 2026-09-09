@@ -185,6 +185,10 @@ export interface DashboardBrushFilter {
   readonly column: string;
   readonly op: '=' | '>=' | '<' | 'is null';
   readonly value?: SqlValue;
+  // Which chart's interaction put this here, so that chart can exclude it from
+  // its own input filters (see `ensureLoader`) - across a reload, and without
+  // "I once brushed this column" outliving the filter it described.
+  readonly chartId?: string;
 }
 
 /**
@@ -468,6 +472,15 @@ export function parseBrushFilters(
       const obj = entry as Record<string, unknown>;
       if (typeof obj.column !== 'string') continue;
       if (typeof obj.op !== 'string' || !validOps.has(obj.op)) continue;
+      // A malformed owner drops the field, not the filter: the filter itself
+      // still says something, and an unowned one is exactly what state saved
+      // before charts stamped their id reads as. State saved when grids had a
+      // tree mode is handled the same way (see `validateDashboardItems`).
+      if (obj.chartId !== undefined && typeof obj.chartId !== 'string') {
+        const {chartId: _chartId, ...rest} = obj;
+        validated.push(rest as unknown as DashboardBrushFilter);
+        continue;
+      }
       validated.push(entry as DashboardBrushFilter);
     }
     if (validated.length > 0) {
