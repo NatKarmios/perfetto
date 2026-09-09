@@ -107,27 +107,37 @@ export class TableList implements m.ClassComponent<TableListAttrs> {
       sections.length > 0
         ? m(
             '.pf-simple-table-list__items',
-            sections.map((section) => [
-              // Only worth a heading when there's more than one group to tell
-              // apart; a single-section list is just a list of tables.
-              attrs.sections.length > 1 &&
-                m(
-                  '.pf-simple-table-list__section-title',
-                  section.title,
+            // Keyed by title, so a section filtering out doesn't shift its
+            // neighbours onto each other's Accordion instance - which, since
+            // the section keys below are title-qualified, would leave the two
+            // with disjoint key sets and tear down every open row. The key has
+            // to sit on a real element because mithril wants keys all-or-
+            // nothing among siblings.
+            sections.map((section) =>
+              m(
+                '.pf-simple-table-list__section',
+                {key: section.title},
+                // Only worth a heading when there's more than one group to tell
+                // apart; a single-section list is just a list of tables.
+                attrs.sections.length > 1 &&
                   m(
-                    'span.pf-simple-table-list__section-count',
-                    section.tables.length,
+                    '.pf-simple-table-list__section-title',
+                    section.title,
+                    m(
+                      'span.pf-simple-table-list__section-count',
+                      section.tables.length,
+                    ),
+                  ),
+                m(
+                  Accordion,
+                  this.renderSections(
+                    section.title,
+                    section.tables,
+                    attrs.onQueryTable,
                   ),
                 ),
-              m(
-                Accordion,
-                this.renderSections(
-                  section.title,
-                  section.tables,
-                  attrs.onQueryTable,
-                ),
               ),
-            ]),
+            ),
           )
         : m(EmptyState, {
             title: 'No matching tables found',
