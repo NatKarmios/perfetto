@@ -38,7 +38,7 @@ import {
   DuneGraphController,
 } from './controller';
 import type {Trace} from '../../public/trace';
-import type {BuildGraph} from './graph';
+import type {BuildGraph, GraphSource} from './graph';
 import {DEPS_SECTION} from './graph_blob';
 import {dep, rule, testGraph} from './graph_test_helper';
 import {graphTrackUri} from './graph_track';
@@ -203,6 +203,25 @@ function withGraph(h: Harness, graph: BuildGraph): void {
   h.controller.graphStep.status = 'ready';
 }
 
+/**
+ * A graph the controller will *load*, rather than one it is handed already
+ * loaded.
+ *
+ * `withGraph` skips the graph step instead of running it, which is all most
+ * tests need - but a test about what one `load()` settles has to start from
+ * cold, and the stub engine carries no blob for the real source to parse. So
+ * the source is swapped, which is what that seam exists for (see
+ * `makeSource` in controller.ts); the cast is only because nothing outside the
+ * controller is meant to hold it.
+ */
+function withSource(h: Harness, graph: BuildGraph): void {
+  (h.controller as unknown as {source: GraphSource}).source = {
+    description: 'test graph',
+    load: () => Promise.resolve(graph),
+    stats: () => Promise.reject(new Error('stats() is not part of a load')),
+  };
+}
+
 describe('autoLoadEdgeRowLimit', () => {
   test('falls back to the default when the setting is unregistered', () => {
     // What a controller built without the plugin having been activated sees.
@@ -272,6 +291,26 @@ describe('load', () => {
     expect(h.controller.edgeMirrorStep.status).toBe('idle');
     expect(h.controller.edgeMirrorStep.error).toBeUndefined();
     expect(h.sql.some((q) => q.includes('_dune_depset'))).toBe(false);
+  });
+
+  test('from cold, never leaves the edge tier merely idle', async () => {
+    // What makes `load()` the thing to call when something else needs the
+    // mirror - the Data Explorer hand-off, say (see data_explorer_handoff.ts).
+    // One load settles every tier: the edge tables are either built or
+    // explicitly refused, never just absent. `buildNodeMirror()` leaves exactly
+    // that third state, and nothing in the panel offers to finish it - the
+    // edge-tier prompt speaks for a refusal and the Retry button for an error,
+    // but neither for a tier that was never started.
+    for (const edgeCount of [g.graph.edgeCount, EDGE_HARD_LIMIT + 1]) {
+      const h = makeHarness();
+      withSource(h, claimingEdges(g.graph, edgeCount));
+      await h.controller.load();
+      expect(h.controller.graphStep.status).toBe('ready');
+      expect(h.controller.nodeMirrorStep.status).toBe('ready');
+      expect(
+        h.controller.edgeMirrorStep.ready || h.controller.edgeTierRefused,
+      ).toBe(true);
+    }
   });
 });
 
@@ -529,5 +568,31 @@ describe('nodeForSelection', () => {
       h.sql.slice(before).some((q) => q.includes('FROM _dune_process')),
     ).toBe(false);
     expect(h.controller.nodeForSelection()).toBeUndefined();
+  });
+
+  test('and the mirror arriving re-resolves the same selection', async () => {
+    // The "no node" a mirror-less lookup came back with is cached against the
+    // selection, and building the mirror doesn't change the selection - so
+    // unless the build drops the cache, the answer stays "no node" until the
+    // reader clicks away and back. Which is precisely the state a trace big
+    // enough to need a prompted load starts in.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    h.canned.push({match: 'count(*) AS n FROM _dune_process', rows: [{n: 5}]});
+    h.canned.push({match: 'WHERE slice_id =', rows: [{rule_id: ruleId}]});
+    h.selection = {
+      kind: 'track_event',
+      trackUri: graphTrackUri('process'),
+      eventId: 42,
+    };
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBeUndefined();
+
+    await h.controller.buildNodeMirror();
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    expect(h.controller.selectedProcessSlice()).toBe(42);
   });
 });

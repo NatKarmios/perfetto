@@ -1267,6 +1267,9 @@ export class DuneGraphController {
         onProgress: this.progressFor(this.nodeMirrorStep),
       });
       this.mirrorVersionValue++;
+      // A selection resolved while the mirror was absent cached a "no node"
+      // answer (see cachedSelectionNode); the tables it needed exist now.
+      this.selectionNode = undefined;
       this.completeStep(this.nodeMirrorStep);
       // The timeline track's dataset is empty until the mirror exists, so it
       // has to be told to re-query now that it does.

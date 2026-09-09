@@ -91,11 +91,22 @@ export async function appendExploreSource(
  * The tables the sources read only exist once that tier has been built (the
  * graph no longer loads with the trace - see controller.ts), so a load is part
  * of the action rather than a precondition to complain about: this runs the
- * controller's own `buildNodeMirror` step, whose progress and failure the side
- * panel already reports - and the panel is on screen, since its buttons are the
- * only way here. A failure of the load is therefore silent. The two ways the
- * hand-off itself can fail - the Data Explorer disabled, or its SQL modules not
- * ready - are modal, because nothing else in the UI is in a position to say so.
+ * controller's whole `load`, whose progress and failure the side panel already
+ * reports - and the panel is on screen, since its buttons are the only way
+ * here. A failure of the load is therefore silent. The two ways the hand-off
+ * itself can fail - the Data Explorer disabled, or its SQL modules not ready -
+ * are modal, because nothing else in the UI is in a position to say so.
+ *
+ * The whole load rather than just its `buildNodeMirror` step, because on a
+ * trace big enough not to load by itself this is the *first* load, and stopping
+ * at the node tier would leave the edge tier idle with nothing in the panel
+ * offering to finish it (see panel.ts's edge-tier prompt, which speaks for a
+ * refusal and for an error but not for "never started"). A graph past the hard
+ * edge cap still hands off: `load` skips that tier itself and the panel
+ * explains the refusal, and the sources here only read the node tier anyway.
+ * The guard stays on the node tier for the same reason - it is this hand-off's
+ * own precondition - and `load` skips whatever is already ready, so this is
+ * still "finish whatever is missing".
  *
  * @returns The Data Explorer plugin, or undefined if the hand-off cannot go
  *     ahead - in which case the reason has already been reported, by the side
@@ -106,7 +117,7 @@ async function ready(
   controller: DuneGraphController,
 ): Promise<InstanceType<typeof DataExplorerPlugin> | undefined> {
   if (!controller.nodeMirrorReady) {
-    await controller.buildNodeMirror();
+    await controller.load();
     // Still not there: the load failed, and the panel shows why.
     if (!controller.nodeMirrorReady) return undefined;
   }
