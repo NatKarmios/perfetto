@@ -13,32 +13,19 @@
 // limitations under the License.
 
 /**
- * Load-time instrumentation for the Dune graph plugin.
+ * Load-time instrumentation for the Dune graph plugin: a {@link PerfRun}
+ * accumulates named phases and dumps them as a console table when the run
+ * finishes. See README.md, "Performance", for what it produces and how to read
+ * a heap delta.
  *
- * Everything expensive the plugin does happens inside one of the controller's
- * load steps, and on a large trace those are minutes long. This module is the
- * measurement harness for that: a {@link PerfRun} accumulates a flat list of
- * named phases (`{ms, rows, bytes, heap delta}`) and dumps them as a console
- * table when the run finishes, so a before/after number for any optimisation is
- * one reload away.
+ * Two properties that constrain how a caller may use it:
  *
- * Design notes:
- * - **Phases are flat, not nested.** Every phase is a leaf, so the phase times
- *   sum to (just under) the run's wall clock; the dump makes the residue
- *   explicit as an `(unaccounted)` row rather than hiding double-counting.
- * - **Re-entering a phase name accumulates** into the same row (with a `n`
- *   count), so per-chunk / per-batch work can be measured without producing
- *   thousands of rows.
- * - Each phase also emits a `performance.measure()` under the `dune:` prefix,
- *   so the Chrome profiler's Timings track shows the same breakdown against a
- *   real flame chart.
- * - Heap deltas come from Chrome's non-standard `performance.memory`, and are
- *   deltas *across* a phase - so a GC inside a phase shows up as a negative
- *   number, and a phase that allocates only garbage may look free. Treat them
- *   as a hint about steady-state growth, not as an allocation count.
- *
- * The last few runs are kept in a module-level ring so the `Dune: dump load
- * stats` command can re-print them after the fact (see {@link dumpPerfRuns}).
+ * - **Phases are flat, not nested.** Every phase is a leaf, so the times sum to
+ *   just under the run's wall clock and the dump can make the residue explicit
+ *   as an `(unaccounted)` row rather than hiding double-counting.
+ * - **Re-entering a phase name accumulates** into the same row, with an `n`
+ *   count, so per-chunk work can be measured without producing thousands of
+ *   rows.
  */
 
 // Prefix for every `performance.mark`/`measure` name this module emits, so the

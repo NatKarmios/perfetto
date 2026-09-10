@@ -79,19 +79,19 @@ const TIMELINE_WORKSPACE_NAME = 'Dune graph';
  * The estimate comes from the blob's byte size, not from a parse (see
  * `GraphStats.estimatedEdgeRows`), so it is available before any expensive work
  * has happened - which is what makes it the *only* number the user is asked
- * about. There used to be two: this one, and a post-parse soft cap on the edge
- * tier, so a large trace was asked once whether to load and then again whether
- * to pay for the edge tables. Rows win the merge on both counts. They are the
- * only quantity observable before any work is done, which is the only point at
- * which a question is worth asking; and since dune started factoring dep sets
- * they are also the better predictor of what the edge tier costs, because the
- * tier stores far fewer rows than the graph has edges (6.33M against 28.8M on
- * the monorepo trace) and byte sizes can only predict the former. So the edge
- * tier's soft cap is gone rather than converted: its job - don't pay for the
- * tier unasked - is done strictly better by a gate that fires before the graph
- * is even parsed. Only the *hard* cap still counts edges (see sql_graph.ts's
- * EDGE_HARD_LIMIT), because it is a memory ceiling rather than a question and
- * it is consulted when the exact count is known.
+ * about, and why it is measured in rows.
+ *
+ * **Rows, and asked once.** They are the only quantity observable before any
+ * work is done, which is the only point at which a question is worth asking;
+ * and since the blob factors dep sets they are also the better predictor of
+ * what the edge tier costs, because the tier stores far fewer rows than the
+ * graph has edges (6.33M against 28.8M on the monorepo trace) and a byte size
+ * can only predict the former. A second, post-parse question about the edge
+ * tier would be asking again about a cost this gate has already covered.
+ *
+ * Only the *hard* cap counts edges (see sql_graph.ts's EDGE_HARD_LIMIT),
+ * because it is a memory ceiling rather than a question and is consulted when
+ * the exact count is known.
  *
  * The id lives here rather than in index.ts, which registers it, so that the
  * gate and its default read together; index.ts imports both. The value is read
@@ -108,12 +108,10 @@ export const AUTO_LOAD_ROW_LIMIT_SETTING =
  * all (a controller built in a unit test).
  *
  * 2M rows is ~6 s of edge tier in the wasm engine, on the 18.9 s / 6.33M
- * measurement in `PERF_SUMMARY.LOCAL.md` - a few seconds is the bar a load is
- * worth starting unasked at, and it is the same bar the deleted edge cap was
- * originally set by. On the four sample traces it puts the decision exactly
- * where the two old gates agreed, but with room to spare rather than by 10%:
- * the monorepo trace estimates 5.7M rows against the old estimate's 2.2M
- * "edges", and the three small ones estimate 10k-27k.
+ * measurement in README.md's performance section - a few seconds being the bar
+ * a load is worth starting unasked at. On the four sample traces it decides
+ * with room to spare rather than marginally: the monorepo trace estimates 5.7M
+ * rows, the three small ones 10k-27k.
  */
 export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
 
@@ -203,29 +201,19 @@ function errorMessage(e: unknown): string {
  * Holds the extracted build graph plus the active source, and knows how to
  * (re)load it. The sidebar panel reads state directly off this each render.
  *
- * **Loading is explicit and staged.** Nothing loads when the trace opens (see
- * `init()`): on a monorepo-scale trace the load is minutes long and would
- * hold up the whole UI, so the plugin's work is off the critical path and the
- * side panel offers it as an action instead. The work splits into three steps,
- * cheapest first, each separately reported and separately re-runnable:
+ * **Loading is explicit and staged**, in three steps - `loadGraph()`,
+ * `buildNodeMirror()`, `buildEdgeMirror()` - none of which runs when the trace
+ * opens. See README.md, "The load path", for what each produces and for the one
+ * gate and one refusal that decide whether they run.
  *
- * 1. `loadGraph()` - blob -> the in-memory {@link BuildGraph}.
- * 2. `buildNodeMirror()` - the cheap SQL tier (`dune_node` + detail).
- * 3. `buildEdgeMirror()` - the expensive SQL tier (`dune_edge` + the relation
- *    functions), stored factored across dep sets. Part of every `load()`: the
- *    one question a large trace asks is whether to load at all, and it is asked
- *    before the graph is parsed (see {@link AUTO_LOAD_ROW_LIMIT_SETTING}), so a
- *    yes there buys all three steps. The only thing that stops step 3 is the
- *    hard cap, which is a refusal rather than a prompt: past
- *    {@link EDGE_HARD_LIMIT} edges the build would take the engine down, so
- *    `load()` skips it and the panel explains why (see
- *    {@link DuneGraphController.edgeTierRefused}).
+ * Three properties of the staging matter to anything calling in here:
  *
- * Each step is idempotent (already-`ready` is a no-op) and pulls in the steps
- * it depends on, so any of them can be called from cold. They all run through
- * one queue - they mutate the same SQL table names, so two must never overlap -
- * and a `reload()` bumps a generation counter that drops whatever was
- * queued behind it rather than letting it rebuild on top of fresh state.
+ * - Each step is **idempotent** (already-`ready` is a no-op) and **pulls in the
+ *   steps it depends on**, so any of them can be called from cold.
+ * - They all run through **one queue**: they mutate the same SQL table names, so
+ *   two must never overlap.
+ * - A `reload()` bumps a **generation counter** that drops whatever was queued
+ *   behind it, rather than letting it rebuild on top of fresh state.
  */
 export class DuneGraphController {
   private source: GraphSource;
@@ -642,8 +630,8 @@ export class DuneGraphController {
    * decodeGraphRowId), so this branches on which track the selection is on.
    *
    * Stays synchronous - it's read from a mithril view on every frame - but a
-   * real slice id now resolves through SQL (see `nodesForSliceIds`), so the
-   * answer for a *new* selection arrives one redraw later: the lookup is kicked
+   * real slice id resolves through SQL (see `nodesForSliceIds`), so the answer
+   * for a *new* selection arrives one redraw later: the lookup is kicked
    * off here, cached against the selection it was for, and a redraw requested
    * when it lands. A stale result can therefore never be shown, only a
    * momentary "no node".
@@ -800,10 +788,11 @@ export class DuneGraphController {
   }
 
   /**
-   * The graph nodes a batch of lifecycle slice ids map to. This replaces the
-   * ~2.4M-entry slice-id index the load used to build in JS: the slice's
-   * `rule_id` / `dep_id` arg is read back from the trace on demand (see
-   * `lifecycleKeysForSliceIds`) and resolved against the graph's own maps.
+   * The graph nodes a batch of lifecycle slice ids map to. Resolved on demand
+   * rather than from an index built at load time - the slice's `rule_id` /
+   * `dep_id` arg is read back from the trace (see `lifecycleKeysForSliceIds`)
+   * and looked up in the graph's own maps - because such an index is ~2.4M
+   * entries on a monorepo trace and this is asked for a handful of rows.
    *
    * Batched because the callers that need many at once (the query tab, over a
    * whole result) would otherwise issue a query per row. Ids that aren't
@@ -1146,8 +1135,8 @@ export class DuneGraphController {
    * All three, deliberately. Whether this trace is worth loading at all is
    * decided once, before anything is parsed, against
    * {@link AUTO_LOAD_ROW_LIMIT_SETTING}, and someone who has said yes to that
-   * has already agreed to the edge tier - being asked a second time about a
-   * cost the first answer covered is the thing this staging used to get wrong.
+   * has already agreed to the edge tier; asking a second time about a cost the
+   * first answer covered is the failure mode this staging exists to avoid.
    * The hard cap is not a second question: past it the tier would exhaust the
    * trace processor whatever anyone answered, so it is skipped here rather than
    * left to throw out of {@link DuneGraphController.buildEdgeMirror}, and the

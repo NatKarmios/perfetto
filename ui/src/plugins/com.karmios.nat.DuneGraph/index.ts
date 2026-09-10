@@ -139,11 +139,10 @@ export default class implements PerfettoPlugin {
       icon: 'landscape',
       render: () => m(DuneGraphPanel, {controller, trace}),
     });
-    // The same graph seen as directories rather than as a node selection: a
-    // lazily-descended trie of `dune_dir` with each directory's rules and deps
-    // at it (see dir_explorer_panel.ts). A second tab rather than a third area
-    // of the first one - a directory tree wants the whole height of the panel,
-    // and it has nothing to do with what is currently selected.
+    // The same graph seen as directories rather than as a node selection (see
+    // dir_explorer_panel.ts). A second tab rather than a third area of the
+    // first: a directory tree wants the whole panel height, and has nothing to
+    // do with what is selected.
     //
     // The source is built once rather than per render: the pane treats a new
     // source object as new data and drops everything it has cached, so handing
@@ -213,25 +212,18 @@ export default class implements PerfettoPlugin {
       callback: () => dumpPerfRuns(),
     });
 
-    // The same SQL, given a whole page: several queries kept side by side, each
-    // with its own editor and results, plus the history sidebar and the
-    // graph-load state shown before a query is run rather than as an error
-    // after it. Alongside the drawer tab below, not instead of it - the '@'
-    // mode is the fast one-off lookup next to the timeline you are reading,
-    // this is where a session of exploring the graph happens. Built once here
-    // and rendered from the route because the page's tabs and their results
-    // have to survive navigating away and back (see query_page.ts). Built
-    // before the drawer tab so the tab's "Open in page" can hand it a query.
+    // The full-page query surface (see README.md, "The four surfaces"). Built
+    // once here and rendered from the route, because the page's tabs and their
+    // results have to survive navigating away and back; and built *before* the
+    // drawer tab, so that tab's "Open in page" can hand it a query.
     const queryPage = new DuneQueryPage(trace, controller);
 
-    // SQL-over-the-graph: a details-drawer tab fed by an omnibox mode (type a
-    // query after '@') and an equivalent command that activates that mode. The
-    // input reuses the core SQL mode's look (wide black monospace box) via
-    // `pf-omnibox--query-mode`, recoloured orange by `pf-dune-query-mode`.
+    // The drawer half of the same surface, fed by the '@' omnibox mode. The
+    // input reuses the core SQL mode's look via `pf-omnibox--query-mode`,
+    // recoloured orange by `pf-dune-query-mode`.
     //
-    // A one-off lookup that turns into real work escapes to the page above via
-    // the results view's "Open in page" button: a fresh page tab holding the
-    // same SQL, run on arrival so it isn't an empty results pane, and then the
+    // "Open in page" escapes to the page above: a fresh page tab holding the
+    // same SQL, run on arrival so it isn't an empty results pane, then the
     // navigation - which lives here because the route is this file's to know.
     const queryTab = new DuneQueryTab(trace, controller, (sql) => {
       queryPage.addTab(undefined, sql, true);
