@@ -42,9 +42,9 @@ import {GridLayout} from '../../../widgets/grid_layout';
 import {Section} from '../../../widgets/section';
 import {Tree, TreeNode} from '../../../widgets/tree';
 import {LONG, NUM, STR, STR_NULL} from '../../../trace_processor/query_result';
-import type {DuneGraphController} from '../controller';
+import type {GraphHost} from './graph_host';
 import type {NodeId} from '../model/graph';
-import type {GraphTrackKind} from './graph_track';
+import type {GraphTrackKind} from '../model/graph_tracks';
 import {basename, decorateNode, formatDurNs} from './node_display';
 
 // The row fields the panel reads. A subset of a track's schema (see
@@ -82,7 +82,7 @@ export class GraphTrackDetailsPanel implements TrackEventDetailsPanel {
 
   constructor(
     private readonly trace: Trace,
-    private readonly controller: DuneGraphController,
+    private readonly controller: GraphHost,
     private readonly kind: GraphTrackKind,
     private readonly row: GraphTrackRow,
     // The row's display name, resolved the same way the canvas resolves it -

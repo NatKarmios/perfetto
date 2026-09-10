@@ -15,7 +15,7 @@
 import {describe, expect, test} from 'vitest';
 import {arrowsForSelection} from './arrows';
 import type {FamilyIndex} from './family';
-import {graphTrackUri} from './graph_track';
+import {graphTrackUri} from '../model/graph_tracks';
 
 // Which arrows a given row lights up. The positions are stubbed - what matters
 // here is which pairs get linked, not where they land; the depths come from the

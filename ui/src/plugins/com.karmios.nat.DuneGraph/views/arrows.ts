@@ -33,8 +33,8 @@ import type {ArrowConnection} from '../../../components/related_events/arrow_vis
 import {Time} from '../../../base/time';
 import type {FamilyIndex} from './family';
 import {ruleOfRow} from './family';
-import type {GraphTrackKind} from './graph_track';
-import {graphTrackUri} from './graph_track';
+import type {GraphTrackKind} from '../model/graph_tracks';
+import {graphTrackUri} from '../model/graph_tracks';
 
 /**
  * The whole chain the selected row belongs to: the dep that wanted the rule,

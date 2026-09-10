@@ -39,9 +39,10 @@ import {generateRenderQuery} from '../../../components/tracks/slice_track';
 import type {Engine} from '../../../trace_processor/engine';
 import {LONG, NUM} from '../../../trace_processor/query_result';
 import type {BuildGraph, NodeId} from '../model/graph';
-import type {GraphTrackKind} from './graph_track';
+import type {GraphTrackKind} from '../model/graph_tracks';
 import {graphTrackDataset} from './graph_track';
-import type {DuneGraphController} from '../controller';
+import type {GraphHost} from './graph_host';
+import type {FamilyMembers} from '../model/graph_tracks';
 
 // Where one row ended up: its start, and the row it was packed onto.
 interface RowPos {
@@ -89,7 +90,7 @@ export function emptyFamilyIndex(): FamilyIndex {
 /** Builds the index for the current selection set. */
 export async function buildFamilyIndex(
   engine: Engine,
-  controller: DuneGraphController,
+  controller: GraphHost,
 ): Promise<FamilyIndex> {
   if (!controller.nodeMirrorReady) return EMPTY_FAMILY_INDEX;
   const graph = controller.graph;
@@ -130,24 +131,6 @@ export async function buildFamilyIndex(
     ruleByProcess,
     hideRules,
   };
-}
-
-/**
- * A family, as the rows that are actually on the tracks: the rule it is named
- * for, the dep filed under it (when one is selected), whether the rule ran an
- * action, and every process that action spawned.
- *
- * Membership is checked against `positions` rather than assumed, so this lists
- * only rows that exist: a cache-hit rule ran no action, a node whose timing
- * never resolved projects nothing, and the rule tracks are empty while rules
- * are hidden.
- */
-export interface FamilyMembers {
-  readonly rule: NodeId;
-  readonly hasRule: boolean;
-  readonly dep?: NodeId;
-  readonly hasAction: boolean;
-  readonly processes: readonly number[];
 }
 
 /** The family the given row belongs to, or undefined if it is in none. */
@@ -215,7 +198,7 @@ export function resolvingDeps(
 // the depths match what was drawn (see the file header).
 async function trackPositions(
   engine: Engine,
-  controller: DuneGraphController,
+  controller: GraphHost,
   kind: GraphTrackKind,
 ): Promise<TrackPositions> {
   const dataset = graphTrackDataset(controller, kind);
@@ -235,7 +218,7 @@ async function trackPositions(
 // on screen.
 async function processRules(
   engine: Engine,
-  controller: DuneGraphController,
+  controller: GraphHost,
 ): Promise<ReadonlyMap<number, number>> {
   const dataset = graphTrackDataset(controller, 'process');
   const rows = await engine.query(`

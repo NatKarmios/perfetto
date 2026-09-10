@@ -34,16 +34,16 @@ import {
 import {lifecycleKeysForSliceIds} from './sql/lifecycle_sql';
 import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
 import {RelatedEventsOverlay} from '../../components/related_events/related_events_overlay';
-import type {GraphTrackKind} from './views/graph_track';
+import type {GraphTrackKind} from './model/graph_tracks';
+import {createGraphTrackRenderer} from './views/graph_track';
 import {
-  createGraphTrackRenderer,
   GRAPH_TRACKS,
   graphTrackKind,
   graphTrackUri,
-} from './views/graph_track';
+} from './model/graph_tracks';
 import {arrowsForSelection} from './views/arrows';
 import type {FamilyIndex} from './views/family';
-import type {FamilyMembers} from './views/family';
+import type {FamilyMembers} from './model/graph_tracks';
 import {
   buildFamilyIndex,
   emptyFamilyIndex,

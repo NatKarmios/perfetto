@@ -41,7 +41,7 @@ import type {Trace} from '../../public/trace';
 import type {BuildGraph, GraphSource} from './model/graph';
 import {DEPS_SECTION} from './model/graph_blob';
 import {dep, rule, testGraph} from './model/graph_test_helper';
-import {graphTrackUri} from './views/graph_track';
+import {graphTrackUri} from './model/graph_tracks';
 import type {MirrorProgress} from './sql/sql_graph';
 import {
   EDGE_HARD_LIMIT,

@@ -15,13 +15,13 @@
 import {describe, expect, test} from 'vitest';
 import type {DuneGraphController} from '../controller';
 import {dep, rule, testGraph} from '../model/graph_test_helper';
-import type {GraphTrackKind} from './graph_track';
+import type {GraphTrackKind} from '../model/graph_tracks';
 import {
   GRAPH_TRACKS,
-  graphTrackDataset,
   graphTrackKind,
   graphTrackUri,
-} from './graph_track';
+} from '../model/graph_tracks';
+import {graphTrackDataset} from './graph_track';
 
 // Every navigation path resolves a selection by asking which of our tracks it
 // is on, so the uri <-> kind mapping has to be total and exclusive.

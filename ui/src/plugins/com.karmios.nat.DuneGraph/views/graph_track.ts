@@ -50,49 +50,12 @@ import type {Trace} from '../../../public/trace';
 import {SourceDataset} from '../../../trace_processor/dataset';
 import {LONG, NUM, NUM_NULL, STR} from '../../../trace_processor/query_result';
 import {sqlValueToSqliteString} from '../../../trace_processor/sql_utils';
-import type {DuneGraphController} from '../controller';
+import type {GraphHost} from './graph_host';
 import type {BuildGraph, NodeId} from '../model/graph';
 import {PROCESS_TABLE} from '../sql/process_sql';
 import {GraphTrackDetailsPanel} from './row_details_panel';
-
-/** Which of the four tracks a row belongs to. */
-export type GraphTrackKind = 'dep' | 'rule' | 'action' | 'process';
-
-interface GraphTrackSpec {
-  readonly kind: GraphTrackKind;
-  readonly uri: string;
-  readonly name: string;
-}
-
-const URI_PREFIX = 'com.karmios.nat.DuneGraph#';
-
-/**
- * The four tracks, in the order they are stacked - which is also the order the
- * arrows run in, so a chain reads downwards.
- *
- * `dep`'s uri is the one the old single track used, so a permalink or a saved
- * workspace that names it still resolves to something sensible.
- */
-export const GRAPH_TRACKS: readonly GraphTrackSpec[] = [
-  {kind: 'dep', uri: `${URI_PREFIX}GraphNodes`, name: 'dep'},
-  {kind: 'rule', uri: `${URI_PREFIX}Rules`, name: 'rule'},
-  {kind: 'action', uri: `${URI_PREFIX}Actions`, name: 'rule-action'},
-  {kind: 'process', uri: `${URI_PREFIX}Processes`, name: 'process'},
-];
-
-const BY_KIND = new Map(GRAPH_TRACKS.map((t) => [t.kind, t]));
-const BY_URI = new Map(GRAPH_TRACKS.map((t) => [t.uri, t]));
-
-export function graphTrackUri(kind: GraphTrackKind): string {
-  return BY_KIND.get(kind)!.uri;
-}
-
-// The kind a track uri names, or undefined if it isn't one of ours. The test
-// every navigation path needs, since a selection can land on any of the four
-// (see controller.ts).
-export function graphTrackKind(uri: string): GraphTrackKind | undefined {
-  return BY_URI.get(uri)?.kind;
-}
+import type {GraphTrackKind} from '../model/graph_tracks';
+import {graphTrackSpec} from '../model/graph_tracks';
 
 // Fixed colours per track. The node kinds match the dep/rule chips and dots in
 // styles.scss (--pf-color-accent / --pf-color-warning); canvas slices can't
@@ -144,7 +107,7 @@ const EMPTY_SRC =
  * (see buildArrows).
  */
 export function graphTrackDataset(
-  controller: DuneGraphController,
+  controller: GraphHost,
   kind: GraphTrackKind,
 ): SourceDataset<typeof PROCESS_SCHEMA> | SourceDataset<typeof NODE_SCHEMA> {
   const src = controller.nodeMirrorReady
@@ -163,10 +126,10 @@ export function graphTrackDataset(
  */
 export function createGraphTrackRenderer(
   trace: Trace,
-  controller: DuneGraphController,
+  controller: GraphHost,
   kind: GraphTrackKind,
 ): TrackRenderer {
-  const spec = BY_KIND.get(kind)!;
+  const spec = graphTrackSpec(kind);
   let cachedVersion = -1;
   let cached: SourceDataset<typeof NODE_SCHEMA>;
 
@@ -230,10 +193,7 @@ export function createGraphTrackRenderer(
 // What each track projects.
 // ---------------------------------------------------------------------------
 
-function trackSrc(
-  controller: DuneGraphController,
-  kind: GraphTrackKind,
-): string {
+function trackSrc(controller: GraphHost, kind: GraphTrackKind): string {
   const graph = controller.graph;
   const selected = controller.selectedNodes;
   const deps = selected.filter((id) => !graph.isRule(id));
@@ -302,7 +262,7 @@ function processArm(graph: BuildGraph, rules: readonly NodeId[]): string {
 // behind them, so they read the same as everywhere else in the plugin; a
 // process row keeps the slice's own name, since it is projected verbatim.
 function sliceName(
-  controller: DuneGraphController,
+  controller: GraphHost,
   kind: GraphTrackKind,
   row: Row,
 ): string {
