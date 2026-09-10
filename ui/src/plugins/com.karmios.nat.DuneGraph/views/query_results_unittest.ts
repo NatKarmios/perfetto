@@ -472,8 +472,8 @@ describe('DuneQueryResults.runQuery', () => {
     await settle();
     frames.push(renderText(h.results));
 
-    // The window the pane used to flash its empty state in: the query is back,
-    // its slice ids are not.
+    // The window an empty state could flash in: the query is back, its slice
+    // ids are not. The pane must still report itself as loading.
     h.queries[0].resolve(okRows([{slice_id: 222}]));
     await settle();
     expect(h.results.isLoading).toBe(true);

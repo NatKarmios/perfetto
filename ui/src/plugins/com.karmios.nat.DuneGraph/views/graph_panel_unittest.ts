@@ -18,12 +18,12 @@
  * node set handed to it, which is what the Data Explorer's node graph chart
  * mounts (see node_graph_chart.ts).
  *
- * The pane grew the second mode rather than being rewritten for it, so what is
- * worth pinning is exactly the seam between them:
+ * One pane serves both modes, so what is worth pinning is exactly the seam
+ * between them:
  *
- * - the selection mode is unchanged - same dots, same count, same four buttons -
- *   because the side panel is a landed surface and this was meant to be
- *   invisible to it;
+ * - the selection mode is untouched by the injected one - same dots, same
+ *   count, same four buttons - since the side panel must not notice that the
+ *   second mode exists;
  * - an injected set draws *its* nodes and not the selection's, which is the
  *   whole feature;
  * - "Timeline" and "Clear" act on the selection, so they are gone in the

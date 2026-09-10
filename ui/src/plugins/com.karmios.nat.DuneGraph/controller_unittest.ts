@@ -18,9 +18,9 @@
  *
  * There is one soft gate - the row estimate against the setting, checked before
  * anything is parsed - and one hard cap on the edge tier, which is a refusal
- * rather than a question. This file pins that there is exactly one of each: a
- * graph that used to need a second yes for its edge tables now gets them from
- * the first one, and the hard cap still stops short of an error state.
+ * rather than a question. This file pins that there is exactly one of each:
+ * a yes to the gate buys all three load steps including the edge tier, and the
+ * hard cap stops short of an error state.
  *
  * The controller is driven through a stub engine, the same trick
  * `sql_graph_unittest.ts` uses: there is no trace processor in a unit test, so
@@ -266,11 +266,11 @@ describe('autoLoads', () => {
 });
 
 describe('load', () => {
-  test('builds the edge tier the old soft cap would have skipped', async () => {
-    // 20M edges: past the 10M the deleted EDGE_SOFT_LIMIT sat at, so this used
-    // to end with the edge step idle and a "Build edge tables" offer in the
-    // panel. The one question is asked before the parse now, and this graph
-    // has already got past it.
+  test('builds the edge tier for a graph far past any prompt', async () => {
+    // 20M edges - large enough that a second, post-parse question about the
+    // edge tables would be tempting. There isn't one: the only question is
+    // asked before the parse, and this graph has already got past it.
+    // Everything short of the hard cap therefore loads all three steps.
     const h = makeHarness();
     withGraph(h, claimingEdges(g.graph, 20_000_000));
     await h.controller.load();

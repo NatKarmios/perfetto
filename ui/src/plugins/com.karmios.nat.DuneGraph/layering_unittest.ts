@@ -54,11 +54,11 @@ const LAYER_OF_ROOT_FILE: ReadonlyMap<string, number> = new Map([
 const ALLOWED_UPWARD: ReadonlyArray<readonly [string, string]> = [
   // controller.ts registers the timeline tracks, builds the family relations
   // and assembles the arrow overlay - it owns the timeline's presentation, so
-  // it reaches the modules that draw it. Those modules no longer reach back:
-  // they take `GraphHost` (views/graph_host.ts), which the controller
-  // satisfies structurally, so nothing here is a cycle any more. Emptying the
-  // list means moving timeline-workspace ownership out of the controller,
-  // which is a design change rather than a cleanup.
+  // it reaches the modules that draw it. Those modules do not reach back: they
+  // take `GraphHost` (views/graph_host.ts), which the controller satisfies
+  // structurally, so none of these is a cycle. Emptying the list means moving
+  // timeline-workspace ownership out of the controller, which is a design
+  // change rather than a cleanup.
   ['controller', 'views/graph_track'],
   ['controller', 'views/arrows'],
   ['controller', 'views/family'],

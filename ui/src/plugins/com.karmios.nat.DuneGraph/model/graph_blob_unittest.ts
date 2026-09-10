@@ -322,7 +322,7 @@ describe('parseGraphBlob - graph-rules', () => {
   });
 
   it('reads a malformed dep_set as no set rather than as a truncation', async () => {
-    // A comma is what the field used to hold; it is malformed input now.
+    // `<dep_set>` is a single set id, so a comma in it is malformed input.
     const blob = await parse({[RULES_SECTION]: '1\t\t\t\tX\t\t4,5\t\n'});
     expect(blob.rules[0].depSet).toBeUndefined();
     expect(blob.rules[0].depsUnknown).toBe(false);

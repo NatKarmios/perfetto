@@ -86,7 +86,7 @@ function dirs(
 
 // Per-directory match counts keyed by path rather than by id, for readability.
 // Both kinds take the same shape: a rule's attributes are per-rule, so "every
-// rule in this directory matches" is no longer a special case.
+// rule in this directory matches" needs no special case.
 function countsAt(
   entries: readonly DirEntry[],
   at: Readonly<Record<string, number>>,

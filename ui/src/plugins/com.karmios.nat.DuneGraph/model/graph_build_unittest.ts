@@ -311,8 +311,8 @@ describe('GraphBuilder dep sets', () => {
       [coreRecord(0, [1, 2])],
     );
 
-    // The rule's static run is the whole set, flat - the store is expanded
-    // exactly as it was before the blob factored the sets out.
+    // The rule's static run is the whole set, flat: the store holds expanded
+    // edges whether or not the blob factored them.
     expect(graph.staticDepCount(0)).toBe(4);
     expect(targets(graph, 0)).toEqual(
       [1, 2, 3, 4].map((id) => graph.nodeForDepId(id)),

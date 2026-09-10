@@ -141,7 +141,7 @@ function memberRow(over: Record<string, unknown> = {}) {
 // Which query a statement is. The counts query is the only one that aggregates,
 // and it is tested for *first*: under a path filter it embeds a `dune_dir` scan
 // of its own (the rule half of a path test - see `countsWhere`), so "reads
-// `dune_dir`" no longer picks out the hierarchy read on its own.
+// `dune_dir`" does not pick out the hierarchy read on its own.
 function isCountsQuery(sql: string): boolean {
   return sql.includes('count(*)');
 }
