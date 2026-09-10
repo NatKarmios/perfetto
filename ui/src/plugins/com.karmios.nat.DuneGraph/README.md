@@ -593,12 +593,6 @@ What the suite does **not** cover:
 
 Things known to be imperfect, kept here so they are not rediscovered:
 
-- **`dune_tables.ts` describes `_dune_node_out` as "each node's out-degree, for
-  the walk's cost estimates".** It is not — it is `(node_id, first_rowid, n)`, a
-  rowid range into `_dune_edge`, and nothing uses it for cost estimation. The
-  sidebar text is wrong and should be corrected.
-- **`dune_tables.ts` documents `dune_process.dur_ns` as "how long it ran, in
-  nanoseconds"** without mentioning the NULL for a process that never finished.
 - **`ChartRenderContext.brushFilters` is populated only on the dashboard path**,
   so a Dune directory chart on a visualisation node cannot recover its brush
   after a reload.
