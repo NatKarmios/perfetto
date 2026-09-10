@@ -21,7 +21,7 @@ import type {
   GraphStats,
   NodeId,
   NodeTiming,
-} from './graph';
+} from './model/graph';
 import {
   ancestors,
   descendants,
@@ -30,43 +30,43 @@ import {
   forcers,
   ReverseIndex,
   spanSliceId,
-} from './graph';
-import {lifecycleKeysForSliceIds} from './lifecycle_sql';
+} from './model/graph';
+import {lifecycleKeysForSliceIds} from './sql/lifecycle_sql';
 import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
 import {RelatedEventsOverlay} from '../../components/related_events/related_events_overlay';
-import type {GraphTrackKind} from './graph_track';
+import type {GraphTrackKind} from './views/graph_track';
 import {
   createGraphTrackRenderer,
   GRAPH_TRACKS,
   graphTrackKind,
   graphTrackUri,
-} from './graph_track';
-import {arrowsForSelection} from './arrows';
-import type {FamilyIndex} from './family';
-import type {FamilyMembers} from './family';
+} from './views/graph_track';
+import {arrowsForSelection} from './views/arrows';
+import type {FamilyIndex} from './views/family';
+import type {FamilyMembers} from './views/family';
 import {
   buildFamilyIndex,
   emptyFamilyIndex,
   familyMembers,
   ruleOfRow,
-} from './family';
-import {TraceGraphSource} from './trace_graph_source';
+} from './views/family';
+import {TraceGraphSource} from './model/trace_graph_source';
 import {measure, PerfRun} from './perf';
-import type {ProcessDetails} from './process_sql';
+import type {ProcessDetails} from './sql/process_sql';
 import type {
   Distances,
   MirrorPhase,
   MirrorProgress,
   SqlEdgeMirror,
   SqlNodeMirror,
-} from './sql_graph';
+} from './sql/sql_graph';
 import {
   EDGE_HARD_LIMIT,
   EDGE_MIRROR_PHASES,
   NODE_MIRROR_PHASES,
   buildEdgeMirror,
   buildNodeMirror,
-} from './sql_graph';
+} from './sql/sql_graph';
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 

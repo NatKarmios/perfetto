@@ -38,16 +38,16 @@ import {
   DuneGraphController,
 } from './controller';
 import type {Trace} from '../../public/trace';
-import type {BuildGraph, GraphSource} from './graph';
-import {DEPS_SECTION} from './graph_blob';
-import {dep, rule, testGraph} from './graph_test_helper';
-import {graphTrackUri} from './graph_track';
-import type {MirrorProgress} from './sql_graph';
+import type {BuildGraph, GraphSource} from './model/graph';
+import {DEPS_SECTION} from './model/graph_blob';
+import {dep, rule, testGraph} from './model/graph_test_helper';
+import {graphTrackUri} from './views/graph_track';
+import type {MirrorProgress} from './sql/sql_graph';
 import {
   EDGE_HARD_LIMIT,
   EDGE_MIRROR_PHASES,
   NODE_MIRROR_PHASES,
-} from './sql_graph';
+} from './sql/sql_graph';
 
 // A graph small enough to mirror in a test but with real edges in it, so the
 // two mirror builders have something to walk.

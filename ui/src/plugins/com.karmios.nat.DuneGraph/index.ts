@@ -24,14 +24,14 @@ import {
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
   DuneGraphController,
 } from './controller';
-import {registerNodeColumnRenderer} from './node_cell';
-import {registerDirExplorerChart} from './dir_explorer_chart';
-import {registerNodeGraphChart} from './node_graph_chart';
-import {DirExplorerPanel} from './dir_explorer_panel';
-import {SqlDirExplorerSource} from './dir_explorer_source';
-import {DuneGraphPanel} from './panel';
-import {DuneQueryPage, QUERY_TAB_PERSISTENCE_SETTING} from './query_page';
-import {DuneQueryTab} from './query_tab';
+import {registerNodeColumnRenderer} from './views/node_cell';
+import {registerDirExplorerChart} from './explorer/dir_explorer_chart';
+import {registerNodeGraphChart} from './explorer/node_graph_chart';
+import {DirExplorerPanel} from './views/dir_explorer_panel';
+import {SqlDirExplorerSource} from './views/dir_explorer_source';
+import {DuneGraphPanel} from './views/panel';
+import {DuneQueryPage, QUERY_TAB_PERSISTENCE_SETTING} from './views/query_page';
+import {DuneQueryTab} from './views/query_tab';
 import {dumpPerfRuns} from './perf';
 import './styles.scss';
 
