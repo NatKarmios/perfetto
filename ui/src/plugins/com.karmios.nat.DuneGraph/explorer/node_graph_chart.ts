@@ -16,39 +16,25 @@
  * The side panel's node graph offered as a Data Explorer *chart type*: a query's
  * rows, drawn as the build graph between the nodes they named.
  *
- * ## What the chart is a view of
- *
  * The same pane the side panel draws (graph_panel.ts), over a different node
- * set. The side panel's set is the graph *selection* - nodes the user added one
- * neighbourhood at a time - and this one's is whatever the card's query
- * returned, which is the whole point: a query is a much faster way to say "every
- * rule in this directory that failed" than clicking is, and the edges between
- * whatever it named are then drawn for free, because the graph they come from is
- * already in memory.
+ * set: the card's query rather than the graph selection. That is the whole
+ * point - a query says "every rule in this directory that failed" far faster
+ * than clicking does, and the edges between whatever it names are drawn for
+ * free, the graph being in memory already.
  *
- * Nothing else about the pane changes. The edges are the induced subgraph over
- * the drawn set, contracted through hidden rules exactly as in the side panel;
- * "Hide rules" is the same controller-level toggle, so the card and the panel
- * agree about how a Dune graph is drawn; clicking a dot still jumps to the
- * node's slice. The two toolbar actions that act on the *selection* rather than
- * on what is drawn - "Timeline" and "Clear" - are the only things the card does
- * not offer; see `GraphPanelNodes`.
+ * Nothing else about the pane changes: same induced subgraph, same contraction
+ * through hidden rules, same "Hide rules" toggle on the controller, same jump
+ * to a node's slice on a click. The only things the card does not offer are the
+ * two toolbar actions that act on the *selection* rather than on what is drawn,
+ * "Timeline" and "Clear" - see `GraphPanelNodes`. `config.column` is read as
+ * the node id column, exactly as the directory chart reads it (see
+ * chart_node_column.ts).
  *
- * ## `config.column` is the node id column
- *
- * Read exactly as the directory chart reads it, through the same shared offer
- * to switch to a column that actually holds node ids - see chart_node_column.ts.
- *
- * ## The cap, which this chart has and the directory chart doesn't
- *
- * The directory chart's tree is bounded by the mirror however large its query
- * is, so it needs no cap. This one is bounded by nothing: it draws a dot per
- * node, so the query's size is the card's size. graph_layout.ts is a hand-rolled
- * layered layout with no crossing reduction and the pane rebuilds every dot and
- * every edge on every frame of a pan, so there is a limit -
- * {@link NODE_GRAPH_MAX_NODES}, justified in node_graph_source.ts where it
- * lives - and it is all or nothing. A query within it is drawn entire, every
- * node it named and every edge between them; a query past it is refused by
+ * **Unlike the directory chart, this one has a cap.** That chart's tree is
+ * bounded by the mirror however large its query; this one draws a dot per node,
+ * so the query's size is the card's size. {@link NODE_GRAPH_MAX_NODES} is the
+ * limit, justified in node_graph_source.ts where it lives, and it is all or
+ * nothing: a query within it is drawn entire, and one past it is refused by
  * name rather than sampled down to size, for the reason given at the refusal
  * below.
  */

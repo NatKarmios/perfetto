@@ -14,32 +14,20 @@
 
 /**
  * The one piece of chart plumbing both Dune chart types need: which column of a
- * chart's query holds a `dune_node.node_id`.
+ * chart's query holds a `dune_node.node_id`. Both read their config's primary
+ * column as one, because that is the only thing that maps a row onto the build
+ * graph, and the chart picker's generic default - the first non-numeric column,
+ * usually a label or a path - would otherwise have them join on a string and
+ * draw an empty picture.
  *
- * Every Data Explorer chart type reads its config's primary column as some one
- * thing - a dimension, a measure, an axis. Both of ours read it as a node
- * id, because that is the only thing that maps a query's rows onto the build
- * graph: the directory tree needs it to know where a row is filed
- * (dir_explorer_chart.ts), and the node graph needs it to know which nodes to
- * draw (node_graph_chart.ts).
- *
- * Both then have the same problem. The chart picker's default primary column is
- * chosen generically - the first non-numeric column, which on a Dune query is
- * usually a label or a path - so a chart dropped on a query would otherwise join
- * on a string, match nothing, and draw an empty picture of it. The offer to fix
- * that is what lives here: it was written for the directory tree, and the node
- * graph wants it verbatim, which is the second data point that says it belongs
- * to neither of them.
- *
- * There are two halves to it, and the order matters. {@link defaultNodeColumn}
- * is what stops the problem happening: it is the descriptor's `defaultColumn`
- * hook, so a chart added to a query that has a node id column *starts* on it
- * and simply draws. {@link renderNodeColumnPrompt} is the fallback for when it
- * did not - the user picked something else, or the query aliased its node id to
- * a name we cannot guess - and that one stops at *offering*, because the column
- * picker is the chart config's own and substituting behind the user's back once
- * they have chosen is a different thing entirely from choosing for them up
- * front.
+ * Two halves, and the order matters. {@link defaultNodeColumn} stops the
+ * problem happening: it is the descriptor's `defaultColumn` hook, so a chart
+ * added to a query that has a node id column *starts* on it. {@link
+ * renderNodeColumnPrompt} is the fallback for when it did not - the user picked
+ * something else, or the query aliased its node id to a name we cannot guess -
+ * and that one stops at *offering*, because the column picker is the chart
+ * config's own and substituting behind the user's back once they have chosen is
+ * a different thing from choosing for them up front.
  */
 
 import m from 'mithril';

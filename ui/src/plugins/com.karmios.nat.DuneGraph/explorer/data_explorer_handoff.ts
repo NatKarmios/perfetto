@@ -88,9 +88,9 @@ export async function appendExploreSource(
  * The two preconditions of a hand-off: the node tier of the mirror is built
  * (building it if not), and the Data Explorer is actually there.
  *
- * The tables the sources read only exist once that tier has been built (the
- * graph no longer loads with the trace - see controller.ts), so a load is part
- * of the action rather than a precondition to complain about: this runs the
+ * The tables the sources read only exist once that tier has been built, and
+ * nothing builds it with the trace (see controller.ts), so a load is part of
+ * the action rather than a precondition to complain about: this runs the
  * controller's whole `load`, whose progress and failure the side panel already
  * reports - and the panel is on screen, since its buttons are the only way
  * here. A failure of the load is therefore silent. The two ways the hand-off

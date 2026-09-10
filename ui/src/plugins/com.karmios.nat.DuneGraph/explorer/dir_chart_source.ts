@@ -19,57 +19,43 @@
  * ## What this is a source of
  *
  * The pane's other source reads a hierarchy and descends it (see
- * `SqlDirExplorerSource`). This one reads a **selection**. The hierarchy still
- * comes from the mirror - `allDirs`, one query, ~19k rows on the monorepo trace,
- * with the dense parent-below-child ids `FilteredTree` needs - because that is
- * where the directory tree exists at all. What the chart's input rows decide
- * is which of those directories are drawn, and what hangs off them.
- *
- * The shape of the whole tree is then decided by one thing, and `dir_filter.ts`
- * already does everything downstream of it: the per-directory count channels.
- * From those, `FilteredTree` does the subtree rollup, the hard filter (a
- * directory with no matching rows gets no row at all), the pass-through
- * compression over what survives, and the expansion remapping - all
- * client-side, all arithmetic.
+ * `SqlDirExplorerSource`). This one reads a **selection**: the hierarchy still
+ * comes from the mirror (`allDirs`, one query, ~19k rows), because that is
+ * where the directory tree exists at all, and the chart's input rows decide
+ * which of those directories are drawn and what hangs off them. Everything
+ * downstream - the subtree rollup, the hard filter, the compression, the
+ * expansion remapping - is `dir_filter.ts`, client-side and arithmetic, fed by
+ * the per-directory count channels this produces.
  *
  * ## Counts and members are fetched differently, because they are different
  * sizes
  *
- * This is the whole design of the file, so it is worth being explicit about.
- * The pane asks a source for two unrelated things, and the naive reading - pull
- * the input rows in once and derive both from them - ties both to the size of
- * the *input*, which is unbounded. A bare `SELECT ... FROM dune_node` chart -
- * one button away, since that is the "Dune nodes" source the side panel
- * appends - names all 818k nodes of the monorepo trace, and holding those in
- * the browser is not something to do at all, never mind to do behind a cap that
- * silently keeps an arbitrary 50k of them and draws a tree of whichever
- * directories they happened to land in.
+ * This is the whole design of the file. The naive reading - pull the input rows
+ * in once and derive both from them - ties both to the size of the *input*,
+ * which is unbounded: a bare `SELECT ... FROM dune_node` chart is one button
+ * away and names all 818k nodes of the monorepo trace. Holding those in the
+ * browser is not something to do at all, never mind behind a cap that silently
+ * keeps an arbitrary 50k and draws a tree of wherever they happened to land.
  *
- * So the two are fetched separately, each bounded by what it is actually
- * bounded by:
+ * So each is bounded by what actually bounds it:
  *
- * - **Counts** are an aggregate, and aggregates are what SQL is for. One
- *   `GROUP BY dir_id, kind` returns at most two rows per *directory* - ~38k
- *   rows at the very worst on the monorepo trace, and typically a handful -
- *   however many input rows went into it. Bounded by the mirror rather than by
- *   the input, it needs no cap, and the tree is complete at any scale. This is
- *   the same shape `matchingCounts` in dir_explorer.ts uses against the mirror.
- * - **Members** are needed only for the directories the user actually expands,
- *   and only one `MEMBER_PAGE` at a time, because the pane already pages them.
- *   So each page is its own bounded query rather than a slice of an array that
- *   had to exist first. That also means the input query is re-run per page -
- *   which is what the trace processor is for, and is the same trade the SQL
- *   source makes on every expansion.
+ * - **Counts** are an aggregate. One `GROUP BY dir_id, kind` returns at most
+ *   two rows per *directory* however many input rows went into it, so it is
+ *   bounded by the mirror, needs no cap, and the tree is complete at any scale.
+ *   The same shape `matchingCounts` uses against the mirror.
+ * - **Members** are needed only for the directories the user expands, one
+ *   `MEMBER_PAGE` at a time, because the pane already pages them. Each page is
+ *   its own bounded query rather than a slice of an array that had to exist
+ *   first - so the input query is re-run per page, which is what the trace
+ *   processor is for and the same trade the SQL source makes on expansion.
  *
  * ## The pane's own filter, on top of the input's
  *
- * The rows are one narrowing; the pane's path box and Filters menu are another,
- * and both apply. That is possible precisely because nothing here is
- * materialised: every one of the three queries is re-issued when it is needed,
- * so the filter's predicates go into them the same way the input's semi-join
- * does. They are the *same* predicates the side panel builds - imported from
- * dir_explorer.ts rather than re-derived, since a filter's meaning is its
- * predicates and two spellings of them would be two things to keep in step.
+ * The rows are one narrowing, the pane's path box and Filters menu another, and
+ * both apply - possible precisely because nothing here is materialised, so a
+ * filter's predicates go into each re-issued query the same way the input's
+ * semi-join does. They are the *same* predicates the side panel builds,
+ * imported from dir_explorer.ts rather than re-derived.
  *
  * The one part that has to be spelt differently is the rule half of a path
  * filter, because a rule carries no path and is matched on its directory: a

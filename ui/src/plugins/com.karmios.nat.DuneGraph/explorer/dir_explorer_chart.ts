@@ -16,24 +16,12 @@
  * The directory Explorer offered as a Data Explorer *chart type*: a query's
  * rows, drawn as the part of the build's directory tree they landed in.
  *
- * ## What the chart is a view of
- *
- * Its input is a **selection**, not a structure. The hierarchy comes from the
- * mirror as it always did; what the query's rows decide is which directories are
- * drawn and what hangs off them - a directory none of the rows are filed in gets
- * no row at all, and a directory row lists only the members the query returned.
- * That makes the card honestly a picture of its query rather than a tree that
- * happens to highlight some of it. See dir_chart_source.ts, which is where all
- * of that lives; this file is the registration and the states around it.
- *
- * ## `config.column` is the node id column
- *
- * Every chart type reads its config's primary column as something; this one
- * reads it as the column holding a `dune_node.node_id`, which is what maps a row
- * to a place in the tree. The chart picker's generic default rarely picks it, so
- * a chart dropped on a Dune query offers to switch to the right column rather
- * than silently joining on a path string and drawing nothing - which is shared
- * with the node graph chart, and so lives in chart_node_column.ts.
+ * Its input is a **selection**, not a structure: the hierarchy comes from the
+ * mirror, and the query's rows decide which directories are drawn and what
+ * hangs off them, so the card is honestly a picture of its query rather than a
+ * tree that highlights part of one. All of that is dir_chart_source.ts; this
+ * file is the registration and the states around it, and `config.column` is
+ * read as the node id column (see chart_node_column.ts).
  *
  * ## Clicking a directory narrows everything else
  *

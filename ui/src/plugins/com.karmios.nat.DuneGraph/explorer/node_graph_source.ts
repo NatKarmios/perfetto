@@ -64,12 +64,10 @@
  *
  * ## Why there is a cap here when the directory chart has none
  *
- * The directory chart deliberately has no cap: its `GROUP BY` collapses any
- * input to at most two rows per directory before anything leaves the engine, so
- * its tree is bounded by `dune_dir` (~19k rows) rather than by the query. This
- * one is bounded by nothing at all, and what it feeds - graph_layout.ts - is a
- * hand-rolled layered layout with no crossing reduction. So the number is about
- * what that layout and the SVG it becomes can actually carry; see below.
+ * The directory chart's `GROUP BY` collapses any input to at most two rows per
+ * directory before anything leaves the engine, so its tree is bounded by
+ * `dune_dir` rather than by the query. This one is bounded by nothing at all.
+ * See README.md, "Performance", for what sets the number.
  */
 
 import {getErrorMessage} from '../../../base/errors';
@@ -83,35 +81,17 @@ import type {NodeId} from '../model/graph';
  * How many nodes the chart will draw at once - and so, since it draws all of
  * them or none, the most a query may name before the card refuses it.
  *
+ * The three limits that agree on a few hundred - the layout geometry against
+ * `MAX_ZOOM`, the per-frame SVG rebuild, and legibility without crossing
+ * reduction - are set out in README.md, "Performance". 400 rather than 200
+ * because the pathological case, every node on one rank, is not the usual one:
+ * a layered build subgraph spreads over many ranks, and a cap set for the worst
+ * case would turn away graphs that lay out perfectly well.
+ *
  * One number rather than a soft cap and a hard one, because a graph drawn from
  * part of what was asked for is not a thinner answer, it is a wrong one: which
  * part survives is not arbitrary, and the drawn edges are only those with both
  * ends inside it. node_graph_chart.ts makes that argument where it acts on it.
- *
- * This is the cost ceiling, and it is what stops a query naming most of the
- * build from freezing the tab. Three things set it, and they agree on a few
- * hundred:
- *
- * - **The geometry.** A rank in graph_layout.ts is a row of dots `NODE_WIDTH +
- *   GAP` apart, so `k` nodes on one rank is `36k - 20` layout units wide. The
- *   panel's `MAX_ZOOM` is 20 layout units per CSS pixel, so the widest row that
- *   can ever be got fully into a pane `W` pixels across is `k = (20W + 20)/36`
- *   - about 440 nodes in an 800px card, about 220 in a 400px one. Past a few
- *   hundred nodes on a rank, "Fit" stops being able to show the graph at all.
- * - **The redraw.** Every node is a `<circle>` and every edge a `<line>` with
- *   an arrowhead marker, and the whole lot is rebuilt as mithril vnodes and
- *   diffed on *every* frame of a pan or a zoom (the viewBox changes, so the
- *   subtree is revisited). A build graph's induced subgraph runs to a few edges
- *   per node, so 400 nodes is already a couple of thousand SVG elements per
- *   frame - about what fits in a frame budget.
- * - **Legibility.** graph_layout.ts has no crossing reduction: rows keep input
- *   order, so a rank of `k` nodes draws its edges through up to `k(k-1)/2`
- *   crossings. Well before the two limits above, the picture stops being one.
- *
- * 400 rather than 200 because the pathological case - every node on one rank -
- * is not the usual one: a layered build subgraph spreads over many ranks, and a
- * cap set for the worst case would turn away graphs that lay out perfectly
- * well.
  */
 export const NODE_GRAPH_MAX_NODES = 400;
 

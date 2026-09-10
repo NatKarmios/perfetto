@@ -17,11 +17,10 @@
  * explore_source.ts for what that means and how it is applied).
  *
  * This is the source that makes the renderer registry pay off: `node_id` is
- * declared as `JOINID(dune_node.node_id)`, which is what node_cell.ts's
- * registration keys on, so every row of every grid built from this source draws
- * the same node chip - kind, label, link to the slice, ＋/－ graph toggle - that
- * the query tab draws. Nothing else in this file is doing anything the dir-tree
- * source doesn't; the type on that one column is the point.
+ * declared as `JOINID(dune_node.node_id)`, which is what node_cell.ts keys on,
+ * so every grid built from this source draws the same node chip the query tab
+ * does. The type on that one column is the point; the rest is the dir-tree
+ * source again.
  */
 
 import type {ExploreColumn, ExploreSource} from './explore_source';

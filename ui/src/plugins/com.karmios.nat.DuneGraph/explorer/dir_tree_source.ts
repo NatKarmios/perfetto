@@ -14,19 +14,16 @@
 
 /**
  * {@link DIR_TREE_SOURCE}: `dune_dir` as a table the user can add to a Data
- * Explorer graph and query - its SELECT and its column types. This is what the
- * panel's "Directory tree" button appends; explore_source.ts is the mechanism
- * that turns it into graph nodes, and data_explorer_handoff.ts is the action
- * that applies it.
+ * Explorer graph and query. What the panel's "Directory tree" button appends;
+ * explore_source.ts is the mechanism, data_explorer_handoff.ts the action.
  *
- * Kept pure and side-effect free so the payload can be checked against the Data
- * Explorer's own validators in a unit test, which is the only place it can be
- * checked at all: it is data, so a typo in it is not a compile error but a
- * silently dropped node or column.
+ * Pure and side-effect free so the payload can be checked against the Data
+ * Explorer's own validators in a unit test - the only place it can be checked
+ * at all, since it is data, so a typo is a silently dropped node rather than a
+ * compile error.
  *
- * The build's directories are also a *chart* - the `dune-dir-tree` type
- * registered in dir_explorer_chart.ts - but that is a view of whatever rows the
- * chart's query returns, and quite separate from this table.
+ * Not to be confused with the `dune-dir-tree` *chart* type
+ * (dir_explorer_chart.ts), which is a view of a query's rows.
  */
 
 import type {ExploreColumn, ExploreSource} from './explore_source';
