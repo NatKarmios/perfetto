@@ -19,8 +19,10 @@ import {
   nextTabTitle,
   renameTab,
   reorderTabs,
+  restoreTabs,
   setTabText,
 } from './query_page';
+import type {PersistedTab} from '../../components/query_table/tab_persistence';
 import type {DuneQueryResults} from './query_results';
 
 // None of the helpers under test touch `results` - it rides along so the page
@@ -184,5 +186,56 @@ describe('reorderTabs', () => {
   it('ignores an unknown dragged id', () => {
     const state = {tabs: [tab('a'), tab('b')], activeTabId: 'a'};
     expect(reorderTabs(state, 'zzz', 'a')).toBe(state);
+  });
+});
+
+describe('restoreTabs', () => {
+  // What the page passes is `makeTab`, which builds a real results view and so
+  // wants a Trace; the helper takes the factory precisely so a test can pass
+  // the same placeholder tabs the rest of this file uses.
+  const make = (fields: PersistedTab) =>
+    tab(fields.id, fields.title, fields.editorText);
+
+  const stored = (id: string, title = id, editorText = ''): PersistedTab => ({
+    id,
+    title,
+    editorText,
+  });
+
+  it('keeps the stored order and the stored focus', () => {
+    const persisted = {
+      tabs: [stored('a'), stored('b'), stored('c')],
+      activeTabId: 'b',
+    };
+    expect(project(restoreTabs(persisted, make))).toEqual({
+      ids: ['a', 'b', 'c'],
+      active: 'b',
+    });
+  });
+
+  it('carries each tab’s title and buffer', () => {
+    const persisted = {
+      tabs: [stored('a', 'scratch', 'select 1')],
+      activeTabId: 'a',
+    };
+    const [restored] = restoreTabs(persisted, make).tabs;
+    expect(restored.id).toBe('a');
+    expect(restored.title).toBe('scratch');
+    expect(restored.editorText).toBe('select 1');
+  });
+
+  it('falls back to the first tab when the stored focus names no tab', () => {
+    const persisted = {tabs: [stored('a'), stored('b')], activeTabId: 'zzz'};
+    expect(restoreTabs(persisted, make).activeTabId).toBe('a');
+  });
+
+  // The page auto-names a *new* tab around whatever came back, rather than
+  // starting over at "Query 1" and colliding with a restored one.
+  it('leaves nextTabTitle to pick the lowest free name around them', () => {
+    const persisted = {
+      tabs: [stored('a', 'Query 1'), stored('b', 'Query 2')],
+      activeTabId: 'a',
+    };
+    expect(nextTabTitle(restoreTabs(persisted, make).tabs)).toBe('Query 3');
   });
 });

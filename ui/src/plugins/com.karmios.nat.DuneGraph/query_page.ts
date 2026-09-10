@@ -13,8 +13,14 @@
 // limitations under the License.
 
 import m from 'mithril';
+import {debounce} from '../../base/rate_limiters';
 import {shortUuid} from '../../base/uuid';
 import {formatPerfettoSql} from '../../components/query_table/sql_formatter';
+import type {
+  PersistedTab,
+  PersistedTabs,
+} from '../../components/query_table/tab_persistence';
+import {loadTabs, saveTabs} from '../../components/query_table/tab_persistence';
 import {
   QueryHistoryComponent,
   queryHistoryStorage,
@@ -56,6 +62,25 @@ export interface DuneTabList {
   readonly tabs: readonly DunePageTab[];
   readonly activeTabId: string;
 }
+
+/**
+ * Whether the page remembers its tabs across reloads. Registered by index.ts,
+ * which imports this id; the id itself lives here, next to the two places that
+ * act on it (`DuneQueryPage`'s constructor and its save) - the same split as
+ * controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING, for the same reason.
+ */
+export const QUERY_TAB_PERSISTENCE_SETTING =
+  'com.karmios.nat.DuneGraph#queryTabPersistence';
+
+// Our own storage key, deliberately not the core query page's
+// ('perfettoQueryTabs'): both pages exist, both persist tabs, and each has to
+// restore what was typed into *it*.
+const QUERY_TABS_STORAGE_KEY = 'com.karmios.nat.DuneGraph#queryTabs';
+
+// How long a pause in editing writes the tabs back, as the core query page
+// does it. Not per-mutation: a save re-serialises every tab's buffer, and
+// nothing reads the blob back until the next page load anyway.
+const SAVE_DEBOUNCE_MS = 1000;
 
 // Prefix for auto-named tabs; a rename replaces the whole title, so a renamed
 // tab simply stops being counted by `nextTabTitle`.
@@ -153,6 +178,28 @@ function patchTab(
 }
 
 /**
+ * The tab list a stored blob restores to. Handed the tab factory rather than
+ * owning one, for the same reason the helpers above are handed a state:
+ * building a real {@link DunePageTab} needs a `DuneQueryResults` and so a
+ * `Trace`, while the bookkeeping here - keep the stored order, land on a tab
+ * that exists - is worth checking without either.
+ *
+ * `loadTabs` never returns a blob with no tabs, so the first tab is a fallback
+ * rather than a case to handle.
+ */
+export function restoreTabs(
+  persisted: PersistedTabs,
+  makeTab: (fields: PersistedTab) => DunePageTab,
+): DuneTabList {
+  const tabs = persisted.tabs.map((fields) => makeTab(fields));
+  // The stored focus can name a tab the blob doesn't contain (a blob written
+  // by an older version, say), and an activeTabId matching no tab would leave
+  // the strip with nothing showing at all.
+  const active = tabs.find((t) => t.id === persisted.activeTabId);
+  return {tabs, activeTabId: (active ?? tabs[0]).id};
+}
+
+/**
  * A full page of SQL over the Dune graph tables: a strip of editor tabs, each
  * with its own editor buffer and its own {@link DuneQueryResults} below it, and
  * a query-history sidebar.
@@ -173,12 +220,39 @@ export class DuneQueryPage {
   // Deliberately a plain field rather than a registered setting: the toggle is
   // worth remembering for the session, not worth a line on the settings page.
   private sidebarVisible = true;
+  // Every mutation schedules this; it fires once the edits stop (see
+  // SAVE_DEBOUNCE_MS). `debounce` hands back a bare `Function`, which
+  // TypeScript won't assign to a signature, hence the cast - it buys a field
+  // that takes no arguments and returns nothing, rather than one that takes
+  // anything and returns `any`.
+  private readonly scheduleSave = debounce(
+    () => this.save(),
+    SAVE_DEBOUNCE_MS,
+  ) as () => void;
 
   constructor(
     private readonly trace: Trace,
     private readonly controller: DuneGraphController,
   ) {
-    this.addTab();
+    // Whatever was open last time, when the setting is on and there is
+    // something stored; otherwise the single empty tab the page has always
+    // opened on. Nothing is *run*: a restored buffer is something to read and
+    // re-run by hand, and on this page it may well name `dune_*` tables that
+    // don't exist yet - which `renderGraphState` says before a query is run,
+    // and `DuneQueryResults.missingTables` says again if one is.
+    //
+    // The blob isn't per-trace, so tabs also come back across *different*
+    // traces, as they do on the core query page. Fine, and the same reasoning:
+    // what you were writing is yours, and a query that doesn't fit the trace
+    // in front of you says so when it is run.
+    const persisted = this.persistenceEnabled
+      ? loadTabs(QUERY_TABS_STORAGE_KEY)
+      : undefined;
+    if (persisted === undefined) {
+      this.addTab();
+    } else {
+      this.state = restoreTabs(persisted, (fields) => this.makeTab(fields));
+    }
   }
 
   /**
@@ -187,16 +261,57 @@ export class DuneQueryPage {
    * command, the omnibox, a "query this" affordance elsewhere in the plugin).
    */
   addTab(title?: string, query?: string, autoExecute?: boolean): void {
-    const tab: DunePageTab = {
-      id: shortUuid(),
-      title: title ?? nextTabTitle(this.state.tabs),
-      editorText: query ?? '',
+    const tab = this.makeTab({title, editorText: query});
+    this.setState(addTab(this.state, tab));
+    if (autoExecute === true) void this.execute(tab, tab.editorText);
+  }
+
+  // How a tab is built, wherever it came from: opened here, or restored in the
+  // constructor. Shared so the two can't drift - in particular so a restored
+  // tab gets its own results view, wired to the same navigation, and keeps the
+  // stored id that the stored focus points at and the next save writes back.
+  private makeTab(fields: {
+    id?: string;
+    title?: string;
+    editorText?: string;
+  }): DunePageTab {
+    return {
+      id: fields.id ?? shortUuid(),
+      title: fields.title ?? nextTabTitle(this.state.tabs),
+      editorText: fields.editorText ?? '',
       results: new DuneQueryResults(this.trace, this.controller, () =>
         this.trace.navigate('#!/viewer'),
       ),
     };
-    this.state = addTab(this.state, tab);
-    if (autoExecute === true) void this.execute(tab, tab.editorText);
+  }
+
+  // The only way the tab list moves forward, so that "what is on the page is
+  // what gets persisted" is a property of this class rather than of the seven
+  // render handlers each remembering to save.
+  private setState(next: DuneTabList): void {
+    this.state = next;
+    this.scheduleSave();
+  }
+
+  // Only `{id, title, editorText}` reaches storage - `saveTabs` maps the tabs
+  // down - and that is the point: `results` holds a whole result set, which
+  // has no business in localStorage. (`sidebarVisible` stays unpersisted too,
+  // for the reason given above it.)
+  private save(): void {
+    if (!this.persistenceEnabled) return;
+    saveTabs(QUERY_TABS_STORAGE_KEY, this.state.tabs, this.state.activeTabId);
+  }
+
+  // Read out of the setting by id on every access rather than held as a
+  // `Setting` object: the house idiom (see `DuneGraphController`'s
+  // autoLoadEdgeRowLimit), it means a toggle on the settings page takes effect
+  // on the next save, and the fallback covers a page built without the plugin
+  // having been activated, i.e. one in a unit test.
+  private get persistenceEnabled(): boolean {
+    return (
+      this.trace.settings.get<boolean>(QUERY_TAB_PERSISTENCE_SETTING)?.get() ??
+      false
+    );
   }
 
   render(): m.Children {
@@ -206,16 +321,16 @@ export class DuneQueryPage {
       activeTabKey: this.state.activeTabId,
       reorderable: true,
       onTabChange: (key) => {
-        this.state = {tabs: this.state.tabs, activeTabId: key};
+        this.setState({tabs: this.state.tabs, activeTabId: key});
       },
       onTabClose: (key) => {
-        this.state = closeTab(this.state, key);
+        this.setState(closeTab(this.state, key));
       },
       onTabRename: (key, title) => {
-        this.state = renameTab(this.state, key, title);
+        this.setState(renameTab(this.state, key, title));
       },
       onTabReorder: (key, beforeKey) => {
-        this.state = reorderTabs(this.state, key, beforeKey);
+        this.setState(reorderTabs(this.state, key, beforeKey));
       },
       newTabContent: [
         m(Button, {
@@ -362,7 +477,7 @@ export class DuneQueryPage {
         language: 'perfetto-sql',
         text: tab.editorText,
         onUpdate: (text) => {
-          this.state = setTabText(this.state, tab.id, text);
+          this.setState(setTabText(this.state, tab.id, text));
         },
         onExecute: (text) => void this.execute(tab, text),
         onFormat: (text) => void this.format(tab.id, text),
@@ -425,7 +540,7 @@ export class DuneQueryPage {
         if (tab !== undefined) void this.execute(tab, query);
       },
       setQuery: (query: string) => {
-        this.state = setTabText(this.state, this.state.activeTabId, query);
+        this.setState(setTabText(this.state, this.state.activeTabId, query));
       },
     });
   }
@@ -446,7 +561,7 @@ export class DuneQueryPage {
   private async format(id: string, text: string): Promise<void> {
     const formatted = await formatPerfettoSql(text);
     if (formatted === undefined) return;
-    this.state = setTabText(this.state, id, formatted);
+    this.setState(setTabText(this.state, id, formatted));
     m.redraw();
   }
 }

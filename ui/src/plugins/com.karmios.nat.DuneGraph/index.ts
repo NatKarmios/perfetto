@@ -30,7 +30,7 @@ import {registerNodeGraphChart} from './node_graph_chart';
 import {DirExplorerPanel} from './dir_explorer_panel';
 import {SqlDirExplorerSource} from './dir_explorer_source';
 import {DuneGraphPanel} from './panel';
-import {DuneQueryPage} from './query_page';
+import {DuneQueryPage, QUERY_TAB_PERSISTENCE_SETTING} from './query_page';
 import {DuneQueryTab} from './query_tab';
 import {dumpPerfRuns} from './perf';
 import './styles.scss';
@@ -84,6 +84,27 @@ export default class implements PerfettoPlugin {
       // it takes is the estimate, which has no ceiling of its own.
       schema: z.number().int().min(0),
       defaultValue: DEFAULT_AUTO_LOAD_ROW_LIMIT,
+    });
+
+    // And the one toggle: whether the full-page query surface brings back the
+    // tabs that were open last time (see QUERY_TAB_PERSISTENCE_SETTING). Off
+    // by default, because the stored blob is a convenience the plugin makes no
+    // promise to keep readable - which is what "experimental" is warning
+    // about. Here rather than in `onTraceLoad` for the reasons above, plus one
+    // of its own: the page reads the setting while being constructed, which
+    // happens as the trace opens.
+    app.settings.register({
+      id: QUERY_TAB_PERSISTENCE_SETTING,
+      name: 'Dune graph: remember query page tabs (experimental)',
+      description:
+        'Keep the editor tabs on the Dune query page - their names and their ' +
+        'SQL, never their results - in browser storage, so they come back the ' +
+        'next time the UI is loaded. Restored queries are never run: the ' +
+        'dune_* tables they name may not exist yet. Experimental: stored ' +
+        'queries can be lost across version upgrades. Off, the page opens on ' +
+        'one empty tab and stores nothing.',
+      schema: z.boolean(),
+      defaultValue: false,
     });
   }
 
