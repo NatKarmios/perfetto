@@ -33,10 +33,7 @@ export interface PathSeg {
   readonly name: string;
 }
 
-/**
- * An entry to place in the tree: the directory it lives under (`dir`, empty
- * for top-level) and its own segment (`leaf`), plus the payload to attach.
- */
+/** An entry to place in the tree. `dir` is empty for a top-level entry. */
 export interface PathTreeItem<T> {
   readonly dir: readonly PathSeg[];
   readonly leaf: PathSeg;
@@ -201,8 +198,6 @@ function convertNode<T>(
   };
 }
 
-// The number of leaves nested under a path-tree group, for the muted count
-// shown on its header.
 export function countLeaves<T>(row: PathTreeGroup<T>): number {
   let n = 0;
   for (const child of row.rows) {
@@ -211,10 +206,8 @@ export function countLeaves<T>(row: PathTreeGroup<T>): number {
   return n;
 }
 
-// Every group's `PathTreeView` collapse-state key nested anywhere in `rows`
-// (including nested groups), namespaced by the same `keyPrefix` passed to
-// `PathTreeView` - see `groupKey`. Used to build/clear an expand-all or
-// collapse-all selection.
+// Every collapse-state key nested anywhere in `rows`, namespaced by the same
+// `keyPrefix` `PathTreeView` was given. Builds an expand-all/collapse-all set.
 export function collectGroupKeys<T>(
   rows: readonly PathTreeRow<T>[],
   keyPrefix?: string,
@@ -234,11 +227,7 @@ export function groupKey(path: string, keyPrefix?: string): string {
   return keyPrefix === undefined ? path : `${keyPrefix}:${path}`;
 }
 
-/**
- * Groups `items` into a tree by their `dir`, introducing a group only where a
- * directory holds two or more rows - a directory chain that only ever leads
- * to a single row collapses into that row's `prefix` instead.
- */
+/** Groups `items` by their `dir`. See the file header for the collapse rule. */
 export function buildPathTree<T>(
   items: readonly PathTreeItem<T>[],
 ): PathTreeRow<T>[] {

@@ -134,32 +134,17 @@ export class TraceGraphSource implements GraphSource {
 
   /**
    * The structural graph, straight off the blob. Nothing timing-shaped is read
-   * here: since the perf plan's stage 2 the lifecycle instants are paired in
-   * SQL (see `lifecycle_sql.ts`) and a node's timing is looked up when it's
-   * shown, so a load no longer transfers 2.4M instants into JS to build a
-   * `SpanTiming` per node and a slice-id index over all of them.
-   *
-   * The blob's records are streamed straight into the columnar store
-   * (`graph_build.ts`) and never collected: since the perf plan's stage 3 there
-   * is no intermediate array of records, no node object and no per-rule dep
-   * array - a rule's deps are edges in one shared CSR, and its `dir` / target
-   * ids stay dict ids, resolved through the intern table only where they're
-   * displayed. On the monorepo trace those references number 28M against 660k
-   * distinct strings.
+   * here and no record is collected; see README.md, *The load path*.
    *
    * Throws (surfaced by the controller as the panel's error state) rather than
-   * returning an empty graph when the `dune-graph` track is absent - a trace
-   * that predates the v1 schema, or one recorded without `DUNE_TRACE=+graph`,
-   * should fail loudly rather than silently show nothing.
+   * returning an empty graph when the `dune-graph` track is absent: a trace
+   * without one should fail loudly rather than silently show nothing.
    *
-   * The blob itself is read in two passes: a cheap metadata query that validates
-   * each section's chunk set without reading a byte of payload, then one query
-   * per chunk, each fed straight into the streaming parser. Deliberately *not*
-   * one query for everything: a query result decodes and holds every string
-   * column it returned for as long as it's alive, so a single blob query would
-   * keep all 262 MB of a monorepo trace's payload live for the whole parse - on
-   * top of everything the parse itself builds. Per-chunk, only the chunk
-   * currently being parsed is live.
+   * Read in two passes - a metadata query that validates each section's chunk
+   * set without touching a payload, then one query *per chunk*. Deliberately
+   * not one query for everything: a query result holds every string column it
+   * returned for as long as it is alive, so a single blob query would keep the
+   * whole payload live for the entire parse, on top of what the parse builds.
    */
   async load(perf?: PerfRun): Promise<BuildGraph> {
     const index = await this.readChunkIndex(perf);

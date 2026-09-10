@@ -34,14 +34,10 @@
  * **Everything about a node lives in a typed-array column, and its edges live in
  * one CSR** (`edgeOffset` + `edgeTarget`); a {@link GraphNode} is a *view*,
  * materialised on demand for the handful of nodes a panel is actually showing.
- * The monorepo trace of the perf plan's baseline holds ~820k nodes and ~28.8M
- * edges: as objects-with-arrays that was multiple GB and never finished loading,
- * and as columns it is ~155 MB of typed arrays (plus the ~62 MB intern table),
- * built in 3.7 s (see PERF_PLAN.LOCAL.md, stage 3).
- *
- * Consequently the walks below (`descendants`, `ancestors`, `inducedEdges`, …)
- * take and return node ids, not nodes, and only the call sites that render
- * something materialise a view.
+ * So the walks below (`descendants`, `ancestors`, `inducedEdges`, …) take and
+ * return node ids, not nodes, and only the call sites that render something
+ * materialise a view. See README.md, *The graph model*, for the scale that
+ * forces this.
  */
 
 import {IntIndex, Int32Vector} from './columns';
@@ -387,15 +383,13 @@ export interface GraphColumns {
    * The blob's factored dep sets, kept alongside the flat CSR above rather than
    * discarded once expanded.
    *
-   * A rule names its deps by *set*, and the same set recurs across thousands of
-   * rules (205,224 distinct sets behind 28.1M references on the monorepo
-   * trace), with the popular sets sharing a *core* as their common prefix (688
-   * cores holding 125,584 members between them, behind 47,181 of the sets).
-   * `graph_build.ts` expands all of that into the CSR, because the flat form is
-   * what makes the walks fast and it is not what the memory goes on. The
-   * factored form is retained because the SQL edge mirror stores *it* - that is
-   * where the row count falls by 6x - and the only other way to get it back
-   * would be to re-parse the blob. It costs ~4.2M ints.
+   * A rule names its deps by *set*, and the same set recurs across thousands
+   * of rules, the popular ones sharing a *core* as their common prefix (see
+   * README.md, *The blob format*). `graph_build.ts` expands all of that into
+   * the CSR, because the flat form is what makes the walks fast and is not what
+   * the memory goes on. The factored form is retained because the SQL edge
+   * mirror stores *it* - that is where the row count falls ~5x - and the only
+   * other way back to it would be re-parsing the blob. It costs ~4.2M ints.
    *
    * Both member tables hold node references in exactly the encoding
    * `edgeTarget` uses (a node id, or a {@link dangling} reference), and are
@@ -723,7 +717,7 @@ export class BuildGraph {
    * joins them as text instead). These are outputs, not dependency edges, so
    * they are deliberately absent from `edges()`.
    *
-   * @yields each declared target as a {@link RuleTarget}.
+   * @yields each declared target.
    */
   *ruleTargets(id: NodeId): Iterable<RuleTarget> {
     if (!this.isRule(id)) return;
@@ -999,7 +993,7 @@ export class BuildGraph {
    * made to nodes it never recorded (which render as unlinked entries rather
    * than silently vanishing).
    *
-   * @yields each outgoing edge as an {@link OutRef}.
+   * @yields each outgoing edge.
    */
   *outRefs(id: NodeId): Iterable<OutRef> {
     for (const {target, edgeKind, dynStage} of this.outEdges(id)) {
@@ -1123,7 +1117,7 @@ function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
  * an array, and even so the per-edge object is why materialising that mirror is
  * an opt-in step.
  *
- * @yields each build edge as a {@link GraphEdge}.
+ * @yields each build edge.
  */
 export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
   for (let source = 0; source < graph.nodeCount; source++) {

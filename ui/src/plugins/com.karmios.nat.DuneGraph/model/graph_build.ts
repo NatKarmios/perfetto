@@ -14,18 +14,8 @@
 
 /**
  * Builds the columnar {@link BuildGraph} from the blob's records.
- *
- * {@link GraphBuilder} is the {@link GraphBlobSink} the parser streams into: it
- * copies each record's scalars into per-node columns and each of its dep
- * references into an edge vector, then drops the record. Nothing the parser
- * hands over is retained, which is the point - the blob's dep references number
- * 28M on a monorepo trace (see PERF_PLAN.LOCAL.md, stage 3).
- *
- * References can't be resolved as they arrive: a rule names dep ids, and the
- * deps section is parsed after the rules section. So ingest stores the blob's own
- * trace-side ids and {@link GraphBuilder.finish} rewrites them in place into node
- * ids - one pass over the edge vector, no second copy of it - marking the ones no
- * record ever turned up for as {@link dangling}.
+ * {@link GraphBuilder} is the {@link GraphBlobSink} the parser streams into.
+ * See README.md, *The load path*, for the streaming and the id rewrite.
  *
  * **Dep sets are expanded here, and the store stays flat.** The blob names a
  * rule's deps by set id (`graph-depsets`, itself factored over `graph-cores`);
@@ -196,10 +186,7 @@ export class GraphBuilder implements GraphBlobSink {
     this.table = table;
   }
 
-  /**
-   * Ingests one `graph-cores` record. A repeated `core_id` is dropped, as for
-   * every other id space here.
-   */
+  /** A repeated `core_id` is dropped, as for every other id space here. */
   core(record: CoreRecord): void {
     const index = this.coreBlobIds.length;
     if (!isValidId(record.coreId)) return;
@@ -212,10 +199,9 @@ export class GraphBuilder implements GraphBlobSink {
   }
 
   /**
-   * Ingests one `graph-depsets` record. Cores arrive before sets (the parser
-   * fixes that order), so the core reference resolves here rather than at
-   * `finish`; a set naming a core the blob never wrote keeps its adds and is
-   * counted.
+   * Cores arrive before sets (the parser fixes that order), so the core
+   * reference resolves here rather than at `finish`; a set naming a core the
+   * blob never wrote keeps its adds and is counted.
    */
   depSet(record: DepSetRecord): void {
     const index = this.setBlobIds.length;
@@ -237,9 +223,9 @@ export class GraphBuilder implements GraphBlobSink {
   }
 
   /**
-   * Ingests one `graph-rules` record. A repeated `rule_id` is dropped (first
-   * occurrence wins, as the blob's own reading of a repeated span), so a
-   * watch-mode trace doesn't get two sets of edges for one rule.
+   * A repeated `rule_id` is dropped - first occurrence wins, as the blob's own
+   * reading of a repeated span - so a watch-mode trace doesn't get two sets of
+   * edges for one rule.
    */
   rule(record: RuleRecord): void {
     const nodeId = this.ruleIds.length;

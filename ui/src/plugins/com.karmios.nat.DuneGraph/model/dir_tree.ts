@@ -13,12 +13,9 @@
 // limitations under the License.
 
 /**
- * The build graph's directory hierarchy, as id/parent_id rows.
- *
- * Turns a stream of directory strings (a rule's context `dir`, the containing
- * directory of a dep's path) into one row per *distinct prefix*, which is the
- * shape a tree-mode DataGrid wants (`IdBasedTree`: id + parent_id + a path
- * column) and what the SQL mirror's `dune_dir` is built from - see sql_graph.ts.
+ * The build graph's directory hierarchy, as id/parent_id rows - one row per
+ * distinct path *prefix*. What `dune_dir` is built from; see README.md, *The
+ * SQL mirror*.
  *
  * Deliberately pure: no engine, no graph, no dune vocabulary. Everything
  * dune-specific (what counts as "no directory", which nodes contribute) lives in
@@ -44,10 +41,9 @@ import {splitPath} from './path_tree';
  * One directory. `id` is dense from zero, so it doubles as the rowid of the
  * table these rows are inserted into; `parentId` is absent for a root.
  *
- * `path` is the full path from the root and is the row's identity; `name` is
- * just this segment (with a leading `@` kept, since an alias marker is a literal
- * part of the name rather than hierarchy - the same rule `path_tree.ts` renders
- * leaves by).
+ * `path` is the row's identity; `name` is this segment alone, keeping a leading
+ * `@`, since an alias marker is part of the name rather than hierarchy (the
+ * same rule `path_tree.ts` renders leaves by).
  */
 export interface DirRow {
   readonly id: number;
@@ -58,8 +54,7 @@ export interface DirRow {
 }
 
 /**
- * The containing directory of `path`, i.e. everything before its last segment
- * boundary, or `''` when it has none (a top-level entry).
+ * The containing directory of `path`, or `''` for a top-level entry.
  *
  * Boundaries are {@link splitPath}'s: `/` and `@`, neither of them at index 0
  * (so `parentDir('/usr') === ''`, not `'/'`), and a trailing separator is part
@@ -108,20 +103,19 @@ export class DirTree {
   private readonly ids = new Map<string, number>();
   private readonly dirRows: DirRow[] = [];
 
-  // Interns every directory in `dirs`; the shorthand for a caller that has the
-  // strings in hand and doesn't need the ids as it goes.
+  // For a caller that has all the strings in hand and doesn't need each id as
+  // it goes.
   static from(dirs: Iterable<string>): DirTree {
     const tree = new DirTree();
     for (const dir of dirs) tree.intern(dir);
     return tree;
   }
 
-  // How many directories (i.e. rows) there are.
   get size(): number {
     return this.dirRows.length;
   }
 
-  // Every directory, in id order.
+  // In id order, which is also parent-before-child.
   get rows(): readonly DirRow[] {
     return this.dirRows;
   }
@@ -149,8 +143,7 @@ export class DirTree {
     return id;
   }
 
-  // The id `dir` was interned as, or undefined if it never was. Accepts any
-  // spelling {@link intern} has seen, plus every canonical path.
+  // Accepts any spelling {@link intern} has seen, plus every canonical path.
   idOf(dir: string): number | undefined {
     return this.ids.get(dir);
   }

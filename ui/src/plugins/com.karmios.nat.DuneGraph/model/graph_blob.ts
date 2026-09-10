@@ -13,95 +13,35 @@
 // limitations under the License.
 
 /**
- * Parses the Dune graph blob: the structural build graph, chunked onto
- * instants on the `dune-graph` track (see
- * `doc/dev/trace-graph-perfetto.md`'s "Graph blob" section in the dune repo).
- * Pure - no engine access - so every corner of the grammar is unit-testable in
- * isolation; `trace_graph_source.ts` is the only caller.
+ * Parses the Dune graph blob: the structural build graph, chunked onto instants
+ * on the `dune-graph` track. Pure - no engine access - so every corner of the
+ * grammar is unit-testable in isolation; `trace_graph_source.ts` is the only
+ * caller.
  *
- * Five sections, each reassembled from its chunks by `seq` before parsing:
- *
- * - `graph-dict` - the intern table: `<id>\t<string>`, one per line. The only
- *   section whose values are escaped (`\\`, `\t`, `\n`, C-style) - every other
- *   field anywhere in the blob is an id or a short tag, so nothing else needs
- *   unescaping.
- * - `graph-cores` - one line per shared *core* of a dep set:
- *   `<core_id>\t<dep_ids>`. A core is flat - its members are always dict ids,
- *   never another core - which is what keeps a set's expansion one level deep.
- * - `graph-depsets` - one line per *distinct* dep set:
- *   `<set_id>\t<core_id>\t<add_ids>`, the set being its core's members plus its
- *   own adds. Rule dep sets and dynamic-dep stages share this one table and one
- *   id space.
- * - `graph-rules` - one line per exec-rule span occurrence:
- *   `<rule_id>\t<dir_id>\t<target_file_ids>\t<target_dir_ids>\t<outcome>\t
- *   <forced_by>\t<dep_set>\t<dyn_dep_stages>`.
- * - `graph-deps` - one line per build-dep span:
- *   `<dep_id>\t<resolution>\t<forced_by>\t<status>`.
- *
- * **A rule names its deps by set id rather than listing them.** The same dep
- * set repeats across thousands of rules, so the blob factors the sets out into
- * `graph-depsets` (and their common prefixes into `graph-cores`) and a rule
- * carries one integer. Each dynamic-dep stage is likewise one set id. Nothing
- * here expands them - that's `graph_build.ts`, which owns the flat edge store.
- *
- * `<set_id>` and `<core_id>` are allocated **from 0** in first-sight order, so
- * an empty field is emphatically *not* id 0: see {@link DepSetRecord.coreId}
- * and {@link RuleRecord.depSet}, and the `id()` scanner that keeps them apart.
- * Like `rule_id` they are per-process join keys within one blob, never stable
- * identities.
- *
- * A set is stored sorted (as *text*, so `10` precedes `9`) and duplicate-free,
- * and is split across a core and an add list, so **a rule's declaration order
- * for its deps is not recoverable** - anything that displays them sorts by
- * resolved path instead.
- *
- * An unfinished span (crash/interrupt) is flushed at EOF as a line with `?` in
- * place of `<outcome>`/`<resolution>` and empty `<dep_set>`/`<dyn_dep_stages>`.
- *
- * **`?` and "empty" are not the same thing, and `?` is not the failure
- * signal.** Dune reports a build that failed or was torn down through the
- * ordinary fields - a `D`/`A`/`C` `<outcome>`, a `u` `<resolution>`, a
- * non-empty `<status>` - and reserves `?` for a span that genuinely never
- * ended, i.e. a truncated trace. Likewise a `?` in `<dep_ids>` means "dune
- * could not determine this rule's deps", which is not the empty field's "this
- * rule has none" ({@link RuleRecord.depsUnknown} keeps the two apart, since
- * both parse to no set at all).
- *
- * `<status>` is a later addition to `graph-deps` and every line the current
- * exporter writes carries it; a three-field line (an older trace, same blob
- * version) is read as {@link DepRecord.status} `ok`, which is what the schema
- * meant before the field existed.
+ * The grammar, the five sections and what each field means are in README.md
+ * under "The blob format". The schema itself is dune's, in
+ * `doc/dev/trace-graph-perfetto.md` in the dune repo. What is worth repeating
+ * at this file's own level is the two things the parser is built around:
  *
  * **Sections are parsed as a stream, one chunk at a time** ({@link
  * parseGraphBlob} takes an async iterable of chunk payloads per section, not a
- * reassembled string). On a monorepo-scale trace `graph-rules` alone is ~190 MB
- * of text, and concatenating it before parsing meant holding a second full copy
- * of it - so instead each chunk is parsed as it arrives and the caller is free
- * to drop each chunk as soon as it has been consumed. **A record never spans a
- * chunk**: the exporter splits only on line boundaries, so each chunk is closed
- * off (`LineReader.end`) before the next is pushed, and the dict's chunks are
- * likewise joined on a newline rather than concatenated bare.
+ * reassembled string), and **a record never spans a chunk** - the exporter
+ * splits only on line boundaries, so each chunk is closed off
+ * (`LineReader.end`) before the next is pushed, and the dict's chunks are
+ * joined on a newline rather than concatenated bare.
  *
  * Closing each chunk off is what makes an exporter that emits `\n`-*separated*
- * rows safe as well as one that emits `\n`-*terminated* rows. Dune has since
- * moved to terminated, but it separated at first, dropping the newline at each
- * split - so a carried partial glued the last record of one chunk to the first
- * of the next and destroyed both, exactly `chunks - 1` per section: 13 dict
- * entries, 3 rules, 2 deps and 6 dep sets on the monorepo trace, presenting as
- * rules with no deps and as phantom dynamic-dep stages holding the next chunk's
- * `rule_id`. Keep the guard: it costs nothing against a terminated blob (the
- * flush finds an empty partial, the join adds a skipped blank line) and it is
- * what lets an already-exported trace still load. The chunk-set validation
- * `joinChunks` used to do up front is unchanged, just factored out into
- * {@link orderedChunks}.
+ * rows safe as well as one that emits `\n`-*terminated* rows. Dune emits
+ * terminated now, but a separated blob drops the newline at each split, so a
+ * carried partial would glue the last record of one chunk to the first of the
+ * next and destroy both - exactly `chunks - 1` per section. Keep the guard: it
+ * costs nothing against a terminated blob (the flush finds an empty partial,
+ * the join adds a skipped blank line) and it is what lets an already-exported
+ * trace still load.
  *
  * **Records are handed to a {@link GraphBlobSink} as they are parsed** rather
- * than collected into arrays. That mattered most when a `graph-rules` record
- * held the rule's whole dep list - an array of them *was* the 28M-reference edge
- * set - and it still holds for the dep sets those references moved into (3.8M
- * ids across `graph-cores` and `graph-depsets`): the sink lets `graph_build.ts`
- * copy each record into its columnar store and drop it. Nothing here keeps a
- * record alive past the call.
+ * than collected into arrays, so `graph_build.ts` can copy each into its
+ * columnar store and drop it. Nothing here keeps a record alive past the call.
  */
 
 import type {PerfRun} from '../perf';
@@ -264,9 +204,8 @@ export interface DepRecord {
  * are listed here, so a rule's `depSet` always names a set the sink has already
  * been handed (see {@link parseGraphBlob}).
  *
- * Records are handed over as they are parsed and are not retained by the parser,
- * so a sink that wants to keep one must copy it - see the file header for why
- * the parser doesn't hand back arrays.
+ * Records are handed over as they are parsed and are not retained, so a sink
+ * that wants to keep one must copy it.
  */
 export interface GraphBlobSink {
   strings(table: StringTable): void;
@@ -282,25 +221,20 @@ export interface GraphBlobSink {
  * and 57 MB of text, and a live map of decoded strings costs roughly twice its
  * payload in map slots and per-string headers. See {@link buildStringTable} for
  * the implementation, which keeps the raw payload plus an offset index and
- * slices on demand.
- *
- * `get`/`size` keep the shape a `ReadonlyMap` had, so call sites (and tests)
- * read the same either way.
+ * slices on demand. `get`/`size` keep a `ReadonlyMap`'s shape.
  */
 export interface StringTable {
   // The string interned under `id`, or undefined if the table has no such id.
   get(id: number): string | undefined;
 
-  // How many strings the table holds.
   readonly size: number;
 
   /**
    * Every interned pair, in ascending id order. Only the SQL mirror walks the
-   * whole table - it copies it into `dune_string` so the mirror can store a
-   * dict id wherever it used to repeat a path (see sql_graph.ts) - so this is
-   * deliberately a one-shot iteration rather than a materialized list.
+   * whole table, copying it into `dune_string` so the mirror can store a dict
+   * id wherever it would otherwise repeat a path (see sql_graph.ts) - so this
+   * is deliberately a one-shot iteration rather than a materialized list.
    *
-   * @yields each `[id, string]` pair.
    */
   entries(): Iterable<readonly [number, string]>;
 }
@@ -562,9 +496,9 @@ const CH_COMMA = 0x2c;
  *
  * Scans digits straight out of the field rather than `split(',').map(Number)`:
  * the `<dep_ids>` field alone holds ~28M ids on a monorepo-scale trace, and
- * splitting allocates a string per id - by far the largest allocation the parse
- * used to make. An entry that isn't a plain run of digits yields `NaN`, matching
- * what `Number()` did for it, and the graph builder drops those.
+ * splitting allocates a string per id, which would be by far the parse's
+ * largest allocation. An entry that isn't a plain run of digits yields `NaN`,
+ * as `Number()` would, and the graph builder drops those.
  */
 function idList(field: string): number[] {
   const ids: number[] = [];

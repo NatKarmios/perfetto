@@ -14,10 +14,9 @@
 
 /**
  * The two integer containers the columnar graph core (`graph.ts`,
- * `graph_build.ts`) is built out of. Both exist for the same reason: on a
- * monorepo-scale trace the graph holds ~28M edge references and ~820k nodes
- * (see PERF_PLAN.LOCAL.md), which fits in `Int32Array`s and does not fit in JS
- * arrays, objects or `Map`s.
+ * `graph_build.ts`) is built out of. Both exist because ~28M edge references
+ * and ~820k nodes fit in `Int32Array`s and do not fit in JS arrays, objects or
+ * `Map`s. See README.md, *The graph model*.
  */
 
 // 1M entries - 4 MB - per chunk. Small enough that the slack in the last chunk
@@ -28,18 +27,18 @@ const CHUNK_SIZE = 1 << CHUNK_SHIFT;
 const CHUNK_MASK = CHUNK_SIZE - 1;
 
 /**
- * A growable vector of int32s, stored as fixed-size chunks rather than one
- * contiguous buffer.
+ * A growable vector of int32s, in fixed-size chunks rather than one contiguous
+ * buffer.
  *
- * Chunked because the sizes involved are large and only known at the end. The
- * edge vector is ~115 MB on a monorepo trace: growing that by the usual
- * double-and-copy means a ~190 MB transient peak at the last doubling and up to
- * 2x slack retained afterwards, and flattening it to one exact-sized array at
- * the end means a second full copy. Appending a chunk costs 4 MB and no copy.
+ * Chunked because the sizes are large and only known at the end. The edge
+ * vector is ~115 MB: double-and-copy means a ~190 MB transient peak at the last
+ * doubling and up to 2x slack retained after it, and flattening to one
+ * exact-sized array means a second full copy. Appending a chunk costs 4 MB and
+ * no copy.
  *
- * The price is that a read goes through {@link Int32Vector.at} instead of an
- * index - two extra arithmetic ops, against an access pattern (random reads over
- * 115 MB) that is dominated by cache misses either way.
+ * The price is that a read goes through {@link Int32Vector.at} rather than an
+ * index - two arithmetic ops, against an access pattern (random reads over
+ * 115 MB) dominated by cache misses either way.
  */
 export class Int32Vector {
   private readonly chunks: Int32Array[] = [];
@@ -78,9 +77,8 @@ export class Int32Vector {
     this.chunks[i >>> CHUNK_SHIFT][i & CHUNK_MASK] = value;
   }
 
-  // Appends every entry of `other`, which is left unchanged. Used to join two
-  // separately-accumulated runs into one (see graph_build.ts, which accumulates
-  // rule and dep edges separately and concatenates them into node-id order).
+  // `other` is left unchanged. Joins two separately-accumulated runs, which is
+  // how graph_build.ts gets rule and dep edges into one node-id-ordered vector.
   append(other: Int32Vector): void {
     for (let i = 0; i < other.size; i++) this.push(other.at(i));
   }

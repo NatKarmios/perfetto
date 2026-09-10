@@ -13,20 +13,13 @@
 // limitations under the License.
 
 /**
- * Which timeline tracks exist and what their uris are - the vocabulary, with
- * none of the rendering.
- *
- * Separate from graph_track.ts because three layers need to *name* a track
- * while only one draws it: the controller registers and seats them, the
- * details panel says which track a row came from, and the renderer itself is
- * the only thing that needs canvas. Keeping the names here is what stops the
- * panel and the renderer importing each other, and what lets the controller
- * reach the uris without reaching into views/.
+ * The timeline tracks' vocabulary - kinds, uris, names - with none of the
+ * rendering, which is graph_track.ts. See README.md, *Layout*, for why the two
+ * are separate files.
  */
 
 import type {NodeId} from './graph';
 
-/** Which of the four tracks a row belongs to. */
 export type GraphTrackKind = 'dep' | 'rule' | 'action' | 'process';
 
 export interface GraphTrackSpec {
@@ -41,8 +34,8 @@ const URI_PREFIX = 'com.karmios.nat.DuneGraph#';
  * The four tracks, in the order they are stacked - which is also the order the
  * arrows run in, so a chain reads downwards.
  *
- * `dep`'s uri is the one the old single track used, so a permalink or a saved
- * workspace that names it still resolves to something sensible.
+ * These uris are a compatibility surface: a permalink or a saved workspace can
+ * name one, so renaming one silently breaks it.
  */
 export const GRAPH_TRACKS: readonly GraphTrackSpec[] = [
   {kind: 'dep', uri: `${URI_PREFIX}GraphNodes`, name: 'dep'},
@@ -58,22 +51,18 @@ export function graphTrackUri(kind: GraphTrackKind): string {
   return graphTrackSpec(kind).uri;
 }
 
-// The whole spec, for the renderer, which needs the name as well as the uri.
 export function graphTrackSpec(kind: GraphTrackKind): GraphTrackSpec {
   return BY_KIND.get(kind)!;
 }
 
-// The kind a track uri names, or undefined if it isn't one of ours. The test
-// every navigation path needs, since a selection can land on any of the four
-// (see controller.ts).
+// Undefined for a uri that isn't one of ours. The test every navigation path
+// needs, since a selection can land on any of the four (see controller.ts).
 export function graphTrackKind(uri: string): GraphTrackKind | undefined {
   return BY_URI.get(uri)?.kind;
 }
 
 /**
- * A family, as the rows that are actually on the tracks: the rule it is named
- * for, the dep filed under it (when one is selected), whether the rule ran an
- * action, and every process that action spawned.
+ * A family, as the rows that are actually *on* the tracks.
  *
  * Membership is checked against `positions` rather than assumed, so this lists
  * only rows that exist: a cache-hit rule ran no action, a node whose timing

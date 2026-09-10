@@ -17,23 +17,20 @@
  * `dune_dir` with, and the rules for how many rows it asks for at a time.
  *
  * Split out from dir_explorer_panel.ts because this half is the half worth
- * testing. There is no trace processor in a unit test, so what can be checked
- * is the SQL these functions generate - which table they read, how they order,
- * how they page - and that is exactly where a mistake here would live: an
- * unbounded member query, a missing `ORDER BY`, a `WHERE parent_id = NULL` that
- * silently returns nothing.
+ * testing: there is no trace processor in a unit test, so what can be checked
+ * is the SQL these functions generate, which is exactly where a mistake here
+ * would live - an unbounded member query, a missing `ORDER BY`, a
+ * `WHERE parent_id = NULL` that silently returns nothing.
  *
- * Every query is a probe of one of the two indexes the node tier builds for
- * this pane (`_dune_node(dir_id)`, `_dune_dir(parent_id)` - see sql_graph.ts).
- * Nothing here scans, and nothing walks a subtree: a directory's *subtree*
- * numbers are already stored on its row as the `t_*` rollups, so a level is one
- * index probe. That is what makes the pane affordable on a trace with 19k
- * directories and 818k nodes.
+ * **Every query is an index probe, and nothing here scans or walks a subtree.**
+ * The indexes are `_dune_node(dir_id)` and `_dune_dir(parent_id)`; a
+ * directory's subtree numbers are already stored on its row as the `t_*`
+ * rollups. See README.md, *Performance*.
  *
- * The one recursion is `compressedDirs`, and it is bounded and linear
- * by construction - it follows single-child directories downwards and stops at
- * the first one with anything of its own to show, so it visits at most one row
- * per level of the tree and never fans out.
+ * The one recursion is `compressedDirs`, and it is bounded and linear by
+ * construction - it follows single-child directories downwards and stops at the
+ * first one with anything of its own to show, so it visits at most one row per
+ * level and never fans out.
  */
 
 import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
@@ -195,8 +192,8 @@ function emitGlob(chars: readonly FilterChar[], caseFold: boolean): string {
  * metacharacter literal *and* stops it counting as a wildcard for the purposes of
  * picking an arm. So `foo\*bar` is a case-insensitive search for a literal star,
  * while `lib/\*.cmi*` is a glob whose first star is literal and whose last is a
- * real wildcard. Plain text with no backslashes behaves exactly as before, which
- * is the point: the effortless case must not pay for the escape hatch.
+ * real wildcard. Plain text with no backslashes takes the plain arm untouched:
+ * the effortless case must not pay for the escape hatch.
  *
  * Note the two independent quoting layers here. This one is *GLOB* quoting;
  * `sqlValue` separately does SQL string-literal quoting when the pattern is
