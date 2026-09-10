@@ -60,7 +60,7 @@ import type {ChartRenderContext} from '../dev.perfetto.DataExplorer/query_builde
  * and the detail tables, `src` / `dst` off `dune_edge` and the relation
  * functions.
  */
-export const NODE_ID_COLUMNS: readonly string[] = ['node_id', 'src', 'dst'];
+const NODE_ID_COLUMNS: readonly string[] = ['node_id', 'src', 'dst'];
 
 /**
  * The column a Dune chart should start on, given the columns a query returns.

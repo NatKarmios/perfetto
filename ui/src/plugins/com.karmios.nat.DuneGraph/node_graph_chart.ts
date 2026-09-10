@@ -82,7 +82,7 @@ import {ChartNodeGraphSource, NODE_GRAPH_MAX_NODES} from './node_graph_source';
  * the type), so it is prefixed rather than a bare word like the built-ins:
  * whatever else may come to register a chart type, it will not be this.
  */
-export const NODE_GRAPH_CHART_TYPE = 'dune-node-graph';
+const NODE_GRAPH_CHART_TYPE = 'dune-node-graph';
 
 // The card's icon, reused by every state that stands in for it so a
 // misconfigured chart still reads as this chart rather than as an error.

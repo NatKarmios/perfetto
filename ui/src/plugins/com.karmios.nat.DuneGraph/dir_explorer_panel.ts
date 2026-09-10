@@ -1399,7 +1399,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
  * What {@link renderMirrorNotLoaded} is standing in for, so the prompt names the
  * thing the caller could not draw rather than a generic table.
  */
-export interface MirrorDependant {
+interface MirrorDependant {
   /** The absent surface's own icon, so the prompt still looks like its card. */
   readonly icon: string;
   readonly title: string;

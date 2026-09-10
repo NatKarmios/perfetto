@@ -88,7 +88,7 @@ export interface Phase {
 }
 
 // A phase that hasn't been closed yet. `end()` is idempotent.
-export interface ActivePhase extends Phase {
+interface ActivePhase extends Phase {
   end(): void;
 }
 

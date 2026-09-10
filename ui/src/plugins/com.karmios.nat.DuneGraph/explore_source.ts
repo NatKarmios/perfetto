@@ -104,18 +104,18 @@ export interface ExploreSource {
 }
 
 /** The chain a source always becomes, by id. */
-export interface ExploreSourceIds {
+interface ExploreSourceIds {
   readonly sourceNodeId: string;
   readonly columnsNodeId: string;
 }
 
 /** ...plus the group the chain is wrapped in. */
-export interface GroupedSourceIds extends ExploreSourceIds {
+interface GroupedSourceIds extends ExploreSourceIds {
   readonly groupNodeId: string;
 }
 
 /** A serialized graph plus the ids the source's own nodes ended up with. */
-export interface ExploreSourceGraph {
+interface ExploreSourceGraph {
   readonly json: string;
   readonly ids: GroupedSourceIds;
 }

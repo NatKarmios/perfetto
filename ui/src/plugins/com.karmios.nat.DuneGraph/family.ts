@@ -44,14 +44,14 @@ import {graphTrackDataset} from './graph_track';
 import type {DuneGraphController} from './controller';
 
 // Where one row ended up: its start, and the row it was packed onto.
-export interface RowPos {
+interface RowPos {
   readonly ts: bigint;
   readonly depth: number;
 }
 
 // One track's rows, by the id the track keys them with (a `node_id` on the
 // three node-backed tracks, a `slice.id` on the process track).
-export type TrackPositions = ReadonlyMap<number, RowPos>;
+type TrackPositions = ReadonlyMap<number, RowPos>;
 
 /**
  * Everything the synchronous readers need: where each row was drawn, and which

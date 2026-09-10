@@ -130,7 +130,7 @@ export function sliceAnchor(
  * and this is left empty, so the chip stays identical across the query tab, the
  * selection panel and every DataGrid.
  */
-export interface NodeChipOptions {
+interface NodeChipOptions {
   // Shown instead of the node's own display text. The kind chip and the
   // build/code icon are unaffected: they say what *kind* of thing this is and
   // where its path lives, which an abbreviation doesn't change.

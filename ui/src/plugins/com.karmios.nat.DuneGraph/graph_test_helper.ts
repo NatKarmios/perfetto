@@ -114,13 +114,13 @@ class Names {
 // A fixture's node, as written by a test: a record plus the name it's filed
 // under. `build` is deferred so every name in the fixture is interned before any
 // record refers to one.
-export interface NodeSpec {
+interface NodeSpec {
   readonly kind: 'dep' | 'rule';
   readonly name: string;
   build(names: FixtureNames): DepRecord | RuleRecord;
 }
 
-export interface FixtureNames {
+interface FixtureNames {
   dep(name: string): number;
   rule(name: string): number;
   // The blob `set_id` of a dep set, allocating it (and its core) on first use.
@@ -133,11 +133,11 @@ export interface FixtureNames {
  * share one set (and one core), which is the whole shape the blob's factoring
  * produces and the only way a test above the parser gets to see it.
  */
-export class DepSetRef {
+class DepSetRef {
   constructor(readonly opts: DepSetOpts) {}
 }
 
-export interface DepSetOpts {
+interface DepSetOpts {
   // The set's shared core, if it has one. Optional because most real sets have
   // none (~158k of 205k on a monorepo trace) - the uncored case should be the
   // easy one to write.
@@ -152,7 +152,7 @@ export function depSet(opts: DepSetOpts): DepSetRef {
   return new DepSetRef(opts);
 }
 
-export interface DepOpts {
+interface DepOpts {
   // Names of the deps this one expands to.
   readonly expanded?: readonly string[];
   // Name of the rule this dep resolves to.
@@ -166,7 +166,7 @@ export interface DepOpts {
   readonly forcedBy?: ForcedBySpec;
 }
 
-export interface RuleOpts {
+interface RuleOpts {
   // Static deps as a private, unshared set of their own - sugar for
   // `depSet: depSet({adds: [...]})`, and mutually exclusive with `depSet`.
   readonly staticDeps?: readonly string[];
@@ -186,7 +186,7 @@ export interface RuleOpts {
 
 // A `forced_by` written in names: `{rule}` / `{dep}` for the node-naming kinds,
 // `{path}` for the dune-file kinds, or a bare payload-less kind.
-export type ForcedBySpec =
+type ForcedBySpec =
   | {readonly rule: string}
   // A rule that forced this node while recovering its own deps after failing.
   | {readonly ruleRecovery: string}

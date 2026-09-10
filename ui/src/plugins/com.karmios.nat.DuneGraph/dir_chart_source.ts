@@ -167,7 +167,7 @@ type DirCounts = Readonly<Record<NodeKind, ReadonlyMap<number, number>>>;
  * switches on it exhaustively: each phase is a different thing to show, and
  * "no rows matched" has to be distinguishable from "not asked yet".
  */
-export type ChartSourceState =
+type ChartSourceState =
   | {readonly phase: 'idle'}
   | {readonly phase: 'loading'}
   | {

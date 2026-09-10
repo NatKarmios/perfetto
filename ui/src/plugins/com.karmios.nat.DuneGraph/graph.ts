@@ -241,7 +241,7 @@ interface NodeViewBase {
   readonly forcedBy?: ForcedBy;
 }
 
-export interface DepNode extends NodeViewBase {
+interface DepNode extends NodeViewBase {
   readonly kind: 'dep';
   readonly resolution: DepResolutionKind;
   // How building the dep itself ended, independently of what it resolved to.
@@ -275,14 +275,14 @@ export type GraphNode = DepNode | RuleNode;
 // Why a forward edge exists, straight off the node that carries it: a rule's
 // static/dynamic deps, or a dep's resolution (to a rule, or an expansion).
 // Drives `dune_edge.edge_kind`/`dyn_deps_stage` in the SQL mirror.
-export type EdgeKind = 'static' | 'dynamic' | 'resolved' | 'expanded';
+type EdgeKind = 'static' | 'dynamic' | 'resolved' | 'expanded';
 
 /**
  * One of a node's outgoing edges, as stored: `target` is the prerequisite's node
  * id, or a {@link dangling} (negative) reference to an id the blob named but
  * never recorded. Yielded by {@link BuildGraph.outEdges}.
  */
-export interface OutEdge {
+interface OutEdge {
   readonly target: number;
   readonly edgeKind: EdgeKind;
   // The dynamic-dep stage index, set iff `edgeKind === 'dynamic'`.
@@ -321,7 +321,7 @@ export interface GraphEdge {
 
 // One of a rule's declared outputs: the target path (its `dir` joined onto the
 // relative name the blob recorded), and whether it was declared as a directory.
-export interface RuleTarget {
+interface RuleTarget {
   readonly path: string;
   readonly isDir: boolean;
 }

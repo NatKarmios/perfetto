@@ -17,7 +17,7 @@ import {Icon} from '../../widgets/icon';
 import type {PathTreeGroup, PathTreeLeaf, PathTreeRow} from './path_tree';
 import {countLeaves, groupKey} from './path_tree';
 
-export interface PathTreeViewAttrs<T> {
+interface PathTreeViewAttrs<T> {
   readonly rows: readonly PathTreeRow<T>[];
   // Renders a leaf's own row content (chip, label, actions, ...).
   readonly renderLeaf: (row: PathTreeLeaf<T>) => m.Children;

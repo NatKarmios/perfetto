@@ -56,7 +56,7 @@ import {measure} from './perf';
 // Which timing a row describes. `rule`/`dep` are the node's own span (keyed by
 // `rule_id` / `dep_id`); `action` is a rule's `exec-rule-action` span, keyed by
 // the same `rule_id`.
-export type TimingKind = 'rule' | 'dep' | 'action';
+type TimingKind = 'rule' | 'dep' | 'action';
 
 // The lifecycle track each kind's instants live on.
 const TRACK_BY_KIND: ReadonlyMap<TimingKind, string> = new Map([
@@ -143,7 +143,7 @@ const PAIR_TABLE = '_dune_pair';
 
 // A lifecycle instant's join key, as read back off a slice id (see
 // {@link lifecycleKeysForSliceIds}).
-export interface LifecycleKey {
+interface LifecycleKey {
   readonly kind: TimingKind;
   readonly key: number;
 }
@@ -152,7 +152,7 @@ export interface LifecycleKey {
  * Handle on the built timing table: the node mirror's views join it, and a
  * panel asks it for one node's timing at a time.
  */
-export interface SqlLifecycle extends AsyncDisposable {
+interface SqlLifecycle extends AsyncDisposable {
   // How many (kind, key) rows the table holds.
   readonly rowCount: number;
 

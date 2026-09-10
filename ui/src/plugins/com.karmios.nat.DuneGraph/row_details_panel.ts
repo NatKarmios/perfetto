@@ -50,7 +50,7 @@ import {basename, decorateNode, formatDurNs} from './node_display';
 // The row fields the panel reads. A subset of a track's schema (see
 // graph_track.ts), spelled out here so the panel doesn't depend on the shape of
 // the projection beyond what it actually shows.
-export interface GraphTrackRow {
+interface GraphTrackRow {
   readonly id: number;
   readonly ts: bigint;
   readonly dur: bigint;

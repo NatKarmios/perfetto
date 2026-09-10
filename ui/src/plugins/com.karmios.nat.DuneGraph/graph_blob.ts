@@ -142,7 +142,7 @@ export type RuleOutcome =
  * known - and is deliberately distinct from `unfinished`, which means the span
  * was never closed (see the file header).
  */
-export type DepResolution =
+type DepResolution =
   | {readonly kind: 'rule'; readonly ruleId: number}
   | {readonly kind: 'source'}
   | {readonly kind: 'expanded'; readonly depIds: readonly number[]}
@@ -474,7 +474,7 @@ const MAX_INDEX_SLACK = 8;
  * once. Values are unescaped on read (only this section escapes anything, and
  * only a small minority of entries actually contain an escape).
  */
-export function buildStringTable(chunks: string[]): StringTable {
+function buildStringTable(chunks: string[]): StringTable {
   // Joined on '\n', not '': a section splits only on line boundaries, and a
   // separator-style exporter drops the newline at the split, so concatenating
   // bare would glue each chunk's last entry to the next chunk's first and lose

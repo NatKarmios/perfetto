@@ -137,7 +137,7 @@ let nextVersion = 1;
  * The cap is *not* a phase - the chart reads it off `total`, which is what says
  * whether the rows in hand are the whole answer or a fragment of a larger one.
  */
-export type NodeSetState =
+type NodeSetState =
   | {readonly phase: 'idle'}
   | {readonly phase: 'loading'}
   | {
