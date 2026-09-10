@@ -16,6 +16,7 @@ import './styles.scss';
 import m from 'mithril';
 import {z} from 'zod';
 import {runQueryForQueryTable} from '../../components/query_table/queries';
+import {loadTabs, saveTabs} from '../../components/query_table/tab_persistence';
 import {QueryResultsTab} from './query_result_tab';
 import {type ResultsData, ResultsTable} from './results_table';
 import {undoCommonChatAppReplacements} from '../../base/string_utils';
@@ -35,57 +36,6 @@ import {DetailsShell} from '../../widgets/details_shell';
 
 const QUERY_TABS_STORAGE_KEY = 'perfettoQueryTabs';
 let queryCounter = 0;
-
-const persistedTabSchema = z.object({
-  id: z.string(),
-  editorText: z.string(),
-  title: z.string(),
-});
-
-const persistedTabStateSchema = z.object({
-  tabs: z.array(persistedTabSchema).min(1),
-  activeTabId: z.string(),
-});
-
-type PersistedTabState = z.infer<typeof persistedTabStateSchema>;
-
-function saveTabsToStorage(
-  setting: Setting<boolean>,
-  tabs: QueryEditorTab[],
-  activeTabId: string,
-): void {
-  if (!setting.get()) return;
-
-  const state: PersistedTabState = {
-    tabs: tabs.map((tab) => ({
-      id: tab.id,
-      editorText: tab.editorText,
-      title: tab.title,
-    })),
-    activeTabId,
-  };
-  localStorage.setItem(QUERY_TABS_STORAGE_KEY, JSON.stringify(state));
-}
-
-function loadTabsFromStorage(
-  setting: Setting<boolean>,
-): PersistedTabState | undefined {
-  if (!setting.get()) return undefined;
-
-  const stored = localStorage.getItem(QUERY_TABS_STORAGE_KEY);
-  if (!stored) return undefined;
-
-  try {
-    const parsed = JSON.parse(stored);
-    const result = persistedTabStateSchema.safeParse(parsed);
-    if (!result.success) {
-      return undefined;
-    }
-    return result.data;
-  } catch {
-    return undefined;
-  }
-}
 
 export default class QueryPagePlugin implements PerfettoPlugin {
   static readonly id = 'dev.perfetto.QueryPage';
@@ -149,7 +99,8 @@ export default class QueryPagePlugin implements PerfettoPlugin {
 
     // Debounced save to avoid writing on every keypress
     const debouncedSave = debounce(() => {
-      saveTabsToStorage(persistenceSetting, editorTabs, activeTabId);
+      if (!persistenceSetting.get()) return;
+      saveTabs(QUERY_TABS_STORAGE_KEY, editorTabs, activeTabId);
     }, 1000);
 
     // Multi-tab state: array of editor tabs with active tab tracking
@@ -188,7 +139,9 @@ export default class QueryPagePlugin implements PerfettoPlugin {
     }
 
     // Try to restore tabs from localStorage if persistence is enabled
-    const persistedState = loadTabsFromStorage(persistenceSetting);
+    const persistedState = persistenceSetting.get()
+      ? loadTabs(QUERY_TABS_STORAGE_KEY)
+      : undefined;
     if (persistedState) {
       for (const tab of persistedState.tabs) {
         editorTabs.push({
