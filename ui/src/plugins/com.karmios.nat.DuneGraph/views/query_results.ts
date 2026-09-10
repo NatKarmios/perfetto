@@ -90,7 +90,7 @@ const RELATION_COMPONENT_COLS = ['src_kind', 'src_id', 'dst_kind', 'dst_id'];
 
 // The `dune_node` view columns folded into the `node_id` chip; hidden by default
 // (when `node_id` is present) but still addable from the column menu. `slice_id`
-// is deliberately not one of them - the chip no longer carries it.
+// is deliberately not one of them - the chip does not carry it.
 const NODE_DETAIL_COLS = ['kind', 'orig_id', 'label'];
 
 // `dune_node`'s `dune.forced_by` mirror columns (see sql_graph.ts's doc
@@ -385,8 +385,8 @@ export class DuneQueryResults {
     m.redraw();
 
     // The `dune_*` tables don't exist until the graph has been loaded and
-    // mirrored (it no longer loads with the trace - see controller.ts). Say so
-    // rather than letting the query come back with a bare "no such table".
+    // mirrored, which does not happen with the trace (see controller.ts). Say
+    // so rather than letting the query come back with "no such table".
     const missing = this.missingTables();
     if (missing !== undefined) {
       this.loading = false;

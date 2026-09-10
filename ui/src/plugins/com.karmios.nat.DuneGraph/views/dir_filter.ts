@@ -19,17 +19,14 @@
  *
  * ## Why this is client-side, when the unfiltered tree is not
  *
- * The unfiltered pane descends one indexed query at a time and never needs to
- * know what is deeper than the level it is drawing - `dune_dir`'s stored `t_*`
- * rollups answer "is there anything down there" for free.
- *
- * A *hard* filter cannot work that way. Hiding a directory requires knowing
- * whether its whole subtree holds a match, and the filter is arbitrary and
- * user-typed, so no stored rollup answers it. That leaves computing the rollup,
- * which needs the whole hierarchy at once - so while a filter is active the pane
- * reads all of `dune_dir` in one query (19k rows on the monorepo trace) and
- * everything here is arithmetic rather than SQL. Only member *rows* are still
- * fetched per directory.
+ * The unfiltered pane never needs to know what is deeper than the level it is
+ * drawing: `dune_dir`'s stored `t_*` rollups answer "is there anything down
+ * there" for free. A *hard* filter cannot work that way - hiding a directory
+ * requires knowing whether its whole subtree holds a match, and the filter is
+ * user-typed, so no stored rollup answers it. Computing that rollup needs the
+ * whole hierarchy at once, so while a filter is active the pane reads all of
+ * `dune_dir` in one query (19k rows) and everything here is arithmetic rather
+ * than SQL. Only member *rows* are still fetched per directory.
  *
  * The one invariant this leans on is dir_tree.ts's: ids are dense from zero and
  * **a parent's id is always lower than its children's**. So id order is

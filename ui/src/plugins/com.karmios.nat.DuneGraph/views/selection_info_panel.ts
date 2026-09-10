@@ -470,7 +470,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     const {item: ref, prefix, label} = row;
     return m(
       '.pf-dune-graph__ref',
-      // Forced edges lead with an icon (in place of the old bold text).
+      // Forced edges lead with an icon.
       ref.forced &&
         m(Icon, {
           icon: 'priority_high',

@@ -16,15 +16,12 @@
  * Where the Explorer pane's rows come from - one interface, and the SQL mirror
  * behind the side panel's copy of the pane.
  *
- * dir_explorer_panel.ts is a large component and almost none of it is about
- * data: the expansion set, the inline/bucket decision, the paging, the label
- * arithmetic and the filter menu are all the same whatever is being explored.
- * The seven calls it makes into dir_explorer.ts are the only part that is
- * about *this* tree in *this* mirror, so they are the part that gets an
- * interface.
- * The pane is then mountable somewhere the tree is not `dune_dir` - a Data
- * Explorer chart driven by an arbitrary query's rows - without the rendering
- * being forked to do it.
+ * Almost none of dir_explorer_panel.ts is about data - the expansion set, the
+ * inline/bucket decision, the paging, the label arithmetic and the filter menu
+ * are the same whatever is being explored - so the handful of calls that *are*
+ * about this tree in this mirror are what gets an interface. The pane is then
+ * mountable over something that is not `dune_dir` (a Data Explorer chart's
+ * query rows) without forking the rendering.
  *
  * ## What an implementation has to promise
  *

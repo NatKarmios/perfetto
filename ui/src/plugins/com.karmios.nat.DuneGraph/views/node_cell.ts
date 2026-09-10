@@ -28,13 +28,11 @@
  *   to draw a `JOINID(dune_node.node_id)` column that way - the query tab's
  *   results, a Data Explorer results panel, a dashboard grid.
  *
- * Note what a value-based renderer is allowed to read: its own cell value and
- * the controller, nothing else. In particular not a sibling column of the same
- * row - `SQLDataSource` only SELECTs the columns the grid's model shows (so a
- * hidden sibling is simply absent from `row`) and the grid's own added columns
- * are keyed by uuid rather than by name. A node id is self-sufficient, which is
- * what makes this work at all: resolving one is a range check against the
- * current graph (see `controller.nodeForNodeId`), not a query.
+ * **A value-based renderer may read its own cell value and the controller, and
+ * nothing else** - in particular not a sibling column of the same row. See
+ * README.md, "Gotchas". A node id is self-sufficient, which is what makes this
+ * work at all: resolving one is a range check against the current graph (see
+ * `controller.nodeForNodeId`), not a query.
  */
 
 import m from 'mithril';

@@ -65,12 +65,11 @@ interface DuneGraphPanelAttrs {
  * build-graph node behind the current timeline selection (top), and the set of
  * nodes chosen for the graph (bottom).
  *
- * Before either of those, the panel has a job it didn't used to have: the graph
- * no longer loads itself when the trace opens (see controller.ts), so this is
- * where a not-yet-loaded trace is explained. It shows what the graph would cost
- * to load - measured from the trace, not guessed - and offers the load as an
- * explicit action; on a small trace the load has usually already started by
- * itself and the same screen is just a progress report.
+ * Before either of those, this is where a not-yet-loaded trace is explained -
+ * nothing loads when the trace opens (see controller.ts). It shows what the
+ * graph would cost to load, measured from the trace rather than guessed, and
+ * offers the load as an explicit action; on a small trace the load has usually
+ * started by itself and the same screen is a progress report.
  */
 export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   // Which phase we last scrolled to, so the running one is revealed once per
@@ -393,10 +392,9 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     }
     if (edgeMirrorStep.error !== undefined) {
       // The only way back from a failed edge tier: the "Load graph" button is
-      // off screen once the graph itself is up (see renderAreas), and the offer
-      // callout that used to carry a build button is gone with the second
-      // prompt. A retry after a failure isn't a prompt - the cost was agreed to
-      // when the load was started.
+      // off screen once the graph itself is up (see renderAreas), and nothing
+      // else offers to build it. A retry after a failure is not a second
+      // prompt - the cost was agreed to when the load was started.
       return m(
         Callout,
         {icon: 'warning'},

@@ -54,7 +54,7 @@ export interface LayoutEdge {
 export interface GraphLayout {
   readonly nodes: readonly LayoutNode[];
   readonly edges: readonly LayoutEdge[];
-  // Overall content extent (before padding), used to fit the initial viewBox.
+  // Overall content extent, before padding: what the initial viewBox fits.
   readonly width: number;
   readonly height: number;
 }

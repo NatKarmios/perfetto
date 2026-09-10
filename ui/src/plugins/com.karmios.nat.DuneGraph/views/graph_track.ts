@@ -14,31 +14,18 @@
 
 /**
  * The timeline projection of the graph selection: four tracks, one per kind of
- * row.
+ * row. See README.md, "The four surfaces", for why there are four fixed tracks
+ * rather than one per selected thing, and why their relationship is drawn as
+ * arrows rather than expressed as nesting.
  *
- * `dep` and `rule` carry the selected nodes' own spans, `rule-action` each
- * selected rule's `exec-rule-action` span, and `process` every process slice
- * those actions spawned (see process_sql.ts). Every one is packed by the core's
- * `internal_layout` - none of them declares a `depth` column - so each behaves
- * like an ordinary slice track.
+ * Every track is packed by the core's `internal_layout` - none declares a
+ * `depth` column - so each behaves like an ordinary slice track. The tracks are
+ * registered once and live for the trace; only their contents follow the
+ * selection, through a dataset closure.
  *
- * **Why four fixed tracks rather than one track per selected thing.** A
- * Perfetto track is a stable container: a thread, a CPU, a job slot. Deriving
- * tracks from the selection instead made them churn on every add and remove,
- * needed a registration lifecycle, a cap on how many could exist and somewhere
- * to put whatever didn't fit. These four are registered once and live for the
- * trace; only their *contents* follow the selection, which is what a dataset
- * closure is for.
- *
- * What that gives up is the nesting - dep over its rule over its action over
- * its processes - which is real (all three containments are verified on
- * merlin's trace) but cannot be expressed by four independent tracks. That
- * relationship is drawn instead, as arrows, by the same overlay machinery the
- * Android plugins use for causally-related events: see arrows.ts.
- *
- * Row ids are per track, since they only have to be unique within one: a node's
- * `node_id` on the `dep`/`rule`/`rule-action` tracks (a rule's action is filed
- * under the rule), and a real `slice.id` on the `process` track.
+ * **Row ids are per track**, since they only have to be unique within one: a
+ * node's `node_id` on the `dep`/`rule`/`rule-action` tracks (a rule's action is
+ * filed under the rule), and a real `slice.id` on the `process` track.
  */
 
 import {HSLColor} from '../../../base/color';

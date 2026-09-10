@@ -13,20 +13,14 @@
 // limitations under the License.
 
 /**
- * The arrows that put the four tracks back together.
+ * The arrows that put the four tracks back together - the relationship their
+ * independence gives up (see graph_track.ts). `RelatedEventsOverlay` renders a
+ * list of {@link ArrowConnection}s, each a pair of `{trackUri, ts, depth}`.
  *
- * The tracks are deliberately independent (see graph_track.ts), so the
- * relationship between their rows - a dep is built by a rule, a rule runs an
- * action, an action spawns processes - is drawn rather than encoded as nesting.
- * This is the same mechanism the Android plugins use for causally-related
- * events: `RelatedEventsOverlay` renders a list of {@link ArrowConnection}s,
- * each a pair of `{trackUri, ts, depth}` points.
- *
- * **Only the selected row's chain is drawn.** Drawing every chain at once
- * turned the timeline into a thicket and needed an arbitrary cap to stay
- * affordable; showing one chain instead is both legible and free. The lookups
- * come out of the shared family index (see family.ts), so this stays
- * synchronous, which the overlay requires.
+ * **Only the selected row's chain is drawn.** Every chain at once is a thicket
+ * and needs an arbitrary cap to stay affordable; one chain is both legible and
+ * free. The lookups come out of the shared family index (see family.ts), so
+ * this stays synchronous, which the overlay requires.
  */
 
 import type {ArrowConnection} from '../../../components/related_events/arrow_visualiser';

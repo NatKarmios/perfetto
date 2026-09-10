@@ -14,21 +14,16 @@
 
 /**
  * The Dune explorer side panel: the build's *directory* hierarchy, descended a
- * level at a time.
- *
- * The other two views of the graph both start from a node - the selection panel
- * from whatever is selected on the timeline, the query tab from a query. This
- * one starts from the build's shape, which is the thing you want when you don't
- * yet know which node you're looking for.
+ * level at a time. The view for when you do not yet know which node you are
+ * looking for; the other two both start from one.
  *
  * Where the rows come from is the `source` attr rather than anything in here
  * (see dir_explorer_source.ts), because this pane is mounted twice: as the side
  * panel's Explorer tab, over the SQL mirror, and as a Data Explorer chart, over
- * a query's rows. The side panel's source reads `dune_dir` and `dune_node` out
- * of the mirror (see dir_explorer.ts for the queries) rather than the in-memory
- * graph, because the mirror is where the directory hierarchy exists at all:
- * `BuildGraph` knows each node's directory *string*, and the tree over those
- * strings is interned during the node-tier build and then discarded.
+ * a query's rows. The side panel's source reads the mirror rather than the
+ * in-memory graph because the mirror is where the directory hierarchy exists at
+ * all - `BuildGraph` knows each node's directory *string*, and the tree over
+ * those strings is interned during the node-tier build and then discarded.
  *
  * ## Why this owns its tree state rather than using `LazyTreeNode`
  *
@@ -51,12 +46,11 @@
  *
  * ## What it costs
  *
- * Expanding a directory is two index probes at most (its child directories, and
- * one page of its members if they are to be listed inline); expanding a bucket
- * is one. Nothing here is recursive and nothing scans - see dir_explorer.ts.
- * Toggling a kind on can need a fetch for directories that are already expanded
- * and now cross the inline threshold, and those are issued lazily by the render
- * that needs them rather than all at once by the toggle.
+ * Expanding a directory is two index probes at most, expanding a bucket one;
+ * see README.md, "Performance". Toggling a kind *on* can need a fetch for
+ * directories already expanded that now cross the inline threshold, and those
+ * are issued lazily by the render that needs them rather than all at once by
+ * the toggle.
  */
 
 import m from 'mithril';
@@ -299,7 +293,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.ruleDirs = undefined;
     // Belongs to the source that was replaced, not to this one - and it is not
     // recomputed until an empty filter is applied, so a stale one would sit
-    // under the chip claiming a total from a query that is no longer on screen.
+    // under the chip claiming a total from a query that is off screen.
     this.selectedCount = undefined;
     this.filterLoading = false;
     this.filterError = undefined;
@@ -774,7 +768,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     }
     // Filtered: the roots come from the client-side tree, which already knows
     // which subtrees hold a match (see dir_filter.ts). Unfiltered: the lazy
-    // query, as before.
+    // query.
     const tree = this.tree;
     let visible: {dir: DirEntry; from: string}[];
     if (tree !== undefined) {

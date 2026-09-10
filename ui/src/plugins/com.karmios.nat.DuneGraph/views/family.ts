@@ -13,12 +13,8 @@
 // limitations under the License.
 
 /**
- * What belongs with what: the index every cross-track feature reads.
- *
- * The four timeline tracks are deliberately independent (see graph_track.ts),
- * so anything that relates their rows - the arrows between them, the hover
- * shading, the family list in the details panel - needs the same two answers:
- * which rows belong together, and where each one was drawn. A *family* is one
+ * What belongs with what: the index every cross-track feature reads - the
+ * arrows, the hover shading, the details panel's family list. A *family* is one
  * rule plus everything around it: the selected dep that resolves to it, its
  * action, and the processes that action spawned. Every family has exactly one
  * rule, so a rule id names a family.
