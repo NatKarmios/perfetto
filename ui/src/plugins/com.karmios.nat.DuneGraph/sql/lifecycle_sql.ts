@@ -17,28 +17,20 @@
  *
  * A graph node's timing comes from the lifecycle instants on the `exec-rule` /
  * `build-dep` / `exec-rule-action` tracks: a `-start` paired with its matching
- * `-finish`, or a single collapsed `-resolved`. That pairing used to happen in
- * JS, which meant shipping every instant into the UI - 2.4M rows on the perf
- * plan's monorepo trace, each with three `extract_arg` calls, plus a ~2.4M-entry
- * `Map` from slice id back to node. It is now one SQL pipeline that produces one
- * row per (kind, key), and nothing timing-shaped crosses into JS during a load
- * (see PERF_PLAN.LOCAL.md, stage 2).
+ * `-finish`, or a single collapsed `-resolved`. One SQL pipeline produces one
+ * row per (kind, key), and nothing timing-shaped crosses into JS during a load.
+ * See README.md, "The SQL mirror".
  *
- * Measured on that trace, natively: **7.2 s of engine time and no measurable
- * increase in peak RSS** over loading the trace alone, producing 386,312 rule
- * rows with 127 null durations - exactly the blob's own rule count and its 127
- * `?` (unfinished) outcomes, so the SQL reproduces what the JS pairing did.
+ * **The pairing is deliberately join-free**: `-start` and `-finish` are matched
+ * by numbering each phase's instants per key (`row_number()`) and collapsing
+ * the two rows of an occurrence with a `GROUP BY`. The self-join that phrasing
+ * replaces is the same shape and ran for **223 s** on the monorepo trace, so
+ * this is not a stylistic choice.
  *
- * The pairing is deliberately join-free: `-start` and `-finish` are matched by
- * numbering each phase's instants per key (`row_number()`) and then collapsing
- * the two rows of an occurrence with a `GROUP BY`. The self-join this replaces
- * is the same shape but ran for **223 s** on the monorepo trace, so the rewrite
- * is not a stylistic one.
- *
- * Same "pair in arrival order" heuristic as the JS it replaces: instants carry
- * no occurrence index, so a key seen more than once (watch mode, or a dep built
- * repeatedly) is paired in timestamp order. See the plugin's reported schema
- * gaps.
+ * **Occurrences are paired in arrival order**, because instants carry no
+ * occurrence index: a key seen more than once (watch mode, or a dep built
+ * repeatedly) is paired in timestamp order. A heuristic, and one of the
+ * plugin's reported schema gaps.
  */
 
 import type {Engine} from '../../../trace_processor/engine';
@@ -104,7 +96,7 @@ export const TIMING_TABLE = '_dune_timing';
  * scanning the *whole table per driving row*: 94 µs a probe natively, ~256 µs in
  * the wasm engine, which is **208 s** to project the monorepo trace's 818k nodes
  * once. A `PERFETTO INDEX` on (kind, key) does not change that (it is not
- * used to serve a join probe), and neither does making `kind` an integer.
+ * serve a join probe), and neither does making `kind` an integer.
  *
  * A real primary key does: same rows out (byte-identical counts and duration
  * sums), the same projection takes **2.2 s** in wasm and 818k bare probes drop
@@ -114,25 +106,22 @@ export const TIMING_TABLE = '_dune_timing';
  * plain index on (kind, key) also fixes the asymptotics but is ~4× the lookup
  * cost and an extra index object.
  *
- * This shape was landed once before, in 2026-08, and **reverted**: the table's
- * 33.7 MB of SQLite pages land inside the arena freed after the trace parse, and
- * back then the edge tier needed that arena back - with one row per edge,
- * `CREATE INDEX _dune_edge_dst` over 28.7M rows failed with `database or disk is
- * full` at a 4,125 MB heap where the `PERFETTO TABLE` version finished at
- * 3,110 MB. It was not this table's shape that did it: a *dummy* rowid table of
- * the same 1.2M rows failed the same statement. Any ~34 MB of resident pages was
- * enough, because the edge tier had no margin at all.
+ * **This shape costs 33.7 MB of resident SQLite pages, and that is the thing to
+ * watch.** They land inside the arena freed after the trace parse. While the
+ * edge tier stored one row per edge it needed that arena back, and *any* ~34 MB
+ * of resident pages was enough to make `CREATE INDEX` over 28.7M rows fail with
+ * `database or disk is full` - a dummy rowid table of the same 1.2M rows failed
+ * it identically, so it was never this table's shape that did it.
  *
- * Factoring the edge tier on dep sets removed that constraint: the statement that
- * used to fail no longer exists (the widest index is now 4.03M rows, not 28.7M),
- * and the whole load finishes at 1,530 MB against a 4 GB memory32 ceiling.
- * Measured with this table in place, the end-of-load heap is **1,530.3 MB -
- * unchanged to the decimal**: the pages land in the freed parse arena and nothing
- * afterwards asks for it back. The db file grows 366.8 -> 389.7 MB, and
- * `dune_node` goes from 208.4 s to 2.2 s. If a future change makes the edge tier
- * tight again, this is the first thing to give back - and measure it the way that
- * failure was found: a full load through the wasm engine, reading the heap at
- * the **end**, not after the step you changed.
+ * Factoring the edge tier removed that constraint - the widest index is now
+ * 4.03M rows - and with this table in place the end-of-load heap is 1,530.3 MB,
+ * unchanged to the decimal, against a 4 GB memory32 ceiling. The db file grows
+ * 366.8 -> 389.7 MB.
+ *
+ * So: if a future change makes the edge tier tight again, this is the first
+ * thing to give back. Measure it the way that failure was found - a full load
+ * through the wasm engine, reading the heap at the **end**, not after the step
+ * you changed.
  */
 // Intermediates, dropped as soon as the table above is built - `_dune_instant`
 // and `_dune_seq` are one row per instant, which is the biggest thing this

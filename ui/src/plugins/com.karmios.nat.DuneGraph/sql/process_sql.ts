@@ -31,28 +31,20 @@
  *
  * They get a table of their own because finding them costs an `extract_arg`
  * over *every* slice in the trace, and the track's SQL is regenerated every
- * time the graph selection changes - which on a monorepo-scale trace would be a
- * multi-second full scan per click, run several times over (SliceTrack builds
- * two mipmaps and a row count from the same source). So the arg is extracted
- * once, here, and the track filters this table instead.
+ * time the graph selection changes - a multi-second full scan per click, run
+ * several times over, since SliceTrack builds two mipmaps and a row count from
+ * the same source. So the arg is extracted once, here, and the track filters
+ * this table instead.
  *
- * Keyed by `rule_id`, not by `node_id`, deliberately. Nothing in here knows
- * about the graph, and the consumer this table exists for already has the rule
- * ids of the nodes it wants (graph.ts's `timingKeyOf`). Translating to a
- * `node_id` here would mean joining `_dune_node` on `orig_id` while the table is
- * built - which is a scan of all 818k node rows per process slice unless
- * something has indexed that column.
- *
- * Something now has: the `dune_process` view (see sql_graph.ts) is this table's
- * public face, and it does make that join - lazily, per query, against a
- * partial index the node tier keeps. So a caller wanting nodes reads that view;
- * this table stays the graph-free thing the track filters.
- *
- * The same division holds for the two lookups below. Both are keyed by rule id,
- * not node id: `ruleIdForSliceId` answers "what forced this slice?" for a
- * process-slice selection, and `processesForRuleId` answers the inverse, "what
- * did this rule run?", for the panel that explains a rule. Translating either
- * end to a node is sql_graph.ts's job, which is where the graph lives.
+ * **Keyed by `rule_id`, not `node_id`, deliberately: nothing in this file knows
+ * about the graph.** The consumer it exists for already has the rule ids it
+ * wants (graph.ts's `timingKeyOf`), and translating here would mean joining
+ * `_dune_node` on `orig_id` while the table is built - a scan of all 818k node
+ * rows per process slice. The `dune_process` view (see sql_graph.ts) is this
+ * table's public face and does make that join, lazily and per query, against a
+ * partial index the node tier keeps. The two lookups below hold the same line:
+ * both speak rule ids, and translating either end to a node is sql_graph.ts's
+ * job.
  */
 
 import type {Engine} from '../../../trace_processor/engine';
