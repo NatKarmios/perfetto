@@ -375,7 +375,9 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {name: 'ts', description: 'When the process started.', type: TS},
       {
         name: 'dur_ns',
-        description: 'How long it ran, in nanoseconds.',
+        description:
+          'How long it ran, in nanoseconds. NULL for a process that had not ' +
+          'finished when the trace ended.',
         type: DUR,
       },
       {
@@ -628,7 +630,11 @@ export const DUNE_INTERNAL_TABLES: ReadonlyArray<TableListEntry> = [
     'Materialised edge set, built only when the edge tier is loaded.',
   ],
   ['_dune_edge_all', 'The whole edge set for a directed walk, as one view.'],
-  ['_dune_node_out', "Each node's out-degree, for the walk's cost estimates."],
+  [
+    '_dune_node_out',
+    "A dep node's out-edges as a rowid range into _dune_edge, so a walk finds " +
+      'them without an index on src.',
+  ],
   ['_dune_core', 'Shared dependency cores - dep sets reused across rules.'],
   ['_dune_core_member', 'Membership of those cores.'],
   ['_dune_depset', 'A rule’s dependency set, as a factored reference.'],
