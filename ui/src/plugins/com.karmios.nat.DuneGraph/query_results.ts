@@ -351,6 +351,11 @@ export class DuneQueryResults {
     // the new pinned track actually is. The drawer tab is already there, so it
     // leaves this unset.
     private readonly onAddDebugTrack?: () => void,
+    // Hand the query over to the full-page surface, for a surface that can't
+    // keep working on it - the drawer tab uses it to reopen a one-off '@' query
+    // as a page tab, editor and all. The page *is* that surface, so it leaves
+    // this unset.
+    private readonly onOpenInPage?: (sql: string) => void,
   ) {}
 
   // The little a wrapping surface needs to title itself, without handing it
@@ -650,17 +655,38 @@ export class DuneQueryResults {
   // table mode (as `DataGrid`'s `toolbarItemsRight`) and tree mode (in our own
   // `DataGridToolbar`) so switching views doesn't move any other control.
   private renderToolbarRight(response: QueryResponse): m.Children {
-    // The debug-track button doesn't care about graph nodes - a result with no
-    // node-bearing column is exactly the ad-hoc query you'd most want to plot -
-    // so it sits outside the node-column guard the other controls are behind.
+    // Neither the debug-track nor the "Open in page" button cares about graph
+    // nodes - a result with no node-bearing column is exactly the ad-hoc query
+    // you'd most want to plot, or to carry on working on - so both sit outside
+    // the node-column guard the other controls are behind.
+    const nodeAgnostic = [
+      this.renderDebugTrackButton(response),
+      this.renderOpenInPageButton(response),
+    ];
     if (this.nodeBearingCols(response).length === 0) {
-      return this.renderDebugTrackButton(response);
+      return nodeAgnostic;
     }
     return [
       this.renderViewMenu(response),
       this.renderGraphMenu(response),
-      this.renderDebugTrackButton(response),
+      ...nodeAgnostic,
     ];
+  }
+
+  // Reopens the query on the full-page surface, so a '@' lookup that turned
+  // into real work doesn't have to be retyped there. Rendered only for the
+  // surface that has somewhere to send it (see `onOpenInPage`), and it sends
+  // `response.query` - the whole thing the user submitted, not the single
+  // statement the debug-track button above is limited to.
+  private renderOpenInPageButton(response: QueryResponse): m.Children {
+    const onOpenInPage = this.onOpenInPage;
+    if (onOpenInPage === undefined) return undefined;
+    return m(Button, {
+      label: 'Open in page',
+      icon: 'open_in_new',
+      title: 'Continue this query on the Dune query page',
+      onclick: () => onOpenInPage(response.query),
+    });
   }
 
   // The core "Add debug track" affordance, reused verbatim from the standard

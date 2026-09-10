@@ -20,7 +20,7 @@ import {DuneQueryResults} from './query_results';
 
 /**
  * A details-drawer tab that runs SQL over the Dune graph tables and lets the
- * user push result rows into the graph selection. Driven by the `&` omnibox
+ * user push result rows into the graph selection. Driven by the `@` omnibox
  * mode / "Dune: query graph" command, which call `runQuery`.
  *
  * Everything below the tab title is `DuneQueryResults`, which knows nothing
@@ -30,8 +30,20 @@ import {DuneQueryResults} from './query_results';
 export class DuneQueryTab implements Tab {
   private readonly results: DuneQueryResults;
 
-  constructor(trace: Trace, controller: DuneGraphController) {
-    this.results = new DuneQueryResults(trace, controller);
+  constructor(
+    trace: Trace,
+    controller: DuneGraphController,
+    // Where the results view's "Open in page" button sends the query. Owned by
+    // the caller because the route belongs to the plugin's entry point, not to
+    // the drawer tab or the results view (see index.ts).
+    onOpenInPage?: (sql: string) => void,
+  ) {
+    this.results = new DuneQueryResults(
+      trace,
+      controller,
+      undefined,
+      onOpenInPage,
+    );
   }
 
   getTitle(): string {

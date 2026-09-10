@@ -192,11 +192,30 @@ export default class implements PerfettoPlugin {
       callback: () => dumpPerfRuns(),
     });
 
+    // The same SQL, given a whole page: several queries kept side by side, each
+    // with its own editor and results, plus the history sidebar and the
+    // graph-load state shown before a query is run rather than as an error
+    // after it. Alongside the drawer tab below, not instead of it - the '@'
+    // mode is the fast one-off lookup next to the timeline you are reading,
+    // this is where a session of exploring the graph happens. Built once here
+    // and rendered from the route because the page's tabs and their results
+    // have to survive navigating away and back (see query_page.ts). Built
+    // before the drawer tab so the tab's "Open in page" can hand it a query.
+    const queryPage = new DuneQueryPage(trace, controller);
+
     // SQL-over-the-graph: a details-drawer tab fed by an omnibox mode (type a
     // query after '@') and an equivalent command that activates that mode. The
     // input reuses the core SQL mode's look (wide black monospace box) via
     // `pf-omnibox--query-mode`, recoloured orange by `pf-dune-query-mode`.
-    const queryTab = new DuneQueryTab(trace, controller);
+    //
+    // A one-off lookup that turns into real work escapes to the page above via
+    // the results view's "Open in page" button: a fresh page tab holding the
+    // same SQL, run on arrival so it isn't an empty results pane, and then the
+    // navigation - which lives here because the route is this file's to know.
+    const queryTab = new DuneQueryTab(trace, controller, (sql) => {
+      queryPage.addTab(undefined, sql, true);
+      trace.navigate(`#!${QUERY_PAGE_ROUTE}`);
+    });
     trace.tabs.registerTab({uri: QUERY_TAB_URI, content: queryTab});
 
     trace.omnibox.registerMode({
@@ -219,15 +238,8 @@ export default class implements PerfettoPlugin {
       callback: () => trace.omnibox.activateRegisteredMode(QUERY_TRIGGER),
     });
 
-    // The same SQL, given a whole page: several queries kept side by side, each
-    // with its own editor and results, plus the history sidebar and the
-    // graph-load state shown before a query is run rather than as an error
-    // after it. Alongside the drawer tab above, not instead of it - the '@'
-    // mode is the fast one-off lookup next to the timeline you are reading,
-    // this is where a session of exploring the graph happens. Built once here
-    // and rendered from the route because the page's tabs and their results
-    // have to survive navigating away and back (see query_page.ts).
-    const queryPage = new DuneQueryPage(trace, controller);
+    // The page object itself is built above, before the drawer tab that sends
+    // queries to it; the route only renders it.
     trace.pages.registerPage({
       route: QUERY_PAGE_ROUTE,
       render: () => queryPage.render(),
