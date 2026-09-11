@@ -14,7 +14,7 @@
 
 /**
  * The timeline projection of the graph selection: four tracks, one per kind of
- * row. README.md, "The four surfaces", says why four fixed tracks rather than
+ * row. ARCHITECTURE.md, "The surfaces, in code", says why four fixed tracks rather than
  * one per selected thing.
  *
  * Every track is packed by the core's `internal_layout` - none declares a

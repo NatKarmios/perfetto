@@ -16,7 +16,7 @@
  * Node timing, entirely in SQL: one pipeline producing one row per (kind, key),
  * with nothing timing-shaped crossing into JS during a load.
  *
- * **README.md, "Timing", is the reference** - why the pairing is join-free,
+ * **ARCHITECTURE.md, "Timing", is the reference** - why the pairing is join-free,
  * why occurrences are paired in timestamp order, and why `_dune_timing` has a
  * real primary key rather than being a `PERFETTO TABLE`.
  */
@@ -76,7 +76,7 @@ export function timingKindCode(kind: TimingKind): number {
 export const TIMING_TABLE = '_dune_timing';
 
 // A plain `WITHOUT ROWID` table keyed on (kind, key), not a `PERFETTO TABLE`.
-// **README.md, "Timing", has the measurements and the page budget** - including
+// **ARCHITECTURE.md, "Timing", has the measurements and the page budget** - including
 // why this table is the first thing to give back if the edge tier ever gets
 // tight again. `kind` is stored as a code (see {@link KIND_CODES}) so both
 // halves of the key are integers and the probe is one b-tree descent.

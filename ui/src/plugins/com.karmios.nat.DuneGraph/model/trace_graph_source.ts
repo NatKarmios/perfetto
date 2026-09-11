@@ -132,8 +132,8 @@ export class TraceGraphSource implements GraphSource {
     };
   }
 
-  // The structural graph, straight off the blob - see README.md, "The load
-  // path". Throws rather than returning an empty graph when the `dune-graph`
+  // The structural graph, straight off the blob - see ARCHITECTURE.md, "The
+  // load path". Throws rather than returning an empty graph when the `dune-graph`
   // track is absent: a trace without one should fail loudly.
   //
   // Two passes: a metadata query validating each section's chunk set without

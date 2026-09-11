@@ -15,7 +15,7 @@
 /**
  * The build graph: a columnar store plus the walks over it.
  *
- * **README.md, "The graph model", is the reference**: the two kinds of node and
+ * **ARCHITECTURE.md, "The graph model", is the reference**: the two kinds of node and
  * where each comes from, why every node is a dense integer {@link NodeId} that
  * the SQL mirror reuses verbatim, why everything lives in typed-array columns
  * with the edges in one CSR, and why the small enums below are append-only.
@@ -350,7 +350,7 @@ export interface GraphColumns {
   readonly edgeTarget: Int32Vector;
 
   // The blob's factored dep sets, kept alongside the flat CSR rather than
-  // discarded once expanded (see README.md, "The blob format"): the SQL edge
+  // discarded once expanded (see ARCHITECTURE.md, "The blob format"): the SQL edge
   // mirror stores *this* form - where the row count falls ~5x - and the only
   // other way back to it would be re-parsing the blob. ~4.2M ints.
   //

@@ -17,7 +17,7 @@
  * the graph can be queried by relationship in the same engine as the rest of
  * the trace.
  *
- * **README.md, "The SQL mirror", is the reference**: the table inventory, what
+ * **ARCHITECTURE.md, "The SQL mirror", is the reference**: the table inventory, what
  * each column means, the two tiers and the order between them, and the three
  * mechanisms (interned strings, kind-is-id, coded enums) that make it fit.
  * dune_tables.ts carries the same inventory as user-facing documentation, and
@@ -131,9 +131,9 @@ const YIELD_EVERY = 10;
 
 // Edge count past which the edge tier refuses to build: past it the build does
 // not get slow, it takes the engine down. A refusal rather than a question -
-// there is no answer that would make the build survive. See README.md, "The one
-// question, and the one refusal", for why it counts edges and not rows, and
-// "Performance" for the measurement behind the number.
+// there is no answer that would make the build survive. See ARCHITECTURE.md,
+// "The one question, and the one refusal", for why it counts edges and not
+// rows, and "Performance" for the measurement behind the number.
 export const EDGE_HARD_LIMIT = 100_000_000;
 
 // Where a build has got to. `phase` is an id from one of the manifests, so a
@@ -785,8 +785,8 @@ function dirView(): string {
 // `SliceTable::Id`; `ts` / `dur_ns` come off the same row, making the join one
 // primary-key probe per process slice.
 //
-// `nullif(s.dur, -1)` is what keeps `dur_ns` honest - see README.md's gotcha on
-// the -1 sentinel. The same normalisation appears again as the `it.dur >= 0n`
+// `nullif(s.dur, -1)` is what keeps `dur_ns` honest - see README.md, "Traps
+// worth knowing". The same normalisation appears again as the `it.dur >= 0n`
 // guard behind {@link ProcessDetails} and has to: `scalarsForRule` reads
 // `s.dur` off the raw table, so it never passes through this view.
 //
@@ -1475,7 +1475,7 @@ function depSetAddJoin(set: string): string {
 //
 // **Each arm is spliced into its own recursive term** rather than joined as one
 // union. That is the load-bearing decision in this file and it was measured -
-// see README.md, "Why it is shaped this way", for the numbers. SQLite allows a
+// see ARCHITECTURE.md, "Why it is shaped this way", for the numbers. SQLite allows a
 // recursive CTE several recursive terms as long as each references the
 // recursive table once, which is what makes it expressible at all.
 //
@@ -2160,7 +2160,7 @@ function wrapperBody(fn: string, param: string): string {
 
 // The eight transitive-relationship functions plus their `!` list-macro
 // wrappers. **The inventory is documented twice for readers who are not this
-// file's**: README.md, "The SQL mirror", and dune_tables.ts's DUNE_FUNCTIONS /
+// file's**: ARCHITECTURE.md, "The SQL mirror", and dune_tables.ts's DUNE_FUNCTIONS /
 // DUNE_MACROS, which is what the query page's sidebar shows.
 //
 // What belongs here instead is why there are eight rather than one general

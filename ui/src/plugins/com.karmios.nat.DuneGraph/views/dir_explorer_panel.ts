@@ -21,7 +21,7 @@
  * this pane is mounted twice - as the side panel's Explorer tab over the SQL
  * mirror, and as a Data Explorer chart over a query's rows.
  *
- * **README.md, "The Explorer pane", is the design**: the two source shapes, why
+ * **ARCHITECTURE.md, "The Explorer pane", is the design**: the two source shapes, why
  * the pane owns its tree state rather than using `LazyTreeNode`, how the
  * narrow-to-this-directory brush works, and why the hard filter is client-side.
  */

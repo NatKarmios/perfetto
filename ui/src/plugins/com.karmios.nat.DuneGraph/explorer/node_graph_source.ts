@@ -37,7 +37,7 @@ import type {NodeId} from '../model/graph';
 
 // How many nodes the chart draws at once - and so, since it draws all or none,
 // the most a query may name before the card refuses it. The three limits that
-// agree on a few hundred are in README.md, "Performance"; 400 rather than 200
+// agree on a few hundred are in ARCHITECTURE.md, "Performance"; 400 rather than 200
 // because the pathological case, every node on one rank, is not the usual one.
 // node_graph_chart.ts argues the all-or-nothing where it acts on it.
 export const NODE_GRAPH_MAX_NODES = 400;

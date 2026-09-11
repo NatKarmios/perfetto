@@ -17,7 +17,7 @@
  * many matches each holds, and what the tree looks like once the non-matching
  * parts are gone.
  *
- * **README.md, "The hard filter is client-side", is the why** - why none of
+ * **ARCHITECTURE.md, "The hard filter is client-side", is the why** - why none of
  * this is SQL, which dir_tree.ts invariant makes the rollup one array pass, and
  * why the compression is re-run here rather than composed with the SQL one.
  *

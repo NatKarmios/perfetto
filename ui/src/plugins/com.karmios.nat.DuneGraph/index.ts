@@ -182,7 +182,7 @@ export default class implements PerfettoPlugin {
       callback: () => controller.buildEdgeMirror(),
     });
 
-    // The full-page query surface (see README.md, "The four surfaces"). Built
+    // The full-page query surface (see ARCHITECTURE.md, "The surfaces, in code"). Built
     // once here and rendered from the route, because the page's tabs and their
     // results have to survive navigating away and back; and built *before* the
     // drawer tab, so that tab's "Open in page" can hand it a query.

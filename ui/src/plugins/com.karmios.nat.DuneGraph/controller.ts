@@ -69,7 +69,7 @@ import {
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 
-// The one soft load gate - see README.md, "The one question, and the one
+// The one soft load gate - see ARCHITECTURE.md, "The one question, and the one
 // refusal", for what it gates and why it is measured in rows.
 //
 // The id lives here rather than in index.ts, which registers it, so the gate
@@ -82,7 +82,7 @@ export const AUTO_LOAD_ROW_LIMIT_SETTING =
 
 // What that setting ships as, and the value used when it is not registered at
 // all (a controller built in a unit test). 2M rows is ~6 s of edge tier, on the
-// measurement in README.md's performance section. It decides with room to
+// measurement in ARCHITECTURE.md, "Performance". It decides with room to
 // spare on the sample traces: the monorepo one estimates 5.7M rows, the three
 // small ones 10k-27k.
 export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
@@ -164,7 +164,7 @@ function errorMessage(e: unknown): string {
  * Holds the extracted build graph plus the active source, and knows how to
  * (re)load it. The sidebar panel reads state directly off this each render.
  *
- * **README.md, "The load path", is the contract**: three staged steps, none of
+ * **ARCHITECTURE.md, "The load path", is the contract**: three staged steps, none of
  * which runs when the trace opens, each idempotent and pulling in what it
  * depends on, all through one queue, with a `reload()` generation counter that
  * drops whatever was queued behind it.

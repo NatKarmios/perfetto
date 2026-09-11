@@ -15,7 +15,7 @@
 /**
  * Load-time instrumentation for the Dune graph plugin: a {@link PerfRun}
  * accumulates named phases and dumps them as a console table when the run
- * finishes. See README.md, "Performance", for what it produces and how to read
+ * finishes. See ARCHITECTURE.md, "Performance", for what it produces and how to read
  * a heap delta.
  *
  * Two properties that constrain how a caller may use it:

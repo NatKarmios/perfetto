@@ -17,7 +17,7 @@
  * rows, drawn as the part of the build's directory tree they landed in.
  *
  * This file is the registration and the states around it; dir_chart_source.ts
- * is the data. **README.md, "The Explorer pane", covers both** - what the card
+ * is the data. **ARCHITECTURE.md, "The Explorer pane", covers both** - what the card
  * is a picture of, and how the narrow-to-this-directory brush works.
  */
 

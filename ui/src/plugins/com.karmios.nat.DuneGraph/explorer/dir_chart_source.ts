@@ -17,7 +17,7 @@
  * hierarchy comes from the mirror, and the chart's rows decide which of those
  * directories are drawn.
  *
- * **README.md, "The Explorer pane", is the design** - the two source shapes,
+ * **ARCHITECTURE.md, "The Explorer pane", is the design** - the two source shapes,
  * why counts and members are bounded differently, which way each query joins,
  * and what `DirExplorerSource` asks an implementation to promise. This file is
  * the queries.

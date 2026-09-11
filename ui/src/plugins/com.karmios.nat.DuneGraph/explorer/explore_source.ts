@@ -18,7 +18,7 @@
  * node_source.ts's nodes. What varies between them is a table name, a column
  * list and a name; the *shape* of the hand-off is here.
  *
- * **README.md, "The four surfaces", explains the shape**: why each source
+ * **ARCHITECTURE.md, "The surfaces, in code", explains the shape**: why each source
  * becomes a `sql_source -> modify_columns` chain in a group, and why nothing is
  * exported to a dashboard.
  *

@@ -14,7 +14,7 @@
 
 /**
  * The timeline tracks' vocabulary - kinds, uris, names - with none of the
- * rendering, which is graph_track.ts. See README.md, *Layout*, for why the two
+ * rendering, which is graph_track.ts. See ARCHITECTURE.md, "Layout", for why the two
  * are separate files.
  */
 

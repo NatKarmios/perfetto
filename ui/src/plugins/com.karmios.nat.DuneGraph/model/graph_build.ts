@@ -15,7 +15,7 @@
 /**
  * Builds the columnar {@link BuildGraph} from the blob's records;
  * {@link GraphBuilder} is the {@link GraphBlobSink} the parser streams into.
- * See README.md, "The load path", for the streaming and the id rewrite.
+ * See ARCHITECTURE.md, "The load path", for the streaming and the id rewrite.
  *
  * **Dep sets are expanded here, and the store stays flat**, because the flat
  * CSR is what makes the walks fast and it is not the memory problem - the SQL

@@ -16,7 +16,7 @@
  * Where the Explorer pane's rows come from: one interface, and the SQL mirror
  * behind the side panel's copy of the pane.
  *
- * **README.md, "The Explorer pane", is the contract** - what an implementation
+ * **ARCHITECTURE.md, "The Explorer pane", is the contract** - what an implementation
  * has to promise about ids, compression, paging and `version`, and why the two
  * implementations drive different halves of the pane. Getting any of it wrong
  * is silent, so read it before writing a third one.

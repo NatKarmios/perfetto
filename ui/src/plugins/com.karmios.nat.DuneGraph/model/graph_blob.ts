@@ -17,8 +17,8 @@
  * on the `dune-graph` track. Pure - no engine access - so every corner of the
  * grammar is unit-testable; `trace_graph_source.ts` is the only caller.
  *
- * **The grammar, the five sections and every field are in README.md, "The blob
- * format"**; the schema itself is dune's, in `doc/dev/trace-graph-perfetto.md`
+ * **The grammar, the five sections and every field are in ARCHITECTURE.md,
+ * "The blob format"**; the schema itself is dune's, in `doc/dev/trace-graph-perfetto.md`
  * in the dune repo. Two things the parser is built around:
  *
  * **Sections are parsed as a stream, one chunk at a time**, and **a record

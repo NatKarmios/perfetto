@@ -16,7 +16,7 @@
  * The two integer containers the columnar graph core (`graph.ts`,
  * `graph_build.ts`) is built out of. Both exist because ~28M edge references
  * and ~820k nodes fit in `Int32Array`s and do not fit in JS arrays, objects or
- * `Map`s. See README.md, *The graph model*.
+ * `Map`s. See ARCHITECTURE.md, "The graph model".
  */
 
 // 1M entries - 4 MB - per chunk. Small enough that the slack in the last chunk

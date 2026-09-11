@@ -21,7 +21,7 @@
  *
  * **A value-based renderer may read its own cell value and the controller, and
  * nothing else** - in particular not a sibling column of the same row (see
- * README.md, "Gotchas"). A node id is self-sufficient, which is what makes this
+ * ARCHITECTURE.md, "Gotchas"). A node id is self-sufficient, which is what makes this
  * work: resolving one is a range check against the current graph, not a query.
  */
 

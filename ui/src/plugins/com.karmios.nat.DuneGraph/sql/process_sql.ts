@@ -19,7 +19,7 @@
  * `job-<n>` track, tagged with a `debug.dune.forced_by` arg naming what pulled
  * it into the build.
  *
- * **README.md, "Processes", is the reference**: why they are not graph nodes,
+ * **ARCHITECTURE.md, "Processes", is the reference**: why they are not graph nodes,
  * why they get a table of their own, why both halves of the filter matter, and
  * why the table is keyed by `rule_id` rather than `node_id`. Nothing in this
  * file knows about the graph, and the two lookups below hold that line: both

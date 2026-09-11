@@ -25,7 +25,7 @@
  * stored on a directory's row as the `t_*` rollups). The one recursion is
  * `compressedDirs`, bounded and linear by construction.
  *
- * README.md, "The path filter's syntax", is the filter's user-facing contract.
+ * ARCHITECTURE.md, "The path filter's syntax", is the filter's user-facing contract.
  */
 
 import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
@@ -153,7 +153,7 @@ function emitGlob(chars: readonly FilterChar[], caseFold: boolean): string {
   return out;
 }
 
-// Typed text to a {@link PathFilter}, per README.md, "The path filter's
+// Typed text to a {@link PathFilter}, per ARCHITECTURE.md, "The path filter's
 // syntax": a wildcard picks the glob arm, anything else the case-insensitive
 // substring arm. Undefined for blank text, which is "no filter" rather than
 // "match everything" - the caller uses it to clear.
@@ -539,7 +539,7 @@ export async function dirMemberIds(
 }
 
 // The whole of `dune_dir`, in one go, and only when a filter is applied - see
-// README.md, "The hard filter is client-side". 19k rows on the monorepo trace:
+// ARCHITECTURE.md, "The hard filter is client-side". 19k rows on the monorepo trace:
 // a few MB and one query, cheaper than the per-level queries it replaces and
 // paid once per filter rather than once per click.
 export async function allDirs(engine: Engine): Promise<DirEntry[]> {
