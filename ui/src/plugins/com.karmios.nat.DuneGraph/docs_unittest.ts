@@ -26,7 +26,8 @@ import {describe, expect, test} from 'vitest';
  * - every `README.md, "X"` / `ARCHITECTURE.md, "X"` in the plugin's sources
  *   names a heading of that file;
  * - every `[text](#anchor)` inside the two files resolves to one of its own
- *   headings, so the Contents lists cannot rot either.
+ *   headings, so the Contents lists cannot rot either;
+ * - AGENTS.md still names all three of the documents it exists to route to.
  *
  * A pointer may name a *prefix* of a heading, but only one the heading then
  * breaks off with a separator - several headings carry a trailing file list
@@ -138,8 +139,13 @@ describe('doc pointers', () => {
     },
   );
 
-  test('the two docs point at each other', () => {
+  test('the docs point at each other', () => {
     expect(docFor('README')).toContain('ARCHITECTURE.md');
     expect(docFor('ARCHITECTURE')).toContain('README.md');
+    // AGENTS.md is the map: it has to name all three or it is not one.
+    const agents = docFor('AGENTS');
+    for (const name of ['README.md', 'ARCHITECTURE.md', 'UPSTREAM.md']) {
+      expect(agents, `AGENTS.md does not mention ${name}`).toContain(name);
+    }
   });
 });

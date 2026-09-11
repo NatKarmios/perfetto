@@ -37,11 +37,14 @@ otherwise record:
 
 ```sh
 DUNE_TRACE=+graph dune build @install
-dune trace perfetto --trace-file _build/trace.csexp -o build.perfetto
+dune trace perfetto --trace-file _build/trace.csexp | gzip > build.perfetto.gz
 ```
 
 The first command leaves a `_build/trace.csexp`; the second converts it to the
-Perfetto format this plugin reads. Open `build.perfetto` in the UI as normal.
+Perfetto format this plugin reads, writing to stdout when given no `-o`. Open
+`build.perfetto.gz` in the UI as normal — it reads gzipped traces directly, and
+the graph is carried as text, so the pipe is well worth it: the reference
+monorepo trace is 378 MB raw and 52 MB gzipped.
 
 A trace recorded without `+graph` still loads — it just has no build graph in
 it, and the plugin says so rather than showing an empty tree.
@@ -115,24 +118,27 @@ only while the Data Explorer is the open page.
 
 ## Loading the graph
 
-Nothing loads when the trace opens. On a large trace the load is minutes long
-and would hold up the whole UI, so the plugin registers its surfaces and waits.
+Most traces load themselves: open one and the graph is there. Reading the graph
+does cost real time, though — minutes on a very large build — so the plugin
+sizes the job up first and only gets on with it when the answer is small enough.
+Past that it leaves the side panel showing what a load would involve, and waits
+for you to press **Load graph**.
 
-There is exactly **one** number you are asked about, and one thing the plugin
-refuses to do:
+Where that line falls is yours to set:
+**`Dune graph: load without asking below (edge rows)`** in the settings,
+2,000,000 by default. Set it to `0` to be asked every time, or to something
+enormous never to be asked at all; it takes effect the next time you open a
+trace. The estimate it is compared against comes from the size of the graph in
+the trace rather than from reading it, so it is available before anything
+expensive happens — and saying yes buys the whole load, so you are not stopped
+and asked again partway through.
 
-- **`Dune graph: load without asking below (edge rows)`** (default 2,000,000) is
-  the gate. Below it the graph loads itself as soon as the trace opens; above
-  it, opening the trace costs nothing and the side panel shows what a load would
-  involve and waits to be asked. The estimate comes from the blob's byte size
-  rather than a parse, so it is available before any expensive work. Saying yes
-  buys the whole load — you are not asked again. `0` always asks; a large enough
-  number never does. Takes effect the next time a trace is opened.
-- Past **100,000,000 edges** the edge tables are not built at all, because
-  materialising them would exhaust the trace processor. The panel says so.
-  Everything except `dune_edge` and the relation functions still works.
+The one thing you cannot ask for is a build past **100,000,000 edges**: the edge
+tables are not built at that size, because materialising them would exhaust the
+trace processor. The panel says so when it happens, and everything except
+`dune_edge` and the relation functions still works.
 
-While a load runs the panel lists every step and ticks it off, so a minutes-long
+While loading, the panel lists and checks off each step, so a minutes-long
 build shows what is left rather than only what it is doing now. Each load also
 prints a per-phase breakdown to the devtools console when it finishes, and
 leaves `dune:`-prefixed entries in the profiler's Timings track.
@@ -165,6 +171,7 @@ Plus eight relation functions, forward and reverse, bounded and unbounded,
 all-edges and forced-only:
 
 ```sql
+-- dune_descendants(node_id, max_steps, step_kind)
 -- Everything this rule transitively needs, at most 3 hops out.
 SELECT * FROM dune_descendants(42, 3, NULL);
 -- Everything that depends on it, unbounded and cycle-safe.
@@ -189,18 +196,9 @@ keeps its node links.
 
 ## Limits you can hit
 
-- **The node graph chart draws at most 400 nodes**, and it is all or nothing: a
-  query naming more is refused by name rather than drawn in part. A partial
-  picture of a build graph is not a thinner answer, it is a misleading one — the
-  nodes that would survive are the ones with no dependencies between them, so
-  the card would show a scatter of unconnected dots. Narrow the query and the
-  graph of what is left will be readable too.
-- **The directory chart has no cap**, whatever its query names: it aggregates
-  inside the engine, so its tree is bounded by the build's directory count
-  rather than by your query.
-- **A path filter in the Explorer is submit-on-Enter**, with no
-  filter-as-you-type, because applying one can cost a scan of every dependency
-  in the build.
+- **The node graph chart draws at most 400 nodes**, all or nothing: a query
+  naming more is refused rather than drawn in part, and says how many it found.
+  Narrow the query and the graph of what is left will be readable too.
 - **A very large trace may need a 64-bit browser.** The reference monorepo trace
   peaks at ~4.5 GB and cannot be loaded by a 32-bit wasm build at all, whatever
   the plugin does.
@@ -219,10 +217,3 @@ keeps its node links.
   `dune_dir` and `orig_id` is the trace-side id dune used; both collide with
   unrelated `node_id`s by construction, so joining either to `dune_node.node_id`
   gives you nonsense rather than an error.
-- **A graph that looks suspiciously edgeless means an old trace.** The blob's
-  `version` arg does not distinguish the two graph layouts dune has emitted, and
-  the plugin only reads the newer one. Pointed at an older blob it finds rules
-  with no dependencies and warns on the console rather than failing — so **check
-  the console** if the graph comes out bare.
-- **A missing `graph-cores` section is normal**, not a truncated trace: a build
-  where no dependency set was large enough to be worth sharing emits none.
