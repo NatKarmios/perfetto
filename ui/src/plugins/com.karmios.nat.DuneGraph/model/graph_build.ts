@@ -13,23 +13,21 @@
 // limitations under the License.
 
 /**
- * Builds the columnar {@link BuildGraph} from the blob's records.
+ * Builds the columnar {@link BuildGraph} from the blob's records;
  * {@link GraphBuilder} is the {@link GraphBlobSink} the parser streams into.
- * See README.md, *The load path*, for the streaming and the id rewrite.
+ * See README.md, "The load path", for the streaming and the id rewrite.
  *
- * **Dep sets are expanded here, and the store stays flat.** The blob names a
- * rule's deps by set id (`graph-depsets`, itself factored over `graph-cores`);
- * this builder expands each set into the same flat CSR the store has always had,
- * because that CSR is what makes the graph walks fast and it is not the memory
- * problem - the SQL edge mirror is (see PERF_SUMMARY.LOCAL.md). Expansion is a
- * plain concatenation of the core's members and the set's adds: the two are
- * disjoint by construction, so there is deliberately no `Set` and no dedup pass
- * on the 28M-reference path. That invariant is the exporter's, not ours, so
- * violations are counted and warned about rather than trusted silently.
+ * **Dep sets are expanded here, and the store stays flat**, because the flat
+ * CSR is what makes the walks fast and it is not the memory problem - the SQL
+ * edge mirror is. Expansion is a plain concatenation of the core's members and
+ * the set's adds: the two are disjoint by construction, so there is
+ * deliberately no `Set` and no dedup pass on the 28M-reference path. That
+ * invariant is the exporter's, not ours, so violations are counted and warned
+ * about rather than trusted silently.
  *
- * The set tables are **retained** rather than dropped after expansion: the SQL
- * mirror stores the factored form, and re-deriving it would mean re-parsing the
- * blob. They cost ~4.2M ints (~17 MB) against the flat CSR's 155 MB.
+ * The set tables are **retained** after expansion: the SQL mirror stores the
+ * factored form, and re-deriving it would mean re-parsing the blob. ~4.2M ints
+ * (~17 MB) against the flat CSR's 155 MB.
  */
 
 import {IntIndex, Int32Vector} from './columns';

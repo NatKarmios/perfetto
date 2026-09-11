@@ -13,30 +13,17 @@
 // limitations under the License.
 
 /**
- * The node graph chart type (node_graph_chart.ts), taken from the two ends a bug
- * could come in at: the Data Explorer's registry, which has to be able to find
- * the type and put it in the picker, and the descriptor itself, whose
- * `createLoader` and `render` are only ever called by that registry - so nothing
- * else would notice them being malformed.
+ * The node graph chart type (node_graph_chart.ts), from the two ends a bug
+ * could come in at: the Data Explorer's registry, which has to find the type
+ * and put it in the picker, and the descriptor itself, whose `createLoader` and
+ * `render` only that registry ever calls - so nothing else would notice them
+ * being malformed.
  *
- * The states around the graph get the same attention as the graph, because they
- * are what a misconfigured or over-broad chart shows and each of them is a
- * different thing to fix: no graph loaded, a primary column that holds no node
- * ids, no results table yet, a query whose rows name no nodes, and a query that
- * names more nodes than the layout can draw. The alternative to all five is a
- * blank card, which says none of it.
- *
- * The cap is all-or-nothing, so the boundary is pinned from both sides: a query
- * naming exactly {@link NODE_GRAPH_MAX_NODES} is drawn, one node more is
- * refused. A refusal that crept a node early would hide graphs that draw
- * perfectly well, and one that crept a node late would draw a truncated set as
- * if it were the answer.
- *
- * The registration lifecycle gets the same treatment as the directory chart's:
- * registering a chart type twice throws, so the failure mode a plugin can
- * actually cause is a registration that outlives its trace. Both ends are
- * pinned - dropped with the trace, and re-registered without throwing on the
- * next load.
+ * The states around the graph get the same attention as the graph: each is a
+ * different thing to fix, and the alternative to all five is a blank card. The
+ * cap is all-or-nothing, so its boundary is pinned from both sides - one node
+ * early would hide graphs that draw perfectly well, one node late would draw a
+ * truncated set as if it were the answer.
  */
 
 import m from 'mithril';

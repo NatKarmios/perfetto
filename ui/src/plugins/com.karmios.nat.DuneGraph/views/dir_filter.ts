@@ -13,60 +13,25 @@
 // limitations under the License.
 
 /**
- * The filtered directory tree: which directories survive a path filter, how many
- * matches each holds, and what the tree looks like once the non-matching parts
- * are gone.
+ * The filtered directory tree: which directories survive a path filter, how
+ * many matches each holds, and what the tree looks like once the non-matching
+ * parts are gone.
  *
- * ## Why this is client-side, when the unfiltered tree is not
+ * **README.md, "The hard filter is client-side", is the why** - why none of
+ * this is SQL, which dir_tree.ts invariant makes the rollup one array pass, and
+ * why the compression is re-run here rather than composed with the SQL one.
  *
- * The unfiltered pane never needs to know what is deeper than the level it is
- * drawing: `dune_dir`'s stored `t_*` rollups answer "is there anything down
- * there" for free. A *hard* filter cannot work that way - hiding a directory
- * requires knowing whether its whole subtree holds a match, and the filter is
- * user-typed, so no stored rollup answers it. Computing that rollup needs the
- * whole hierarchy at once, so while a filter is active the pane reads all of
- * `dune_dir` in one query (19k rows) and everything here is arithmetic rather
- * than SQL. Only member *rows* are still fetched per directory.
- *
- * The one invariant this leans on is dir_tree.ts's: ids are dense from zero and
- * **a parent's id is always lower than its children's**. So id order is
- * topological order, a subtree rollup is one descending pass over an array, and
- * no recursion or child index is needed for it.
- *
- * ## What "matches" means
- *
- * Both kinds arrive here as per-directory counts from SQL (see
- * `matchingCounts`), so this class does not care *what* matched - only how much
- * did, and where. The two kinds are narrowed on different columns: a dep on its
- * own full path plus its `resolution`/`status`, a rule on the directory it is
- * filed under plus its `outcome`, since a rule's label is its bare dune id and
- * contains no path at all.
- *
- * A count of `undefined` for a kind means the filter says nothing about it, so
- * all of its members match and the stored `n_rules` / `n_deps` stand in.
- *
- * ## Compression
- *
- * Hard-filtering creates new single-child chains - filter to one deep path and
- * the tree above it would otherwise be a ladder of one-child rows. So this
- * re-runs the pane's pass-through compression over the *filtered* tree, with the
- * predicate reading "no matching members of its own, exactly one visible child".
- * That subsumes the SQL compression rather than composing with it, which is why
- * the filtered path ignores `compressedDirs` entirely.
+ * Both kinds arrive as per-directory counts from `matchingCounts`, so this does
+ * not care *what* matched - only how much did, and where. A count of undefined
+ * for a kind means the filter says nothing about it, so every member matches
+ * and the stored `n_rules` / `n_deps` stand in.
  */
 
 import type {DirEntry} from '../model/dir_explorer';
 
-/**
- * One row of the filtered tree.
- *
- * `dir` is the directory the row *is* - the deepest one of any collapsed run, so
- * its id is what a member query is keyed on and its counts are the ones to show.
- * `pathFrom` is the path of the row above it, which is what the label is measured
- * against (the same job `dirLabel` does for the unfiltered tree, and it has to be
- * carried here because a compressed run can start several levels above `dir`).
- */
 export interface FilteredRow {
+  // The directory the row *is* - the deepest of any collapsed run, so its id is
+  // what a member query is keyed on.
   readonly dir: DirEntry;
   // The parent *row*'s path, or '' for a root. Not `dir`'s own parent's path: a
   // collapsed run's label spans every directory it swallowed.
@@ -79,13 +44,8 @@ export interface FilteredRow {
   readonly subtreeMatchedDeps: number;
 }
 
-/**
- * A path filter applied to the whole directory hierarchy.
- *
- * Built once when the filter is submitted and then read synchronously by the
- * render - every question the filtered tree asks of it is a lookup or a slice of
- * a precomputed array.
- */
+// A path filter applied to the whole hierarchy. Built once on submit, then read
+// synchronously by the render: every question is a lookup or an array slice.
 export class FilteredTree {
   // Indexed by directory id throughout. Dense and parent-before-child, so these
   // are plain arrays rather than maps - see the file header.
@@ -99,14 +59,8 @@ export class FilteredTree {
   // build's paths are a mix of absolute and relative ones (see dir_tree.ts).
   private readonly rootIds: number[];
 
-  /**
-   * `ruleMatches` / `depMatches` are per-directory counts of matching members of
-   * that kind, or **undefined meaning "all of them"** - which is what a filter
-   * that says nothing about a kind means, and what lets the stored `n_rules` /
-   * `n_deps` stand in with no query run (see `matchingCounts`).
-   *
-   * @param dirs Every directory, in id order (see `allDirs`).
-   */
+  // `dirs` is every directory in id order. `ruleMatches` / `depMatches` are
+  // per-directory match counts, or undefined meaning "all of them".
   constructor(
     dirs: readonly DirEntry[],
     ruleMatches: ReadonlyMap<number, number> | undefined,
@@ -161,17 +115,12 @@ export class FilteredTree {
       .sort((a, b) => comparePaths(this.byId[a], this.byId[b]));
   }
 
-  /** Whether anything at all matched. */
   get empty(): boolean {
     return this.matchCount === 0;
   }
 
-  /**
-   * How many members matched, across the whole build.
-   *
-   * Summed over the roots, since every directory is in exactly one root's
-   * subtree and the rollup has already totalled each.
-   */
+  // Summed over the roots: every directory is in exactly one root's subtree and
+  // the rollup has already totalled each.
   get matchCount(): number {
     return this.rootIds.reduce(
       (n, id) => n + this.subtreeRules[id] + this.subtreeDeps[id],
@@ -179,77 +128,53 @@ export class FilteredTree {
     );
   }
 
-  /** The filtered tree's top-level rows. */
   roots(): FilteredRow[] {
     return this.rootIds
       .filter((id) => this.hasMatch(id))
       .map((id) => this.rowFor(id, ''));
   }
 
-  /**
-   * The visible child rows of directory `dirId`, labelled relative to
-   * `parentPath` - which is that directory's own path, since it is the row above
-   * them.
-   */
+  // Labelled relative to `parentPath`, which is `dirId`'s own path since it is
+  // the row above them.
   childRows(dirId: number, parentPath: string): FilteredRow[] {
     return (this.childIds[dirId] ?? [])
       .filter((id) => this.hasMatch(id))
       .map((id) => this.rowFor(id, parentPath));
   }
 
-  /** Matching members of `dirId` itself, of one kind. */
+  // Matching members of `dirId` itself.
   directMatches(dirId: number, kind: 'rule' | 'dep'): number {
     const counts = kind === 'rule' ? this.matchedRules : this.matchedDeps;
     return counts[dirId] ?? 0;
   }
 
-  /** Matching members of `dirId`'s whole subtree, itself included. */
+  // Matching members of `dirId`'s whole subtree, itself included.
   subtreeMatches(dirId: number, kind: 'rule' | 'dep'): number {
     const counts = kind === 'rule' ? this.subtreeRules : this.subtreeDeps;
     return counts[dirId] ?? 0;
   }
 
-  /**
-   * Whether `dirId`'s subtree holds anything the filter matched.
-   *
-   * This is the hard filter: a directory with no match anywhere below it gets no
-   * row at all, rather than a dimmed one.
-   */
+  // The hard filter itself: a directory with no match anywhere below it gets no
+  // row at all, rather than a dimmed one.
   hasMatch(dirId: number): boolean {
     return (
       this.subtreeMatches(dirId, 'rule') + this.subtreeMatches(dirId, 'dep') > 0
     );
   }
 
-  /**
-   * The id of the row that *displays* directory `dirId`, or undefined when
-   * nothing matching is under it and so it has no row at all.
-   *
-   * Not `dirId` itself, in general: compression means a row is keyed on the
-   * deepest directory of the run it swallowed, so `_build` may be displayed by
-   * the row for `_build/default/lib`. Well defined wherever the directory is
-   * visible, because a run is linear - descending from an ancestor of `dirId`
-   * passes through it and carries on to the same terminal that descending from
-   * `dirId` reaches.
-   */
+  // The id of the row that *displays* `dirId` - not `dirId` itself in general,
+  // since a row is keyed on the deepest directory of the run it swallowed.
+  // Well defined wherever the directory is visible, because a run is linear.
+  // Undefined when nothing matching is under it.
   rowIdFor(dirId: number): number | undefined {
     if (!this.hasMatch(dirId)) return undefined;
     return this.rowFor(dirId, '').dir.id;
   }
 
-  /**
-   * Re-keys a set of expanded directory ids onto this tree's rows, dropping the
-   * ones nothing matching is under any more.
-   *
-   * This is what lets a filter leave the tree where the user had it. Keeping the
-   * ids verbatim would not: compression re-decides which directory a row is
-   * keyed on, so an id that named a row before the filter can name a swallowed
-   * directory after it, and the row that swallowed it would render collapsed.
-   *
-   * The result stays closed upward - a row is only reachable when every row
-   * above it is expanded - because compression only ever merges runs, so the
-   * images of an id's ancestors are the ancestors of its image.
-   */
+  // Re-keys expanded ids onto this tree's rows, so a filter leaves the tree
+  // where the user had it (see the README). The result stays closed upward
+  // because compression only merges runs, so the images of an id's ancestors
+  // are the ancestors of its image.
   remapExpanded(dirIds: Iterable<number>): Set<number> {
     const out = new Set<number>();
     for (const id of dirIds) {
@@ -259,15 +184,9 @@ export class FilteredTree {
     return out;
   }
 
-  /**
-   * The row for directory `id`, collapsing any run of pass-through directories
-   * below it first.
-   *
-   * A directory is a pass-through here when it has no *matching* members of its
-   * own and exactly one *visible* child - the filtered analogue of
-   * `passThrough()` in dir_explorer.ts, and strictly more aggressive, since
-   * filtering removes both members and children.
-   */
+  // A pass-through here means no *matching* members of its own and exactly one
+  // *visible* child - dir_explorer.ts's `passThrough()` but strictly more
+  // aggressive, since filtering removes both members and children.
   private rowFor(id: number, pathFrom: string): FilteredRow {
     let at = id;
     for (;;) {

@@ -38,31 +38,18 @@ const SLICE_JOINID: PerfettoSqlType = {
   source: {table: 'slice', column: 'id'},
 };
 
-/**
- * Every column `dune_node` has, in the order the grid shows them.
- *
- * All of them, deliberately: `dune_node` is already the *narrow* table - the
- * mirror splits per-kind detail out into `dune_rule` / `dune_dep` precisely so
- * that what's left is meaningful for every node (see sql_graph.ts) - and a
- * column the source drops cannot be added to a grid later without editing the
- * graph, whereas one it exports is a click away in the grid's column menu.
- * The typing *is* a choice, though, and it is what the grid renders from:
- *
- * - `node_id` as a node reference: the chip, and the reason for this source.
- * - `slice_id` as a slice reference: a timeline link, for free (see above).
- * - `ts` / `dur` as timestamp and duration, so they read as times rather than
- *   as 19-digit integers. `dur_ns` is aliased to `dur` for the same reason the
- *   dir tree drops the suffix: the cell says "1.2ms", so a header saying `_ns`
- *   is a lie.
- * - everything else plainly. `orig_id` in particular is *not* a node reference:
- *   it is the trace-side id (a rule's dune id, a dep's dict id), which collides
- *   with unrelated `node_id`s by construction. Nor is `dir_id`, for the sharper
- *   version of the same reason - it indexes `dune_dir`, a space with no
- *   relation to `node_id` at all (see sql_graph.ts, and the matching note on
- *   `DIR_TREE_COLUMNS`). It stays a plain int rather than
- *   `JOINID(dune_dir.id)` only because no renderer is registered for directory
- *   ids yet; the day one is, this is the column that should get it.
- */
+// Every column `dune_node` has, in the order the grid shows them. All of them,
+// deliberately: `dune_node` is already the *narrow* table, and a column the
+// source drops cannot be added to a grid later without editing the graph,
+// whereas one it exports is a click away in the column menu.
+//
+// The typing *is* a choice, and it is what the grid renders from. `dur_ns` is
+// aliased to `dur` because the cell says "1.2ms", so a header saying `_ns` is a
+// lie. `orig_id` is deliberately *not* a node reference - it is the trace-side
+// id, which collides with unrelated `node_id`s by construction - and nor is
+// `dir_id`, which indexes `dune_dir`, a space with no relation to `node_id` at
+// all. `dir_id` stays a plain int rather than `JOINID(dune_dir.id)` only
+// because no renderer is registered for directory ids yet.
 export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'node_id', type: DUNE_NODE_JOINID},
   {name: 'kind', type: 'string'},

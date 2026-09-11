@@ -17,47 +17,19 @@
  * the graph can be queried by relationship in the same engine as the rest of
  * the trace.
  *
- * **The table inventory, what each column means and why the mirror is shaped
- * this way are in README.md, "The SQL mirror".** dune_tables.ts carries the
- * same inventory as user-facing documentation, and its unit test parses the
- * `CREATE` strings below to keep the two in step. What follows is only what a
- * reader *of this file* needs.
+ * **README.md, "The SQL mirror", is the reference**: the table inventory, what
+ * each column means, the two tiers and the order between them, and the three
+ * mechanisms (interned strings, kind-is-id, coded enums) that make it fit.
+ * dune_tables.ts carries the same inventory as user-facing documentation, and
+ * its unit test parses the `CREATE` strings below to keep the two in step.
  *
- * **Two tiers, and the order between them is a hard constraint.** The node tier
- * ({@link buildNodeMirror}) is one row per node plus its per-kind detail; the
- * edge tier ({@link buildEdgeMirror}) is the edges, stored factored. The edge
- * tier reads the node tier's `_dune_rule` and `_dune_dep` and owns an index on
- * the former, so it must be built *after* the node tier and disposed *before*
- * it.
+ * The one thing a reader of *this* file has to hold on to: the edge tier reads
+ * the node tier's `_dune_rule` and `_dune_dep` and owns an index on the former,
+ * so it must be built *after* the node tier and disposed *before* it.
  *
- * **Every stored column is an integer.** The raw tables hold ids, small codes
- * and counts; the text a query wants is reconstituted by the PERFETTO VIEW over
- * each of them, which is also where the public column names and types live. A
- * code - an outcome, a resolution, a `forced_by` kind - is the value's index in
- * the corresponding list in graph.ts, mapped back by a CASE in the view, so
- * those lists are part of the encoding.
- *
- * **`node_id` is the in-memory graph's own node id** (see graph.ts). Every raw
- * table is keyed by it as an `INTEGER PRIMARY KEY`, i.e. as the rowid, so none
- * of them needs a `node_id` index. `ruleCount` is inlined into every generated
- * statement, which is why no table and no edge row carries a kind column.
- *
- * `dune_node.orig_id` is the *trace-side* id (a dep's dict id, a rule's
- * `rule_id`), so it joins to the lifecycle instants' args and, for a dep,
- * straight into `dune_string`. It is not the display string; `label` is.
- *
- * **The two header tables (`_dune_core`, `_dune_depset`) are the one departure
- * from "keyed by `node_id`".** Their key is the *dense index* graph_build.ts
- * assigned each core and set on arrival, not the blob's own `core_id` /
- * `set_id`: dense from zero means the key is the rowid, so a header lookup
- * needs no index, and the blob's own ids are per-process join keys with no
- * meaning outside one blob. The graph hands out the dense index anyway
- * (`BuildGraph.depSetOf`), so nothing has to translate, and `_dune_rule.dep_set`
- * holds the same index.
- *
- * See {@link createRelationFunctions} for the transitive-relationship function
- * inventory, and {@link edgeArms} for why the walks read the arms directly
- * rather than going through `dune_edge`.
+ * See {@link createRelationFunctions} for the relation functions, and
+ * {@link edgeArms} for why the walks read the arms directly rather than going
+ * through `dune_edge`.
  */
 
 import {sqliteString} from '../../../base/string_utils';
@@ -121,43 +93,33 @@ const RULE_DEP_SET_INDEX = '_dune_rule_dep_set';
 // a query wants (see the file header).
 const RULE_TARGET_TABLE = 'dune_rule_target';
 const STRING_TABLE = 'dune_string';
-// The typed view over `_dune_process` (process_sql.ts), plus the index that
-// makes its rule -> node join a probe. Unlike RULE_DEP_SET_INDEX this one is
-// kept for the tier's lifetime: it is one entry per *rule* (386k on the
-// monorepo trace, ~1.5 MB at the measured marginal cost), and it is the only
-// way anything can get from a trace-side rule id back to a node at all - see
-// {@link processView}.
+// The typed view over `_dune_process`, plus the index that makes its
+// rule -> node join a probe. Kept for the tier's lifetime, unlike
+// RULE_DEP_SET_INDEX: one entry per *rule* (386k, ~1.5 MB), and the only route
+// from a trace-side rule id back to a node there is.
 const PROCESS_VIEW = 'dune_process';
 const NODE_ORIG_ID_INDEX = '_dune_node_orig_id';
-// The directory hierarchy: a raw table and its typed view like the node tables,
-// plus a transient rule -> directory map the duration rollup is aggregated
-// through and which is dropped again as soon as it has been (see
-// {@link ruleDurationsByDir}).
+// The directory hierarchy, plus a transient rule -> directory map the duration
+// rollup aggregates through and drops again (see {@link ruleDurationsByDir}).
 const DIR_TABLE = 'dune_dir';
 const RAW_DIR_TABLE = '_dune_dir';
 const RULE_DIR_TABLE = '_dune_rule_dir';
-// A node's span as a half-open interval, and the macro that intersects two of
-// them across an edge (see {@link spanView} / {@link blockedMacro}).
+// A node's span as a half-open interval, and the macro intersecting two of
+// them across an edge.
 const SPAN_VIEW = '_dune_span';
 const BLOCKED_MACRO = 'dune_blocked';
 // `dune_edge` with the macro already applied. Built with the edge tier, since
 // that is the tier it reads (see {@link edgeBlockedView}).
 const EDGE_BLOCKED_VIEW = 'dune_edge_blocked';
 
-/**
- * Rows per `INSERT ... VALUES (row), (row), ...`.
- *
- * Not bounded by SQLite's 500-term compound-SELECT limit, despite a multi-row
- * VALUES looking like a compound SELECT: in the SQLite trace processor ships,
- * 100,000 rows in one statement inserts 100,000 rows.
- *
- * 5,000 is the measured optimum, by a modest margin - over the RPC path the
- * plugin uses, 2M rows take 4.2 / 3.8 / 6.1 s in wasm at 500 / 5,000 / 20,000
- * (native 3.0 / 2.3 / 2.8). Worth about a third off the build. Measure this
- * over RPC and not with `trace_processor -q`, whose per-statement cost
- * dominates and exaggerates the win ~6x. It also keeps a statement to roughly
- * 110 KB of SQL text, which is what has to cross into wasm.
- */
+// Rows per `INSERT ... VALUES (row), (row), ...`. Not bounded by SQLite's
+// 500-term compound-SELECT limit despite the resemblance: 100,000 rows in one
+// statement inserts 100,000 rows.
+//
+// 5,000 is the measured optimum by a modest margin - over the RPC path, 2M rows
+// take 4.2 / 3.8 / 6.1 s in wasm at 500 / 5,000 / 20,000 - and keeps a
+// statement to ~110 KB of SQL text. **Measure this over RPC**, not with
+// `trace_processor -q`, whose per-statement cost exaggerates the win ~6x.
 const INSERT_CHUNK = 5_000;
 
 // Statements between yields back to the event loop (and progress reports). The
@@ -167,52 +129,21 @@ const INSERT_CHUNK = 5_000;
 // progress line moving, rare enough that the yields themselves are noise.
 const YIELD_EVERY = 10;
 
-/**
- * Edge count past which the edge tier refuses to build, because there the build
- * doesn't get slow, it takes the engine down with it.
- *
- * It comes from measurement (see PERF_PLAN.LOCAL.md and PERF_SUMMARY.LOCAL.md),
- * in the wasm engine rather than extrapolated from `trace_processor -q`, which
- * overstates the per-row cost by ~4×.
- *
- * **Note this counts edges, not rows.** Since the tier was factored on dep sets
- * an edge is no longer a row: the monorepo trace's 28.8M edges are 6.33M stored
- * rows, and the whole tier - reverse indexes included - builds in **18.9 s for
- * +519 MB** of wasm heap (1,011 -> 1,530 MB), against 114 s and +1,895 MB when
- * every edge was a row. Edges are what this cap counts because by the time it
- * is consulted the graph is parsed and the exact edge count is known, where the
- * row count would have to be predicted. The one gate the *user* is asked about
- * has the opposite problem - it fires before the blob is parsed, so it can only
- * count rows - which is why it lives elsewhere and in the other unit; see
- * controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING.
- *
- * This cap is about *memory*, against a 4 GB ceiling on the memory32 build
- * (16 GB on memory64, which every current browser loads - see
- * `gn/standalone/wasm.gni`). At the measured 18 bytes/edge marginal, 100M edges
- * is ~1.8 GB, which still fits alongside a trace and a node tier on memory32.
- * The old 40M was set at 54 bytes/edge, i.e. the same ~2.2 GB.
- *
- * It is a refusal rather than a question: there is no answer the user could
- * give that would make the build survive, so past it the edge tier is simply
- * not available and the panel says so.
- */
+// Edge count past which the edge tier refuses to build: past it the build does
+// not get slow, it takes the engine down. A refusal rather than a question -
+// there is no answer that would make the build survive. See README.md, "The one
+// question, and the one refusal", for why it counts edges and not rows, and
+// "Performance" for the measurement behind the number.
 export const EDGE_HARD_LIMIT = 100_000_000;
 
-/**
- * Where a build has got to, as reported to {@link MirrorOptions.onProgress}.
- *
- * `phase` is the id of one of {@link NODE_MIRROR_PHASES} /
- * {@link EDGE_MIRROR_PHASES}, so a caller holding the manifest can place the
- * report in the list of everything the build will do rather than only knowing
- * what is happening right now.
- *
- * A report is emitted when a phase *starts*, and then again as rows go in for
- * the phases that insert any (`done`/`total` are absent otherwise). The
- * start-of-phase report is what makes the list usable and is not redundant with
- * the row reports: {@link materializeTable} only reports every
- * {@link YIELD_EVERY} statements, i.e. every 50,000 rows, so a small table
- * finishes without ever emitting one and would otherwise never look active.
- */
+// Where a build has got to. `phase` is an id from one of the manifests, so a
+// caller holding one can place the report in the list of everything the build
+// will do rather than only knowing what is happening now.
+//
+// Emitted when a phase *starts*, and again as rows go in for the phases that
+// insert any. The start report is not redundant: {@link materializeTable}
+// reports only every {@link YIELD_EVERY} statements, i.e. every 50,000 rows, so
+// a small table finishes without emitting one and would never look active.
 export interface MirrorProgress {
   // The manifest id of the phase now running.
   readonly phase: string;
@@ -223,11 +154,8 @@ export interface MirrorProgress {
   readonly total?: number;
 }
 
-/**
- * How a build reports itself while it runs. Both tiers are long enough to need
- * one (the edge tier by minutes), and the inserts yield to the event loop
- * between batches so the report can actually be painted.
- */
+// How a build reports itself while it runs. The inserts yield to the event loop
+// between batches, so a report can actually be painted.
 export interface MirrorOptions {
   // Per-phase timing breakdown; see perf.ts.
   readonly perf?: PerfRun;
@@ -238,13 +166,10 @@ export interface MirrorOptions {
   readonly onProgress?: (p: MirrorProgress) => void;
 }
 
-/**
- * One unit of a mirror build, as something outside the builder can list.
- *
- * `id` is *exactly* the name the phase is measured under (see perf.ts), which
- * is what lets sql_graph_unittest.ts compare the manifests below against a
- * `PerfRun`'s recorded phase names and fail the moment the two drift.
- */
+// One unit of a mirror build, as something outside the builder can list. `id`
+// is *exactly* the name the phase is measured under, which is what lets the
+// unit test compare the manifests below against a `PerfRun`'s recorded phase
+// names and fail the moment the two drift.
 export interface MirrorPhase {
   // The `measure()` / `measureSync()` label. Console-facing, not for display.
   readonly id: string;
@@ -256,21 +181,15 @@ export interface MirrorPhase {
   readonly label: string;
 }
 
-/**
- * Everything {@link buildNodeMirror} does, in execution order.
- *
- * Hand-written, and kept honest by a test rather than by construction. The
- * alternative - turning the builder into an array of `{name, run}` descriptors
- * driven by a loop, so the list could not drift - was rejected: the phases hand
- * locals to one another (`stringTable`, `dirs`, `targets`, `selfDurNs`), so a
- * descriptor array needs a shared mutable context object and turns a readable
- * straight-line function into a state machine. A list plus a drift test buys
- * the same guarantee far more cheaply.
- *
- * The ids are built from the same constants the builder measures itself with,
- * so renaming a table renames both halves at once; what the test catches is a
- * phase being *added*, removed or reordered.
- */
+// Everything {@link buildNodeMirror} does, in execution order. Hand-written and
+// kept honest by a test rather than by construction: the phases hand locals to
+// one another, so the alternative - an array of `{name, run}` descriptors driven
+// by a loop - needs a shared mutable context object and turns a readable
+// straight-line function into a state machine.
+//
+// The ids are built from the same constants the builder measures itself with,
+// so renaming a table renames both halves; what the test catches is a phase
+// being added, removed or reordered.
 export const NODE_MIRROR_PHASES: readonly MirrorPhase[] = [
   // Not literally in buildNodeMirror: these two are measured inside
   // buildLifecycleTiming / buildProcessSlices, which it calls first. They are
@@ -316,13 +235,9 @@ export const EDGE_MIRROR_PHASES: readonly MirrorPhase[] = [
   {id: 'sql: create relation functions', label: 'Relation functions'},
 ];
 
-/**
- * Opens a phase: reports its start to `onProgress`, then measures it.
- *
- * Every measured region in the two builders goes through this rather than
- * calling {@link measure} directly, so that the manifests above describe
- * something the build actually announces.
- */
+// Opens a phase: reports its start, then measures it. Every measured region in
+// the two builders goes through this rather than calling {@link measure}
+// directly, so the manifests above describe something the build announces.
 function phase<T>(
   opts: MirrorOptions,
   name: string,
@@ -332,7 +247,6 @@ function phase<T>(
   return measure(opts.perf, name, fn);
 }
 
-// Synchronous {@link phase}.
 function phaseSync<T>(
   opts: MirrorOptions,
   name: string,
@@ -342,11 +256,8 @@ function phaseSync<T>(
   return measureSync(opts.perf, name, fn);
 }
 
-/**
- * The cheap tier: `dune_node` + `dune_string` + the per-kind detail tables. Node
- * ids are the graph's own (see the file header), so there is nothing to
- * translate through.
- */
+// The cheap tier: `dune_node` + `dune_string` + the per-kind detail tables.
+// Node ids are the graph's own, so there is nothing to translate through.
 export interface SqlNodeMirror extends AsyncDisposable {
   // How many nodes were mirrored (== the `node_id` space's size).
   readonly nodeCount: number;
@@ -450,26 +361,19 @@ function codeCase(col: string, values: readonly string[], base = 0): string {
   return `CASE ${col} ${arms.join(' ')} END`;
 }
 
-/**
- * SQL joining a `_dune_node` row (`node`) to the lifecycle slice its span
- * starts at, via the timing table. A node's slice id is not a column on its row
- * - it comes from this join (see lifecycle_sql.ts) - so every internal query
- * that wants one needs this, and each also needs the slice row itself, since
- * `JOINID(slice.id)` only holds for a column read straight off `slice`.
- *
- * Both halves are LEFT: a node whose timing never resolved to a lifecycle
- * instant keeps its row with a NULL `slice_id` rather than vanishing from the
- * mirror.
- *
- * The probe is one b-tree descent, because the timing table is keyed on
- * (kind, key) as a real primary key - read the comment on `TIMING_TABLE` in
- * lifecycle_sql.ts before changing either side of this, since the join's cost
- * is entirely that table's shape (2.2 s to project the monorepo trace's 818k
- * nodes with it, 208 s without). `dune_node` is the only caller; the relation
- * functions report `node_id` endpoints and so never need it. The `kind` side of
- * the key is written here as the integer code that table stores, not as the
- * name the views expose.
- */
+// Joins a `_dune_node` row to the lifecycle slice its span starts at, via the
+// timing table. A node's slice id is not a column on its row, and a query
+// wanting one also needs the `slice` row itself, since `JOINID(slice.id)` only
+// holds for a column read straight off `slice`.
+//
+// Both halves are LEFT: a node whose timing never resolved keeps its row with a
+// NULL `slice_id` rather than vanishing.
+//
+// One b-tree descent, because the timing table is keyed on (kind, key) as a
+// real primary key. **Read `TIMING_TABLE`'s comment in lifecycle_sql.ts before
+// changing either side**: the join's cost is entirely that table's shape
+// (2.2 s to project 818k nodes with it, 208 s without). `dune_node` is the only
+// caller. The `kind` side is written as the integer code the table stores.
 function timingJoin(
   node: string,
   timing: string,
@@ -679,34 +583,19 @@ const DIR_COLUMNS = [
   'total_dur_ns',
 ];
 
-/**
- * The directory hierarchy plus each directory's direct membership, from one pass
- * over the nodes.
- *
- * Both kinds of node contribute a directory - a rule its `dir`, a dep the
- * directory its path lives in - because ~23% of the deps on a real trace live
- * under no rule's `dir` at all (the opam switch, the compiler, `/usr/bin`), so a
- * rule-dir-only tree would silently hide every dependency on them. Rules and
- * deps are counted separately, so a directory holding only deps is still a
- * visible row rather than an empty one.
- *
- * The counts are computed here rather than by aggregating `_dune_node.dir_id`
- * in SQL because the pass that has to happen anyway - interning every
- * directory, which cannot be done in SQL without recursive string splitting -
- * already visits every node and so has the counts for free.
- *
- * That aggregate *is* now expressible (`SELECT dir_id, count(*) FROM
- * _dune_node GROUP BY 1`, once split by which side of `ruleCount` the node
- * falls on) - `dir_id` is this census's own output, so the two cannot disagree.
- * It stays a consistency check rather than the source: it is a scan of 818k
- * rows to recover numbers this loop already has, and it could not produce
- * `self_dur_ns` anyway (see {@link ruleDurationsByDir}). The earlier objection
- * here - that a per-node dir id would cost 818k rows of resident pages the
- * mirror has no room for (see PERF_SUMMARY.LOCAL.md) - was about a *separate*
- * map table with its own rowids and index, the shape RULE_DIR_TABLE takes and
- * drops again. As a fifth integer column on a table that already exists it is
- * ~2-3 MB of pages, which that budget absorbs.
- */
+// The directory hierarchy plus each directory's direct membership, from one
+// pass over the nodes.
+//
+// Both kinds contribute a directory - a rule its `dir`, a dep the directory its
+// path lives in - because ~23% of the deps on a real trace live under no rule's
+// `dir` at all (the opam switch, the compiler, `/usr/bin`). Rules and deps are
+// counted separately, so a directory holding only deps is still a visible row.
+//
+// The counts come from here rather than an aggregate over `_dune_node.dir_id`
+// because the pass that has to happen anyway - interning every directory, which
+// SQL cannot do without recursive string splitting - already visits every node.
+// The aggregate stays a consistency check: it is a scan of 818k rows to recover
+// numbers this loop already has, and it could not produce `self_dur_ns` anyway.
 interface DirCensus {
   readonly tree: DirTree;
 
@@ -787,24 +676,18 @@ function ruleDirRows(graph: BuildGraph, census: DirCensus): RowSource {
   };
 }
 
-/**
- * Each directory's own rules' total span duration, summed in SQL and read back
- * as one row per directory.
- *
- * This is the one part of the directory tier that can't be computed from the
- * graph: a node's timing lives only in `_dune_timing`. The shape is the one the
- * perf work endorses (see PERF_SUMMARY.LOCAL.md) - **scan** the timing table and
- * **probe** a small rowid-keyed map table, never the reverse. A per-driving-row
- * probe of the timing table is the mirror's historically expensive path, and
- * joining `_dune_rule` to it instead would need an index on `_dune_node.orig_id`
- * that costs more pages than this whole map table.
- *
- * The map table is dropped again as soon as the aggregate has run: keeping it
- * would leave ~386k rows of pages resident for the rest of the load, and
- * everything downstream only ever wants the per-directory total. Durations are
- * accumulated as `bigint` because their sum genuinely exceeds 2^53 at monorepo
- * scale (~3.4e16 ns over all rules), i.e. a `number` would not be exact.
- */
+// Each directory's own rules' total span duration - the one part of the
+// directory tier that cannot be computed from the graph, since a node's timing
+// lives only in `_dune_timing`.
+//
+// **Scan** the timing table and **probe** a small rowid-keyed map table, never
+// the reverse: a per-driving-row probe of the timing table is the mirror's
+// historically expensive path, and joining `_dune_rule` to it instead would
+// need an index on `_dune_node.orig_id` costing more pages than the map table.
+//
+// The map table is dropped as soon as the aggregate has run - keeping it would
+// leave ~386k rows of pages resident. Durations accumulate as `bigint` because
+// their sum genuinely exceeds 2^53 at monorepo scale (~3.4e16 ns).
 async function ruleDurationsByDir(
   engine: Engine,
   graph: BuildGraph,
@@ -897,53 +780,27 @@ function dirView(): string {
   `;
 }
 
-/**
- * The typed view over `_dune_process`: a spawned process's slice, its span, the
- * rule that forced it and that rule's node.
- *
- * `slice_id` is sourced as `s.id` from the join rather than as the stored
- * integer, so it carries a real `SliceTable::Id` the way `dune_node.slice_id`
- * does; `ts` / `dur_ns` come off the same row, which makes the join a
- * primary-key probe per process slice rather than something the view has to
- * store. The duration is named `dur_ns` rather than `dur` so the query tab
- * prints it as a duration (see `DURATION_COLS` in query_results.ts) -
- * `slice.dur` is already nanoseconds, so the only thing done to it is the
- * `nullif` below.
- *
- * That `nullif(s.dur, -1)` is what keeps this column honest. Perfetto stores an
- * unfinished slice's duration as `-1`, and publishing that sentinel as a
- * duration would have `ORDER BY dur_ns` sort the still-running processes of a
- * Ctrl-C'd build first and have the query tab render `Duration.humanise(-1n)` -
- * a negative duration. NULL is both the truth ("no duration yet") and what the
- * rest of the mirror already says: every other duration here comes from
- * `_dune_timing.dur_ns`, which is NULL when the span never finished.
- *
- * The same normalisation appears again as the `it.dur >= 0n` guard behind
- * {@link ProcessDetails}, and stays there: `scalarsForRule` (process_sql.ts)
- * reads `s.dur` off `slice` joined to the raw `_dune_process` table, so it never
- * passes through this view and this `nullif` cannot cover it.
- *
- * `node_id` is typed `LONG` and not `JOINID(dune_node.node_id)`, for the same
- * reason `dune_node.dir_id` is: the mirror doesn't declare its own
- * cross-references as id types. It still chip-renders in the Dune query tab,
- * which resolves a node-bearing column by *name* (see `CHIP_COLS` in
- * query_results.ts).
- *
- * Two things about the node join:
- *
- * - It is LEFT. A process can name a rule the blob never recorded, and such a
- *   row should report a NULL node rather than vanish - the same call
- *   {@link SqlNodeMirror.ruleNodeForProcessSlice} makes.
- * - `node_id < ruleCount` is not redundant. A dep's `orig_id` is a dict id, in
- *   a numbering unrelated to rule ids, so without it the join would match
- *   whatever dep happened to share the number. It is also the term that lets
- *   SQLite use the *partial* NODE_ORIG_ID_INDEX, which is written with the same
- *   predicate.
- *
- * Only rule-forced processes appear at all: `_dune_process` is filtered to the
- * `rule <id>` forcer form (see process_sql.ts), so `rule_id` is never NULL here
- * and a `dep <path>`-forced process contributes no row.
- */
+// The typed view over `_dune_process`. `slice_id` is sourced as `s.id` from the
+// join rather than as the stored integer, so it carries a real
+// `SliceTable::Id`; `ts` / `dur_ns` come off the same row, making the join one
+// primary-key probe per process slice.
+//
+// `nullif(s.dur, -1)` is what keeps `dur_ns` honest - see README.md's gotcha on
+// the -1 sentinel. The same normalisation appears again as the `it.dur >= 0n`
+// guard behind {@link ProcessDetails} and has to: `scalarsForRule` reads
+// `s.dur` off the raw table, so it never passes through this view.
+//
+// Two things about the node join:
+//
+// - It is LEFT: a process can name a rule the blob never recorded, and such a
+//   row should report a NULL node rather than vanish.
+// - `node_id < ruleCount` is not redundant. A dep's `orig_id` is a dict id in a
+//   numbering unrelated to rule ids, so without it the join would match
+//   whatever dep shared the number. It is also the term that lets SQLite use
+//   the *partial* NODE_ORIG_ID_INDEX, written with the same predicate.
+//
+// Only rule-forced processes appear: `_dune_process` is filtered to the
+// `rule <id>` forcer form, so `rule_id` is never NULL here.
 function processView(space: NodeSpace): string {
   return `
       CREATE PERFETTO VIEW ${PROCESS_VIEW}(
@@ -964,34 +821,23 @@ function processView(space: NodeSpace): string {
   `;
 }
 
-/**
- * A node's span as a half-open interval `[ts, end_ts)`, for the one purpose
- * that needs two spans at once: {@link blockedMacro}.
- *
- * Deliberately *not* a slice of `dune_node`, which already publishes `ts` and
- * `dur_ns`. Reading them off that view would drag its two `dune_string` probes
- * (a node's label, a forcer's target) along for the ride - SQLite does not
- * eliminate a join whose columns nothing selects - and the blocked macro probes
- * a node per *endpoint*, i.e. twice per edge row. This view joins only what an
- * interval needs, so an endpoint costs three primary-key probes
- * (`_dune_node` -> `_dune_timing` -> `slice`) and no string lookup.
- *
- * The interval is the same one the timeline track draws (see graph_track.ts):
- * `ts` is the *start* instant's own timestamp and the length is the lifecycle
- * `dur_ns`, not `finish.ts - start.ts`. That is not interchangeable - a span
- * collapsed to a single `-resolved` instant has no distinct finish timestamp at
- * all, so the subtraction would call it zero-length - and it is what makes a
- * blocked time agree with what the user sees on the track.
- *
- * `dur_ns IS NULL` means the span never finished (a trace truncated mid-build),
- * so `end_ts` runs to `trace_end()` - the node really was still in flight when
- * the trace stopped, and it is how the track renders it (`dur = -1`). A node
- * with no lifecycle timing at all is simply absent: the joins are INNER, and
- * the macro's LEFT JOIN onto this view is what turns that into a NULL.
- *
- * Only the node's *canonical* (earliest) occurrence has a span here, as
- * everywhere else in the mirror - see `n_occurrences` on `dune_node`.
- */
+// A node's span as a half-open interval, for the one purpose needing two spans
+// at once: {@link blockedMacro}.
+//
+// Deliberately *not* a slice of `dune_node`, which publishes `ts` and `dur_ns`
+// already: reading them off that view would drag its two `dune_string` probes
+// along (SQLite does not eliminate a join whose columns nothing selects), and
+// the blocked macro probes a node per *endpoint*, twice per edge row.
+//
+// The interval is the one the timeline track draws: `ts` is the *start*
+// instant's own timestamp and the length is the lifecycle `dur_ns`, not
+// `finish.ts - start.ts`. Not interchangeable - a span collapsed to a single
+// `-resolved` instant has no distinct finish timestamp, so the subtraction
+// would call it zero-length.
+//
+// `dur_ns IS NULL` means the span never finished, so `end_ts` runs to
+// `trace_end()`. A node with no lifecycle timing at all is absent: the joins
+// are INNER, and the macro's LEFT JOIN is what turns that into a NULL.
 function spanView(space: NodeSpace): string {
   return `
       CREATE PERFETTO VIEW ${SPAN_VIEW}(
@@ -1008,46 +854,21 @@ function spanView(space: NodeSpace): string {
   `;
 }
 
-/**
- * `dune_blocked!(edges)`: any table with `src` / `dst` node id columns, plus a
- * `blocked_ns` column saying how long `dst` held `src` up.
- *
- * An edge means "src depends on dst", so dst is the prerequisite and src is the
- * one waiting. The two nodes' spans (see {@link spanView}) therefore overlap
- * exactly over the stretch where src was already live and dst was still being
- * built, and `blocked_ns` is the length of that intersection:
- *
- *   blocked_ns = max(0, min(src_end, dst_end) - max(src_ts, dst_ts))
- *
- * Zero and NULL mean different things. Zero is a real answer - the spans are
- * disjoint, so dst cost src nothing (it was already built, or came out of the
- * cache before src started). NULL means at least one endpoint has no lifecycle
- * timing to compare, so the question has no answer for that edge; SQLite's
- * multi-argument `min`/`max` propagate the NULL for us.
- *
- * Input columns are passed through untouched (`e.*`), so this composes with
- * anything edge-shaped, the relation functions included - their result carries
- * `src`/`dst` too:
- *
- *   SELECT * FROM dune_blocked!(
- *     (SELECT * FROM dune_edge WHERE src = 42)) ORDER BY blocked_ns DESC
- *   SELECT * FROM dune_blocked!(dune_children(42))
- *
- * **Do not sum it over a node's edges.** Deps build in parallel, so their
- * blocked intervals overlap each other and adding them up double-counts: a rule
- * blocked for 1 s on ten deps built concurrently sums to 10 s. `max(blocked_ns)`
- * is the honest per-node figure (the longest single wait); a true "how long was
- * this node blocked at all" needs the *union* of the intervals, which is an
- * interval-intersect problem and not something a per-edge column can answer.
- *
- * Named `blocked_ns`, not `blocked`, for both of the reasons the mirror's other
- * durations are: it says what the unit is, and the query tab renders a
- * `*_dur_ns`-style column as a human duration (see `DURATION_COLS` in
- * query_results.ts) rather than a raw integer.
- *
- * `CREATE OR REPLACE` because macros cannot be dropped - there is no
- * `DROP PERFETTO MACRO` - so a stale one would otherwise survive a rebuild.
- */
+// `dune_blocked!(edges)`, documented for users in dune_tables.ts. An edge means
+// "src depends on dst", so the two spans overlap exactly over the stretch where
+// src was live and dst was still being built:
+//
+//   blocked_ns = max(0, min(src_end, dst_end) - max(src_ts, dst_ts))
+//
+// Zero and NULL differ. Zero is a real answer - disjoint spans, so dst cost src
+// nothing. NULL means an endpoint has no lifecycle timing, so the question has
+// no answer for that edge; SQLite's multi-argument `min`/`max` propagate it.
+//
+// Input columns pass through untouched (`e.*`), so this composes with anything
+// edge-shaped, the relation functions included.
+//
+// `CREATE OR REPLACE` because macros cannot be dropped - there is no
+// `DROP PERFETTO MACRO` - so a stale one would survive a rebuild.
 function blockedMacro(): string {
   return `
       CREATE OR REPLACE PERFETTO MACRO ${BLOCKED_MACRO}(
@@ -1468,27 +1289,17 @@ function depEdgeOffsets(graph: BuildGraph): Int32Array {
   return offsets;
 }
 
-/**
- * The one full pass over the in-memory CSR the edge tier still makes, and the
- * two things only a full pass can answer:
- *
- * - `edgeCount`, the number of edges the mirror represents. Not the number of
- *   stored *rows* any more - a rule's edges are stored factored, so the two
- *   differ by ~6x - but it is what the caps are written against and what the
- *   panel reports, so it is still counted exactly rather than estimated.
- * - `forcedSrc[dst]`, the source of `dst`'s forced edge or -1. A node records a
- *   single forcer (see `isForcedEdge` in graph.ts), so this is a column, not a
- *   list - which is the whole reason {@link FORCED_EDGE_TABLE} is affordable.
- *
- * `forcedSrc` is *not* just `graph.forcerOf`: a node's recorded forcer need not
- * list it as a dependency, and on the monorepo trace 45,503 of 818,035 recorded
- * forcers name no edge at all. Only pairs that really are edges belong in the
- * forced edge table, which is why this reads the CSR rather than the forcer
- * column. Filling it by `dst` also makes the table's rows unique in `dst` (a
- * duplicated `src -> dst` edge, e.g. a dep listed both statically and
- * dynamically, collapses into the one row), which is what lets `dst` be its
- * INTEGER PRIMARY KEY.
- */
+// The one full pass over the in-memory CSR the edge tier makes, for the two
+// things only a full pass answers: `edgeCount` (edges, not stored rows - the
+// two differ by ~6x, and the caps are written against edges), and
+// `forcedSrc[dst]`, the source of `dst`'s forced edge or -1.
+//
+// `forcedSrc` is *not* just `graph.forcerOf`: a node's recorded forcer need not
+// list it as a dependency, and 45,503 of the monorepo trace's 818,035 recorded
+// forcers name no edge at all. Only real edges belong in the forced edge table.
+// Filling it by `dst` also makes its rows unique in `dst` - a dep listed both
+// statically and dynamically collapses into one row - which is what lets `dst`
+// be its INTEGER PRIMARY KEY.
 interface EdgeCensus {
   readonly edgeCount: number;
   readonly forcedSrc: Int32Array;
@@ -1626,21 +1437,16 @@ function outRows(offsets: Int32Array): RowSource {
 }
 
 // ---------------------------------------------------------------------------
-// The edge relation, as SQL.
+// The edge relation, as SQL. A rule's edges are its dep set's members - one
+// join from the set's core plus a range scan of the set's own adds, and the
+// factoring is depth 1, so nothing below recurses. That makes the relation a
+// five-arm union, read through one of three shapes:
 //
-// A rule's edges are not stored; they are its dep set's members, which is one
-// join from the set's core plus one range scan of the set's own adds (the
-// factoring is depth 1 - a core never references another core - so no recursion
-// is involved anywhere below). That makes the relation a five-arm union, and
-// everything that reads edges reads it through one of the three shapes here:
-//
-// - {@link edgeArms} - the arms as *join chains off a known node*, for a single
-//   hop in a walk. This is the shape the relation functions use, and the one
-//   the perf of the whole tier rests on: see the comment there.
-// - {@link ALL_EDGE_VIEW} - the arms as a plain `(src, dst)` view, for the
-//   callers that scan the whole relation (`graph_reachable_bfs!`).
-// - {@link EDGE_TABLE} - the same arms with `forced` / `edge_kind` /
-//   `dyn_deps_stage` decorations, i.e. the public compatibility view.
+// - {@link edgeArms} - join chains off a known node, for one hop in a walk.
+//   What the relation functions use, and what the tier's perf rests on.
+// - {@link ALL_EDGE_VIEW} - a plain `(src, dst)` view, for the callers that
+//   scan the whole relation (`graph_reachable_bfs!`).
+// - {@link EDGE_TABLE} - the same arms decorated, i.e. the public view.
 // ---------------------------------------------------------------------------
 
 // The member side of a rule arm, given the alias of its `_dune_depset` row:
@@ -1664,37 +1470,22 @@ function depSetAddJoin(set: string): string {
           AND xa.rowid < ${set}.first_rowid + ${set}.n`;
 }
 
-/**
- * The arms of the edge relation as join chains reaching the nodes one hop from
- * `source` (a node-id expression) in direction `dir`, each with the expression
- * naming the endpoint the hop lands on.
- *
- * **Each arm is spliced into its own recursive term** rather than joined as one
- * union - that is the load-bearing decision in this file, and it was measured,
- * not assumed. SQLite pushes a *constant* constraint down into a compound
- * subquery happily (`WHERE src = 12345` against the union view is ~0.15 ms),
- * but it does not push down a constraint that comes from joining the recursive
- * table: `JOIN <union view> e ON e.src = s.node_id` inside a recursive term
- * re-derives the whole relation per iteration. On a synthetic 5.4M-row stand-in
- * for this mirror a depth-2 walk cost **2.7 s** that way against **~0 ms** with
- * the arms as separate recursive terms - a >1,000x difference that only grows
- * with the real trace's 28.8M. SQLite allows a recursive CTE to have several
- * recursive terms as long as each references the recursive table once, which is
- * what makes this expressible at all.
- *
- * So: `dune_edge` stays a compatibility view for ad-hoc SQL (where a constant
- * constraint *is* pushed down and the view is fine), and the walks get the arms.
- *
- * The two directions are different join chains over the same tables, not the
- * same chain read backwards, because the forward path is rowid ranges (no index
- * on an owner column) while the reverse path probes the member tables by
- * `dep_node_id` and then walks back up to the rules through the indexes listed
- * in {@link buildEdgeMirror}.
- *
- * `forcedOnly` restricts to forced edges, which are materialized flat, so both
- * directions collapse to a single arm over {@link FORCED_EDGE_TABLE} - no flag
- * test and no range scan (this is what `dune_forcers` / `dune_forced` walk).
- */
+// The arms of the edge relation as join chains reaching the nodes one hop from
+// `source` in direction `dir`, each with the expression naming the endpoint.
+//
+// **Each arm is spliced into its own recursive term** rather than joined as one
+// union. That is the load-bearing decision in this file and it was measured -
+// see README.md, "Why it is shaped this way", for the numbers. SQLite allows a
+// recursive CTE several recursive terms as long as each references the
+// recursive table once, which is what makes it expressible at all.
+//
+// The two directions are different join chains over the same tables, not one
+// chain read backwards: the forward path is rowid ranges (no index on an owner
+// column) while the reverse path probes the member tables by `dep_node_id` and
+// walks back up to the rules through the indexes {@link buildEdgeMirror} makes.
+//
+// `forcedOnly` restricts to forced edges, which are materialized flat, so both
+// directions collapse to one arm over {@link FORCED_EDGE_TABLE}.
 interface EdgeArm {
   readonly join: string;
   readonly dest: string;
@@ -1909,25 +1700,14 @@ function edgeBlockedView(): string {
     SELECT * FROM ${BLOCKED_MACRO}!(${EDGE_TABLE})`;
 }
 
-/**
- * Builds the edge tier of the mirror (`dune_edge` + the relation functions)
- * on top of an already-built {@link SqlNodeMirror}, whose
- * `node_id` space the edge endpoints live in.
- *
- * A rule's edges are stored *factored* - as the dep set the blob named, shared
- * across every rule that named it - so this is not one row per edge: on the
- * monorepo trace it is ~6M rows for 28.8M edges. It is still the expensive half
- * of the mirror, so it stays a separately re-runnable step even though every
- * load reaches it. Past {@link EDGE_HARD_LIMIT}
- * edges it refuses outright rather than taking the engine down: there is no
- * partial state to leave behind, since nothing has been created yet at that
- * point.
- *
- * Rebuilding is idempotent. The returned handle must be disposed *before* the
- * node mirror it was built against: its view joins `_dune_dep`, the relation
- * functions read `_dune_node` and `_dune_rule`, and it owns an index on
- * `_dune_rule`.
- */
+// Builds the edge tier on top of an already-built {@link SqlNodeMirror}, whose
+// `node_id` space the endpoints live in. Past {@link EDGE_HARD_LIMIT} it
+// refuses outright, with no partial state to leave behind since nothing has
+// been created at that point.
+//
+// Rebuilding is idempotent. The returned handle must be disposed *before* the
+// node mirror: its view joins `_dune_dep`, the relation functions read
+// `_dune_node` and `_dune_rule`, and it owns an index on `_dune_rule`.
 export async function buildEdgeMirror(
   engine: Engine,
   graph: BuildGraph,
@@ -2267,41 +2047,31 @@ function relationProjection(
 
 // The recursive bounded walk backing `dune_descendants` / `dune_ancestors`.
 //
-// `step_kind` selects which already-tracked column acts as the step counter -
-// there are only two node kinds, so no extra walk state is needed. A node
-// expands (takes another hop) only while its OWN counted value is still short
-// of the budget, i.e. the budget is tested "stop at the boundary": with
-// `step_kind='dep', max_steps=3` a node reached at dep_distance=3 does not
-// expand further, so its own children are excluded, but a node it already
-// reached via a *free* (non-counted) hop earlier is still included. Concretely,
-// on an alternating dep/rule chain this includes the rule that produced the
-// 3rd dep, but not a 4th dep past it. `max_steps=0` returns no rows for any
-// `step_kind` (the seed can't expand). An invalid `step_kind` (anything but
-// NULL/'dep'/'rule') returns no rows rather than silently meaning "every hop
-// counts".
+// `step_kind` picks which already-tracked column is the step counter, so no
+// extra walk state is needed. **The budget stops at the boundary**: a node
+// expands only while its OWN counted value is short of it, so with
+// `step_kind='dep', max_steps=3` a node at dep_distance=3 does not expand, but
+// one it already reached by a *free* hop is still included - on an alternating
+// chain, the rule that produced the 3rd dep but not a 4th dep past it.
+// `max_steps=0` returns no rows for any `step_kind`; an invalid `step_kind`
+// returns no rows rather than silently meaning "every hop counts".
 //
-// `UNION` (not ALL) dedupes states so the walk terminates on repeated visits;
-// `nodeCount` (the graph's total node count, inlined as a literal - cheaper
-// than a per-row subquery) is an unconditional depth cap independent of
-// `max_steps`: a simple path can have at most `nodeCount - 1` hops, so this can
-// never change the result on a DAG, but protects against a cyclic input graph
-// (built from trace args at runtime, so not guaranteed acyclic) - without it, a
-// cycle increments `distance` every lap forever and nothing in the UI can
-// interrupt a runaway query.
+// `UNION` (not ALL) dedupes states so repeated visits terminate. `nodeCount`,
+// inlined as a literal, is an unconditional depth cap: a simple path has at
+// most `nodeCount - 1` hops, so it cannot change the result on a DAG, but the
+// input graph is built from trace args and is not guaranteed acyclic, and a
+// cycle would increment `distance` every lap with nothing able to interrupt it.
 //
-// Multiple states can reach the same node at different (rule_distance,
-// dep_distance) splits (a min-hop path need not be a min-`step_kind`-count
-// path), so `walk` collapses to one row per node via `row_number()`, ordered by
-// the counted column first - the reported split is the node's minimum under
+// Several states can reach one node at different (rule_distance, dep_distance)
+// splits, so `walk` collapses to one row per node via `row_number()` ordered by
+// the counted column first: the reported split is the node's minimum under
 // whichever metric `step_kind` selects, not necessarily its minimum `distance`.
 //
-// `walk` is MATERIALIZED so the recursion runs once and the projection below is
-// a lookup per reached node. Worth 0.3 s against >90 s for `dune_children` on
-// merlin's widest rule (1,266 children) when the projection also joined `slice`:
-// the planner drove the whole query from `slice` and re-ran the recursive walk
-// per slice. That join is gone, so the hint may not be load-bearing any more -
-// but the projection still joins `_dune_node` and `dune_string` per row, and
-// nothing in the UI can interrupt a query that picks the bad plan, so it stays.
+// `walk` is MATERIALIZED so the recursion runs once. Worth 0.3 s against >90 s
+// for `dune_children` on merlin's widest rule back when the projection also
+// joined `slice` and the planner drove the query from there. That join is gone,
+// so the hint may no longer be load-bearing - but the projection still joins
+// `_dune_node` and `dune_string` per row and nothing can interrupt a bad plan.
 function boundedBody(dir: Direction, param: string, space: NodeSpace): string {
   // One recursive term per arm of the edge relation (see {@link edgeArms} for
   // why they are not one joined union), each carrying the same budget test and
@@ -2388,61 +2158,24 @@ function wrapperBody(fn: string, param: string): string {
   return `SELECT * FROM ${fn}(${param}, 1, NULL)`;
 }
 
-/**
- * Defines the parameterized transitive-relationship helpers, exposed for ad-hoc
- * SQL (e.g. via the query tab). All-pairs closure doesn't scale, so these are
- * all single-source, and each is implemented the way its question wants to be
- * answered rather than routed through one general-purpose walk:
- *
- * - `dune_descendants(node_id, max_steps, step_kind)` /
- *   `dune_ancestors(node_id, max_steps, step_kind)` — the general bounded walk
- *   (recursive CTE; see `boundedBody`). `max_steps` NULL means unbounded;
- *   `step_kind` NULL means every hop counts, 'dep'/'rule' means only hops
- *   landing on that kind count.
- * - `dune_all_descendants(node_id)` / `dune_all_ancestors(node_id)` — the
- *   unbounded fast path, built on the stdlib's cycle-safe `graph_reachable_bfs!`
- *   rather than the hand-rolled recursive walk.
- * - `dune_children(node_id)` / `dune_parents(node_id)` — one hop (see
- *   `wrapperBody`).
- * - `dune_forcers(node_id)` / `dune_forced(node_id)` — the unbounded fast path
- *   restricted to forced edges only, so every row returned is forced by
- *   construction; `dune_forcers` walks up (what transitively forced
- *   `node_id`), `dune_forced` walks down (what `node_id` transitively forced).
- *
- * All eight return the same 9-column shape (`RELATION_COLS`):
- *   (src_*, dst_*, distance, rule_distance, dep_distance)
- * `src` is the depender (upstream), `dst` the prerequisite, regardless of which
- * direction the function walks; `distance == rule_distance + dep_distance`.
- * The distances are **anchor-relative**: they count the path nodes traversed
- * AWAY FROM `node_id`, excluding `node_id` itself, in both directions. That is
- * what makes the `step_kind` budget mean the same thing whichever way the walk
- * runs. The price is that the two directions can disagree on the rule/dep split
- * for a pair they both report, whenever `kind(src) != kind(dst)`; they always
- * agree on `distance` itself.
- *
- * **There is no `forced` column**, deliberately: producing one costs a second
- * forced-only BFS on every unbounded call, i.e. double the work, for something
- * a caller can ask for when it wants it. Per-edge forcing is on
- * `dune_edge.forced`; for transitive forced-reachability, join against
- * `dune_forced` / `dune_forcers`:
- *   SELECT d.*, f.dst IS NOT NULL AS forced
- *   FROM dune_descendants(42, NULL, NULL) d
- *   LEFT JOIN dune_forced(42) f USING (dst)
- *
- * A `RETURNS TABLE` function is registered as a virtual table keyed by *name*
- * only, so no two arities of one name can coexist - which is why the unbounded
- * forms are separately named `dune_all_descendants` / `dune_all_ancestors`
- * rather than being the same function with fewer arguments.
- *
- * Every function above has a same-named `!` list-macro wrapper taking
- * `starts TableOrSubquery` in place of `node_id` (plus any trailing scalar
- * args, see `RELATION_FUNCTIONS`): runs the function once per `node_id` in
- * `starts` and unions the results, e.g.
- * `dune_descendants!(starts, max_steps, step_kind)`, `dune_parents!(starts)`.
- * CREATE OR REPLACE keeps reload idempotent for both functions and macros
- * (macros can't be dropped - there's no `DROP PERFETTO MACRO` - so a stale one
- * would otherwise survive a graph rebuild anyway).
- */
+// The eight transitive-relationship functions plus their `!` list-macro
+// wrappers. **The inventory is documented twice for readers who are not this
+// file's**: README.md, "The SQL mirror", and dune_tables.ts's DUNE_FUNCTIONS /
+// DUNE_MACROS, which is what the query page's sidebar shows.
+//
+// What belongs here instead is why there are eight rather than one general
+// walk: all-pairs closure does not scale, so each is single-source, and each is
+// implemented the way its question wants answering - a recursive CTE for the
+// bounded walks (`boundedBody`), the stdlib's cycle-safe `graph_reachable_bfs!`
+// for the unbounded ones, one hop for the children/parents pair
+// (`wrapperBody`), and the same BFS restricted to forced edges for the forcer
+// pair. All eight return `RELATION_COLS`.
+//
+// A `RETURNS TABLE` function is registered as a virtual table keyed by *name*
+// only, so no two arities of one name can coexist - which is why the unbounded
+// forms are separately named rather than the same function with fewer
+// arguments. `CREATE OR REPLACE` keeps a reload idempotent for both functions
+// and macros, the latter because macros cannot be dropped at all.
 async function createRelationFunctions(
   engine: Engine,
   space: NodeSpace,

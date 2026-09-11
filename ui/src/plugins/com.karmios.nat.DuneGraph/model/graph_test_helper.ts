@@ -15,10 +15,9 @@
 /**
  * Graph fixtures for the unit tests. Only used by `*_unittest.ts`.
  *
- * Everything in the real model is an integer - a node is a dense id, a path is a
- * dict id, a rule is its `rule_id` (see graph.ts) - which makes hand-built
- * fixtures unreadable: `staticDeps: [7]` says nothing, and an assertion on node
- * `3` says less. So a fixture is written in *names*:
+ * Everything in the real model is an integer - a node is a dense id, a path a
+ * dict id, a rule its `rule_id` - which makes hand-built fixtures unreadable:
+ * `staticDeps: [7]` says nothing. So a fixture is written in *names*:
  *
  *     const g = testGraph([
  *       dep('a', {resolvedRule: 'r1'}),
@@ -27,20 +26,16 @@
  *     ]);
  *     expect(g.names(descendants(g.graph, g.id('a')))).toEqual(['b', 'r1']);
  *
- * `id(name)` is the node id a name was given, and `names(ids)` maps node ids back
- * to the names the test wrote (sorted, for order-independent assertions). A name
- * that no fixture defines still interns to an id, which is how a test writes a
- * reference the blob never recorded a node for (see `dangling` in graph.ts).
+ * `id(name)` is the node id a name was given and `names(ids)` maps back (sorted,
+ * for order-independent assertions). A name no fixture defines still interns to
+ * an id, which is how a test writes a reference the blob recorded no node for.
  *
- * The fixtures go through the real {@link GraphBuilder} and the real record
- * types, so they exercise the ingest and linking path rather than a parallel
- * hand-rolled one.
+ * The fixtures go through the real {@link GraphBuilder} and record types, so
+ * they exercise the ingest path rather than a parallel hand-rolled one.
  *
- * The blob names a rule's deps by *dep set* rather than listing them, so
- * `staticDeps` is sugar: it synthesises a private one-rule set underneath. Where
- * a test wants the sharing itself - one set behind two rules, or a set split
- * across a core and its adds - it writes the set out and hands the same handle
- * to each rule:
+ * `staticDeps` is sugar - the blob names a rule's deps by *dep set*, so it
+ * synthesises a private one-rule set underneath. A test that wants the sharing
+ * itself writes the set out and hands the same handle to each rule:
  *
  *     const s = depSet({core: ['x.cmi', 'y.cmi'], adds: ['a.ml']});
  *     const g = testGraph([

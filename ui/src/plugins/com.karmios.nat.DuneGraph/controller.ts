@@ -69,49 +69,22 @@ import {
 
 const TIMELINE_WORKSPACE_NAME = 'Dune graph';
 
-/**
- * The setting behind the one soft load gate: estimated stored edge rows below
- * which the graph loads itself as soon as the trace opens, rather than waiting
- * to be asked (see {@link DuneGraphController.init}). Above it, opening a trace
- * costs nothing and the side panel shows what a load would involve instead.
- *
- * The estimate comes from the blob's byte size, not from a parse (see
- * `GraphStats.estimatedEdgeRows`), so it is available before any expensive work
- * has happened - which is what makes it the *only* number the user is asked
- * about, and why it is measured in rows.
- *
- * **Rows, and asked once.** They are the only quantity observable before any
- * work is done, which is the only point at which a question is worth asking;
- * and since the blob factors dep sets they are also the better predictor of
- * what the edge tier costs, because the tier stores far fewer rows than the
- * graph has edges (6.33M against 28.8M on the monorepo trace) and a byte size
- * can only predict the former. A second, post-parse question about the edge
- * tier would be asking again about a cost this gate has already covered.
- *
- * Only the *hard* cap counts edges (see sql_graph.ts's EDGE_HARD_LIMIT),
- * because it is a memory ceiling rather than a question and is consulted when
- * the exact count is known.
- *
- * The id lives here rather than in index.ts, which registers it, so that the
- * gate and its default read together; index.ts imports both. The value is read
- * live on every access (see {@link DuneGraphController.autoLoadEdgeRowLimit}),
- * so an edit shows up on the next frame everywhere the limit is displayed. Only
- * the auto-start decision in `init()` is one-shot, which is why the setting's
- * description says it takes effect the next time a trace is opened.
- */
+// The one soft load gate - see README.md, "The one question, and the one
+// refusal", for what it gates and why it is measured in rows.
+//
+// The id lives here rather than in index.ts, which registers it, so the gate
+// and its default read together. The value is read live on every access, so an
+// edit shows up on the next frame everywhere the limit is displayed; only the
+// auto-start decision in `init()` is one-shot, which is what the setting's
+// description warns about.
 export const AUTO_LOAD_ROW_LIMIT_SETTING =
   'com.karmios.nat.DuneGraph#autoLoadEdgeRowLimit';
 
-/**
- * What that setting ships as, and the value used when it isn't registered at
- * all (a controller built in a unit test).
- *
- * 2M rows is ~6 s of edge tier in the wasm engine, on the 18.9 s / 6.33M
- * measurement in README.md's performance section - a few seconds being the bar
- * a load is worth starting unasked at. On the four sample traces it decides
- * with room to spare rather than marginally: the monorepo trace estimates 5.7M
- * rows, the three small ones 10k-27k.
- */
+// What that setting ships as, and the value used when it is not registered at
+// all (a controller built in a unit test). 2M rows is ~6 s of edge tier, on the
+// measurement in README.md's performance section. It decides with room to
+// spare on the sample traces: the monorepo one estimates 5.7M rows, the three
+// small ones 10k-27k.
 export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
 
 // How many slice ids `nodesForSliceIds` resolves per query.
@@ -130,24 +103,15 @@ interface SelectionResolution {
 // the edge mirror isn't built, and either mirror can fail on its own.
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-/**
- * One step of the load, as the side panel sees it. `label` names the step in
- * the UI and `error` is set only in the `error` status.
- *
- * A step that builds a SQL tier also carries the manifest of everything that
- * tier is going to do (`phases`, from sql_graph.ts) and where in it the build
- * has got to. That is what lets the panel list the whole tier up front and tick
- * it off, rather than naming only whichever table happens to be current: the
- * point of the list is that a minutes-long build shows what is left, not just
- * what is now. The **graph** step's `phases` is empty - its internals live in
- * `TraceGraphSource.load`, which is a different code path and reports nothing -
- * so it stays a single row.
- *
- * `activePhase` is driven off the *start*-of-phase report and never off row
- * counts. A small table finishes inside a single flush and so emits no row
- * report at all (see `MirrorProgress`); inferring the active phase from
- * `phaseDetail` would leave every one of those permanently pending.
- */
+// One step of the load, as the side panel sees it. A step that builds a SQL
+// tier also carries that tier's whole manifest (`phases`) and where the build
+// has got to, so the panel can list a minutes-long build up front and tick it
+// off rather than naming only the current table. The graph step's `phases` is
+// empty - `TraceGraphSource.load` reports nothing - so it stays one row.
+//
+// `activePhase` is driven off the *start*-of-phase report, never off row
+// counts: a small table finishes inside one flush and emits no row report, so
+// inferring it from `phaseDetail` would leave those permanently pending.
 export class LoadStep {
   status: LoadStatus = 'idle';
   error?: string;
@@ -200,19 +164,10 @@ function errorMessage(e: unknown): string {
  * Holds the extracted build graph plus the active source, and knows how to
  * (re)load it. The sidebar panel reads state directly off this each render.
  *
- * **Loading is explicit and staged**, in three steps - `loadGraph()`,
- * `buildNodeMirror()`, `buildEdgeMirror()` - none of which runs when the trace
- * opens. See README.md, "The load path", for what each produces and for the one
- * gate and one refusal that decide whether they run.
- *
- * Three properties of the staging matter to anything calling in here:
- *
- * - Each step is **idempotent** (already-`ready` is a no-op) and **pulls in the
- *   steps it depends on**, so any of them can be called from cold.
- * - They all run through **one queue**: they mutate the same SQL table names, so
- *   two must never overlap.
- * - A `reload()` bumps a **generation counter** that drops whatever was queued
- *   behind it, rather than letting it rebuild on top of fresh state.
+ * **README.md, "The load path", is the contract**: three staged steps, none of
+ * which runs when the trace opens, each idempotent and pulling in what it
+ * depends on, all through one queue, with a `reload()` generation counter that
+ * drops whatever was queued behind it.
  */
 export class DuneGraphController {
   private source: GraphSource;
@@ -323,15 +278,9 @@ export class DuneGraphController {
     return this.version;
   }
 
-  /**
-   * Monotonic version of the *loaded graph*: bumped when the node mirror is
-   * built and when it is dropped, so anything caching rows read out of the
-   * mirror can tell that its ids no longer mean anything.
-   *
-   * Not `graphVersion`, which moves whenever a node is added to or removed from
-   * the graph selection - orders of magnitude more often, and for a reason a
-   * mirror cache has no interest in.
-   */
+  // Bumped when the node mirror is built and when it is dropped, so anything
+  // caching rows read out of the mirror can tell its ids stopped meaning
+  // anything. Not `graphVersion`, which moves on every selection change.
   get mirrorVersion(): number {
     return this.mirrorVersionValue;
   }
@@ -343,37 +292,20 @@ export class DuneGraphController {
     return this.visibleIn(this.selectedNodes);
   }
 
-  /**
-   * The same hide-rules filter as `visibleNodes` above, over a node set that
-   * isn't the graph selection.
-   *
-   * "Hide rules" is a property of how a Dune graph is *drawn*, not of what is
-   * selected, which is why the flag lives on the controller rather than in a
-   * panel. So a surface drawing some other node set - the Data Explorer's node
-   * graph chart, whose nodes come from its query (see node_graph_chart.ts) -
-   * has to apply it too, and applies exactly this one rather than a second copy
-   * that could drift from the timeline track's.
-   *
-   * @param nodes The set to filter. Returned as-is while rules are shown, so
-   *   this costs nothing in the common case.
-   */
+  // The same hide-rules filter, over a node set that is not the graph
+  // selection. "Hide rules" is how a Dune graph is *drawn* rather than what is
+  // selected, which is why the flag is here: the node graph chart draws its own
+  // node set and has to apply exactly this filter rather than a second copy.
   visibleIn(nodes: readonly NodeId[]): readonly NodeId[] {
     return this.hideRulesFlag
       ? nodes.filter((id) => !this.graph.isRule(id))
       : nodes;
   }
 
-  /**
-   * Registers the four timeline tracks (see graph_track.ts), the overlay that
-   * draws the arrows between them (see arrows.ts) and the dedicated workspace
-   * they live in.
-   *
-   * Called once from index.ts's onTraceLoad(). Everything here lives for the
-   * trace: the tracks are fixed containers whose *contents* follow the
-   * selection, so showing the timeline is just a switchWorkspace() away (see
-   * showTimeline()) and nothing has to be registered or torn down as the
-   * selection changes.
-   */
+  // The four timeline tracks, the arrow overlay and their workspace, once from
+  // index.ts's onTraceLoad(). Everything here lives for the trace: the tracks
+  // are fixed containers whose *contents* follow the selection, so nothing is
+  // registered or torn down as it changes.
   installTimeline(): void {
     const ws = this.trace.workspaces.createEmptyWorkspace(
       TIMELINE_WORKSPACE_NAME,
@@ -566,24 +498,12 @@ export class DuneGraphController {
     return spanSliceId((await this.timingFor(node)).actionTiming);
   }
 
-  /**
-   * Ask for `reveal` to be called whenever the *selected node* changes to a node
-   * of this graph.
-   *
-   * "Changes" is the operative word: this fires on a transition, not on every
-   * frame a node happens to be selected, so it cannot fight the user for the
-   * side panel. It deliberately does not fire when the selection *clears* or
-   * lands on something that isn't one of our nodes - a Dune panel yanked forward
-   * to say "nothing selected" is worse than one left where it was.
-   *
-   * Polled from onFrame() rather than hooked into the places that navigate,
-   * because those include clicking a slice directly on the timeline, which goes
-   * through the core selection manager and has no idea this plugin exists. One
-   * rule here beats a hook on every route to a node.
-   *
-   * Note that a `reveal` implemented with `sidePanel.showTab` also *opens* the
-   * side panel if it was closed, since that API does both.
-   */
+  // Fires on a *transition* to one of our nodes, so it cannot fight the user
+  // for the side panel, and not when the selection clears or lands on something
+  // else - a panel yanked forward to say "nothing selected" is worse than one
+  // left alone. Polled from onFrame() rather than hooked into the navigation
+  // paths, which include clicking a slice on the timeline and know nothing of
+  // this plugin. Note `sidePanel.showTab` also *opens* a closed side panel.
   revealPanelWhenNodeSelected(reveal: () => void): void {
     this.revealPanel = reveal;
   }
@@ -621,27 +541,20 @@ export class DuneGraphController {
     return this.source.description;
   }
 
-  /**
-   * The node corresponding to the current timeline selection, if a "build-dep"
-   * or "exec-rule" slice is selected - or, on one of the Dune workspace's own
-   * tracks, if a projected row is selected. The two key their events
-   * differently (a real slice id vs. an encoded row id - see graph_track.ts's
-   * decodeGraphRowId), so this branches on which track the selection is on.
-   *
-   * Stays synchronous - it's read from a mithril view on every frame - but a
-   * real slice id resolves through SQL (see `nodesForSliceIds`), so the answer
-   * for a *new* selection arrives one redraw later: the lookup is kicked
-   * off here, cached against the selection it was for, and a redraw requested
-   * when it lands. A stale result can therefore never be shown, only a
-   * momentary "no node".
-   *
-   * A *process* slice resolves to the rule that forced it, wherever it was
-   * selected: on the Dune workspace's own process track, and - since that is
-   * where anyone browsing a raw trace clicks - on the real `job-<n>` track it
-   * came from too. It carries no `rule_id`/`dep_id` arg, so it can't be a
-   * lifecycle instant; the fallback below is tried only once the lifecycle
-   * lookup has come back empty.
-   */
+  // The node the current timeline selection names, whether that is a real
+  // `build-dep` / `exec-rule` slice or a projected row on one of our own tracks
+  // - the two key their events differently, hence the branch.
+  //
+  // Synchronous, because a mithril view reads it every frame, but a real slice
+  // id resolves through SQL: the lookup is kicked off here, cached against the
+  // selection it was for, and a redraw requested when it lands. So a *new*
+  // selection's answer arrives one redraw later and a stale one is never shown,
+  // only a momentary "no node".
+  //
+  // A *process* slice resolves to the rule that forced it, on our own process
+  // track and on the real `job-<n>` track alike. It carries no `rule_id` /
+  // `dep_id` arg, so the fallback is tried only once the lifecycle lookup
+  // comes back empty.
   nodeForSelection(): NodeId | undefined {
     const selection = this.trace.selection.selection;
     if (selection.kind !== 'track_event') {
@@ -739,13 +652,11 @@ export class DuneGraphController {
     return [...this.selection];
   }
 
-  // Add nodes to the graph selection.
   addToGraph(nodes: Iterable<NodeId>): void {
     for (const node of nodes) this.selection.add(node);
     this.version++;
   }
 
-  // Remove nodes from the graph selection.
   removeFromGraph(nodes: Iterable<NodeId>): void {
     for (const node of nodes) this.selection.delete(node);
     this.version++;
@@ -757,7 +668,6 @@ export class DuneGraphController {
     this.version++;
   }
 
-  // Whether a node is currently in the graph selection.
   isInGraph(node: NodeId): boolean {
     return this.selection.has(node);
   }
@@ -786,17 +696,10 @@ export class DuneGraphController {
     return (await this.nodesForSliceIds([sliceId])).get(sliceId);
   }
 
-  /**
-   * The graph nodes a batch of lifecycle slice ids map to. Resolved on demand
-   * rather than from an index built at load time - the slice's `rule_id` /
-   * `dep_id` arg is read back from the trace (see `lifecycleKeysForSliceIds`)
-   * and looked up in the graph's own maps - because such an index is ~2.4M
-   * entries on a monorepo trace and this is asked for a handful of rows.
-   *
-   * Batched because the callers that need many at once (the query tab, over a
-   * whole result) would otherwise issue a query per row. Ids that aren't
-   * lifecycle instants, or whose node isn't in the graph, are simply absent.
-   */
+  // Resolved on demand rather than from a load-time index, which would be
+  // ~2.4M entries on a monorepo trace for something asked about a handful of
+  // rows. Batched because the query tab asks over a whole result. Ids that are
+  // not lifecycle instants, or whose node is not in the graph, are absent.
   async nodesForSliceIds(
     sliceIds: readonly number[],
   ): Promise<Map<number, NodeId>> {
@@ -982,18 +885,11 @@ export class DuneGraphController {
     });
   }
 
-  /**
-   * Resolve `sliceId` back to whatever real track it originated from and
-   * select it there - the half of goToNode()/onWorkspaceChanged() used outside
-   * the "Dune graph" workspace.
-   *
-   * Also what a bare slice link uses (the query tab's `slice_id` cells), for a
-   * slice that maps to no node of the graph: without a node there is nothing
-   * for our tracks to project, so the real track is the only place to go. Note
-   * that this reveals *and* scrolls, which selecting through `trace.selection`
-   * directly would not: while the Dune workspace is showing, the slice's real
-   * track isn't in it, so the scroll would silently no-op.
-   */
+  // Selects `sliceId` on whatever real track it came from - the half of
+  // goToNode() used outside the "Dune graph" workspace, and what a bare slice
+  // link uses for a slice that maps to no node. Reveals *and* scrolls, which
+  // `trace.selection` alone would not: while the Dune workspace is showing, the
+  // slice's real track is not in it and the scroll would silently no-op.
   async goToSlice(sliceId: number): Promise<void> {
     const match = (
       await this.trace.selection.resolveSqlEvents('slice', [sliceId])
@@ -1102,23 +998,13 @@ export class DuneGraphController {
     })());
   }
 
-  /**
-   * The whole load: the graph, then the node tier, then - unless the graph is
-   * past the hard cap (see {@link DuneGraphController.edgeTierRefused}) - the
-   * edge tier. What the panel's "Load graph" button runs. Steps that are
-   * already done are skipped, so this doubles as "finish whatever is missing".
-   *
-   * All three, deliberately. Whether this trace is worth loading at all is
-   * decided once, before anything is parsed, against
-   * {@link AUTO_LOAD_ROW_LIMIT_SETTING}, and someone who has said yes to that
-   * has already agreed to the edge tier; asking a second time about a cost the
-   * first answer covered is the failure mode this staging exists to avoid.
-   * The hard cap is not a second question: past it the tier would exhaust the
-   * trace processor whatever anyone answered, so it is skipped here rather than
-   * left to throw out of {@link DuneGraphController.buildEdgeMirror}, and the
-   * panel explains the refusal. Everything except `dune_edge` and the relation
-   * functions works without it.
-   */
+  // The whole load, and what the panel's "Load graph" button runs. Already-done
+  // steps are skipped, so it doubles as "finish whatever is missing".
+  //
+  // All three deliberately: the one question was asked before anything was
+  // parsed, and a yes to it covered the edge tier. Past the hard cap the tier
+  // is skipped here rather than left to throw out of `buildEdgeMirror`, and the
+  // panel explains the refusal.
   load(): Promise<void> {
     return this.run('dune graph: load', async (perf) => {
       await this.doLoadGraph(perf);
@@ -1285,18 +1171,11 @@ export class DuneGraphController {
     for (const phase of step.phases) step.done.add(phase.id);
   }
 
-  /**
-   * A step's progress sink: turns a tier's reports into the panel's phase list.
-   *
-   * The builders are straight-line code and never have two phases open at once,
-   * so a report naming a different phase from the current one means the current
-   * one finished - that is the only signal either builder gives that a phase is
-   * over, and it is why the outgoing phase is closed here rather than anywhere
-   * more explicit.
-   *
-   * The inserts yield to the event loop before each report (see sql_graph.ts),
-   * so asking for a redraw here actually paints one.
-   */
+  // Turns a tier's reports into the panel's phase list. The builders are
+  // straight-line code and never have two phases open at once, so a report
+  // naming a different phase means the current one finished - the only signal
+  // either builder gives, which is why the outgoing phase is closed here. The
+  // inserts yield before each report, so a redraw here actually paints.
   private progressFor(step: LoadStep): (p: MirrorProgress) => void {
     return (p: MirrorProgress) => {
       if (p.phase !== step.activePhase) {

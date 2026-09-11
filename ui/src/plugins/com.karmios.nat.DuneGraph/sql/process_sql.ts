@@ -16,35 +16,14 @@
  * The build's *process* slices, indexed by the rule that forced them.
  *
  * Dune emits a duration event named `process` per spawned process, on a
- * `job-<n>` track (one per build job slot), tagged with a `debug.dune.forced_by`
- * arg naming what pulled it into the build. These are not graph nodes and never
- * become any: they carry no `rule_id`/`dep_id` join key, they have no blob
- * record, and the derived "Dune graph" track projects them verbatim (see
- * graph_track.ts) rather than as a node's span.
+ * `job-<n>` track, tagged with a `debug.dune.forced_by` arg naming what pulled
+ * it into the build.
  *
- * **Both halves of the filter matter.** `process` is the name that carries the
- * semantics - it is what makes the slice a spawned process rather than some
- * other thing dune happens to tag - and `forced_by` is not exclusively a rule:
- * on merlin's trace 182 of the 1,151 process slices read `dep <path>` instead
- * of `rule <rule_id>`, and a dep forcer names no rule to hang the slice off.
- * So the name is matched *and* the value is required to be the `rule` form.
- *
- * They get a table of their own because finding them costs an `extract_arg`
- * over *every* slice in the trace, and the track's SQL is regenerated every
- * time the graph selection changes - a multi-second full scan per click, run
- * several times over, since SliceTrack builds two mipmaps and a row count from
- * the same source. So the arg is extracted once, here, and the track filters
- * this table instead.
- *
- * **Keyed by `rule_id`, not `node_id`, deliberately: nothing in this file knows
- * about the graph.** The consumer it exists for already has the rule ids it
- * wants (graph.ts's `timingKeyOf`), and translating here would mean joining
- * `_dune_node` on `orig_id` while the table is built - a scan of all 818k node
- * rows per process slice. The `dune_process` view (see sql_graph.ts) is this
- * table's public face and does make that join, lazily and per query, against a
- * partial index the node tier keeps. The two lookups below hold the same line:
- * both speak rule ids, and translating either end to a node is sql_graph.ts's
- * job.
+ * **README.md, "Processes", is the reference**: why they are not graph nodes,
+ * why they get a table of their own, why both halves of the filter matter, and
+ * why the table is keyed by `rule_id` rather than `node_id`. Nothing in this
+ * file knows about the graph, and the two lookups below hold that line: both
+ * speak rule ids, and translating either end to a node is sql_graph.ts's job.
  */
 
 import type {Engine} from '../../../trace_processor/engine';

@@ -14,18 +14,13 @@
 
 /**
  * The timeline projection of the graph selection: four tracks, one per kind of
- * row. See README.md, "The four surfaces", for why there are four fixed tracks
- * rather than one per selected thing, and why their relationship is drawn as
- * arrows rather than expressed as nesting.
+ * row. README.md, "The four surfaces", says why four fixed tracks rather than
+ * one per selected thing.
  *
  * Every track is packed by the core's `internal_layout` - none declares a
- * `depth` column - so each behaves like an ordinary slice track. The tracks are
- * registered once and live for the trace; only their contents follow the
- * selection, through a dataset closure.
- *
- * **Row ids are per track**, since they only have to be unique within one: a
- * node's `node_id` on the `dep`/`rule`/`rule-action` tracks (a rule's action is
- * filed under the rule), and a real `slice.id` on the `process` track.
+ * `depth` column. **Row ids are per track**, since they only have to be unique
+ * within one: a node's `node_id` on the `dep` / `rule` / `rule-action` tracks
+ * (a rule's action is filed under the rule), a real `slice.id` on `process`.
  */
 
 import {HSLColor} from '../../../base/color';

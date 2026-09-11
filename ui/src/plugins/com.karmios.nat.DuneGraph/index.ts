@@ -56,19 +56,11 @@ export default class implements PerfettoPlugin {
   // both call sites still check that it is enabled before reaching for it.
   static readonly dependencies = [DataExplorerPlugin, SqlModulesPlugin];
 
-  /**
-   * Registers the one number the user is asked about: how big a build graph
-   * may be before opening its trace stops loading it and starts offering to
-   * (see controller.ts's AUTO_LOAD_ROW_LIMIT_SETTING for why it is rows, and
-   * why it is the only such number).
-   *
-   * Here rather than in `onTraceLoad` for two reasons: `init()` reads the value
-   * while the trace is loading, and a trace-scoped registration lives in the
-   * trace's `DisposableStack`, so the setting would vanish off the settings
-   * page whenever no trace was open - which is exactly when someone would go
-   * looking for it after being made to wait. The plugin manager injects our
-   * plugin id, so it files itself under this plugin with no extra work.
-   */
+  // The two settings, here rather than in `onTraceLoad` for two reasons:
+  // `init()` and the query page both read a value while the trace is loading,
+  // and a trace-scoped registration lives in the trace's `DisposableStack`, so
+  // a setting would vanish off the settings page whenever no trace was open -
+  // exactly when someone would go looking for it after being made to wait.
   static async onActivate(app: App): Promise<void> {
     app.settings.register({
       id: AUTO_LOAD_ROW_LIMIT_SETTING,

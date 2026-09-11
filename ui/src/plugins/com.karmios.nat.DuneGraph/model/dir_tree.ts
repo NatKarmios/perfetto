@@ -14,24 +14,21 @@
 
 /**
  * The build graph's directory hierarchy, as id/parent_id rows - one row per
- * distinct path *prefix*. What `dune_dir` is built from; see README.md, *The
- * SQL mirror*.
+ * distinct path *prefix*. What `dune_dir` is built from.
  *
  * Deliberately pure: no engine, no graph, no dune vocabulary. Everything
- * dune-specific (what counts as "no directory", which nodes contribute) lives in
- * its caller.
+ * dune-specific lives in its caller.
  *
  * Segmentation is {@link splitPath}'s, so this agrees with the details panel's
- * trie: `/` and `@` are both boundaries, a *leading* one is not (which is what
- * keeps an absolute path's `/usr` a single root segment rather than an empty one
- * under a phantom root), and a trailing one produces no empty segment. Two
- * spellings of the same directory (`a/b` and `a/b/`) therefore intern to one
- * row, whose `path` is the canonical, separator-free-tail form.
+ * trie: `/` and `@` are both boundaries, a *leading* one is not (which keeps an
+ * absolute path's `/usr` a single root segment rather than an empty one under a
+ * phantom root), and a trailing one produces no empty segment. So `a/b` and
+ * `a/b/` intern to one row, whose `path` is the separator-free-tail form.
  *
- * The empty string is a directory like any other: it is the *top level*, and it
- * gets a row (with an empty `name` and `path`) so that entries dune filed
- * nowhere are still counted somewhere. It is a root, i.e. it is not the parent
- * of `_build`; a tree of absolute and relative paths simply has several roots.
+ * The empty string is a directory like any other - the *top level* - and gets a
+ * row so entries dune filed nowhere are still counted somewhere. It is a root,
+ * not the parent of `_build`: a tree of absolute and relative paths simply has
+ * several roots.
  */
 
 import type {PathSeg} from './path_tree';

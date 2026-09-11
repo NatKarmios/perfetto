@@ -48,20 +48,9 @@ import type {ChartConfig} from '../../dev.perfetto.DataExplorer/query_builder/no
 import type {ChartRenderContext} from '../../dev.perfetto.DataExplorer/query_builder/charts/chart_renderers';
 import {DUNE_NODE_ID_COLUMNS} from '../views/node_cell';
 
-/**
- * The column a Dune chart should start on, given the columns a query returns.
- *
- * The `defaultColumn` hook of both descriptors. Without it the host picks the
- * first non-numeric column - on a Dune query usually a label or a path - so a
- * chart dropped on `dune_node` would join a string against node ids, match
- * nothing, and need correcting before it drew anything.
- *
- * Undefined when the query has none of the known names, which hands the choice
- * back to the host's generic rule and leaves {@link renderNodeColumnPrompt} to
- * say so if that turns out badly.
- *
- * @param cols The columns the chart's query returns.
- */
+// The `defaultColumn` hook of both descriptors. Undefined when the query has
+// none of the known names, which hands the choice back to the host's generic
+// rule and leaves {@link renderNodeColumnPrompt} to say so if that goes badly.
 export function defaultNodeColumn(
   cols: ReadonlyArray<{readonly name: string}>,
 ): string | undefined {
@@ -69,18 +58,10 @@ export function defaultNodeColumn(
   return DUNE_NODE_ID_COLUMNS.find((c) => names.has(c));
 }
 
-/**
- * The column that should hold node ids but isn't the one configured, or
- * undefined when the configured one will do.
- *
- * A configured column that is one of the known node id names is taken as
- * deliberate. So is one that isn't, when the query offers no better - a query
- * may well have aliased its node id to something else, and only its author
- * knows.
- *
- * @param column The chart config's primary column.
- * @param cols The columns the chart's query actually returns.
- */
+// The column that should hold node ids but is not the configured one, or
+// undefined when the configured one will do. A configured column that is one of
+// the known names is taken as deliberate - and so is one that is not, when the
+// query offers no better: it may well be an alias only its author knows.
 export function resolveNodeColumn(
   column: string,
   cols: ReadonlyArray<ColumnInfo>,
@@ -89,19 +70,10 @@ export function resolveNodeColumn(
   return defaultNodeColumn(cols);
 }
 
-/**
- * The offer to point a chart at a column that actually holds node ids.
- *
- * The click is the config popup's own `updateChart`, so it persists exactly as
- * picking the column there would - and rebuilding the loader on the new column
- * is then the host's business rather than the chart's.
- *
- * @param ctx The render context, for the config update the button applies.
- * @param config The chart's config, whose `column` is the one being questioned.
- * @param suggestion The column to offer instead (from {@link resolveNodeColumn}).
- * @param icon The chart's own icon, so the prompt still looks like the card it
- *   replaced rather than like a generic error.
- */
+// The offer to point a chart at a column that actually holds node ids. The
+// click is the config popup's own `updateChart`, so it persists exactly as
+// picking the column there would, and rebuilding the loader is then the host's
+// business. `icon` is the chart's own, so the prompt still reads as that card.
 export function renderNodeColumnPrompt(
   ctx: ChartRenderContext,
   config: ChartConfig,
@@ -126,15 +98,8 @@ export function renderNodeColumnPrompt(
   );
 }
 
-/**
- * What a card shows before its query has produced a results table at all.
- *
- * The host creates a chart's loader only once the upstream node has run, so an
- * absent loader entry is not an error - there is simply nothing to have loaded
- * yet.
- *
- * @param icon The chart's own icon, so the card still reads as itself.
- */
+// The host creates a chart's loader only once the upstream node has run, so an
+// absent loader entry is not an error - there is nothing to have loaded yet.
 export function renderChartWaiting(icon: string): m.Children {
   return m(
     EmptyState,
@@ -146,7 +111,7 @@ export function renderChartWaiting(icon: string): m.Children {
   );
 }
 
-/** What a card shows while its source is reading the query's rows. */
+// What a card shows while its source is reading the query's rows.
 export function renderChartLoading(): m.Children {
   return m(
     '.pf-dune-graph__status',
@@ -155,11 +120,7 @@ export function renderChartLoading(): m.Children {
   );
 }
 
-/**
- * What a card shows when mapping its rows onto nodes failed.
- *
- * @param message The source's own error text.
- */
+// What a card shows when mapping its rows onto nodes failed.
 export function renderChartError(message: string): m.Children {
   return m(
     Callout,
@@ -168,17 +129,10 @@ export function renderChartError(message: string): m.Children {
   );
 }
 
-/**
- * What a card shows when the query ran but named no node this graph knows.
- *
- * Says which column was read and what it has to hold, because that is the one
- * thing the reader can act on - the usual cause is a column of ids from
- * somewhere other than `dune_node`.
- *
- * @param config The chart's config, for the column name it read.
- * @param place Where the rows would have been drawn ('the tree', 'the build
- *   graph'), so the sentence names the picture that is missing.
- */
+// What a card shows when the query ran but named no node this graph knows. Says
+// which column was read and what it has to hold, since that is the one thing
+// the reader can act on. `place` names the picture that is missing ('the tree',
+// 'the build graph').
 export function renderChartNoNodes(
   config: ChartConfig,
   place: string,

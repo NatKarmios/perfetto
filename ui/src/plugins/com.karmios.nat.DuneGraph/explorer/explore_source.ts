@@ -13,44 +13,14 @@
 // limitations under the License.
 
 /**
- * One of the mirror's tables, offered to the Data Explorer as a data source the
- * user can query and put on a dashboard - the mechanism shared by every such
- * offer (dir_tree_source.ts's directories, node_source.ts's nodes). What varies
- * between them is a table name, a column list and a name; the *shape* of the
- * hand-off is all here.
+ * One of the mirror's tables, offered to the Data Explorer as a data source -
+ * the mechanism shared by dir_tree_source.ts's directories and
+ * node_source.ts's nodes. What varies between them is a table name, a column
+ * list and a name; the *shape* of the hand-off is here.
  *
- * Each source becomes a two-node chain, wrapped in a group named after it:
- *
- *   group [ sql_source (SELECT ... FROM <table>) -> modify_columns ]
- *
- * The `modify_columns` node looks redundant - the source alone is the obvious
- * graph - but it is what makes the chain usable on a dashboard, and the reason
- * is invisible from the dashboard end:
- *
- * - A dashboard item renders nothing until its data source reports columns
- *   (`DashboardGridView` bails out with "No columns" before it would ever ask
- *   for execution), and a `DashboardNode` reports whatever its input's
- *   `finalCols` are.
- * - A `sql_source` node's `finalCols` are *discovered by running it*. They are
- *   empty on a freshly loaded graph, and a source node is `autoExecute: false`,
- *   so nothing runs it until the user presses "Run Query" in the query builder.
- *   A source published directly would therefore land the user on a dashboard
- *   that says "No columns" and needs a manual trip through the graph tab.
- * - A `modify_columns` node's `finalCols` come from its *serialized*
- *   `selectedColumns`, and its deserializer has no `postDeserializeLate` hook
- *   that would recompute them from the (still empty) input. So the columns are
- *   known the instant the graph is loaded, the grid renders, and its own
- *   wait-then-`requestExecution()` path materialises the chain - the SQL
- *   included, since it is the inner query.
- *
- * It is also the only place a column's *type* can be declared, which is what
- * decides how the grid renders it: a duration as a duration, and a node id as a
- * node chip (see node_cell.ts's renderer registry).
- *
- * There is one way to apply a source - {@link appendExploreSourceToGraph},
- * which merges it into the graph the user is already working in (see
- * DATA_EXPLORER_PLAN.LOCAL.md, phase 5). Nothing here ever replaces a graph or
- * publishes a source to a dashboard by itself; see that function for why.
+ * **README.md, "The four surfaces", explains the shape**: why each source
+ * becomes a `sql_source -> modify_columns` chain in a group, and why nothing is
+ * exported to a dashboard.
  *
  * The column list has to match what the SELECT returns; both come from the same
  * declaration below, so they cannot drift. The payload is otherwise *data*, so
@@ -146,35 +116,14 @@ export function exploreSelect(source: ExploreSource): string {
   ].join('\n');
 }
 
-/**
- * The chain, merged into the graph the user already has - what the panel's
- * buttons hand back to `setActiveGraphJson`. Everything already in the graph
- * survives untouched, ids and all: the ids are what the user's dashboard items
- * name their data sources by, so renumbering anything would silently detach
- * them.
- *
- * Two deliberate choices, both because this lands in the middle of somebody
- * else's work:
- *
- * - **The chain goes in a group**, named after the source. Appending drops
- *   nodes onto a canvas the user is arranging, and a bare pair of unplaced
- *   nodes is two more things to tidy up; a group is one, it is collapsed, and
- *   its title says where it came from. It also survives the round-trip: a
- *   `group` node serializes as its name plus `innerNodeIds`, and its end node
- *   (the `modify_columns`, the only inner node with no inner successor) becomes
- *   its output port, so the group can be connected onwards like any node.
- * - **Nothing is exported to a dashboard.** Publishing a source the user did
- *   not ask to publish puts an entry in every dashboard's source picker, and
- *   the button's job is to make the data *available*, not to decide what is
- *   done with it. Connecting a `dashboard` node to the group's output is one
- *   drag away when that is what is wanted.
- *
- * @param existing The current graph JSON (`getActiveGraphJson()`), or undefined
- *     when there is no graph yet - in which case this is just a seed, in the
- *     same grouped, unexported shape.
- * @param source The source to add.
- * @returns The merged graph, and the ids the new nodes were given.
- */
+// The chain merged into the graph the user already has (see the README for why
+// it is grouped and why nothing is exported). `existing` is undefined when
+// there is no graph yet, in which case this is just a seed in the same shape.
+//
+// The group survives the round-trip: a `group` node serializes as its name plus
+// `innerNodeIds`, and its end node - the `modify_columns`, the only inner node
+// with no inner successor - becomes its output port, so it can be connected
+// onwards like any node.
 export function appendExploreSourceToGraph(
   existing: string | undefined,
   source: ExploreSource,

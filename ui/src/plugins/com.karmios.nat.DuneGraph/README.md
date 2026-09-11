@@ -16,15 +16,16 @@ prefixed `dune_` (public) or `_dune_` (storage).
 
 1. [What a Dune trace contains](#what-a-dune-trace-contains)
 2. [The four surfaces](#the-four-surfaces)
-3. [The load path](#the-load-path)
-4. [The graph model](#the-graph-model)
-5. [The blob format](#the-blob-format)
-6. [The SQL mirror](#the-sql-mirror)
-7. [Performance](#performance)
-8. [Gotchas](#gotchas)
-9. [Testing](#testing)
-10. [Loose ends](#loose-ends)
-11. [Layout](#layout)
+3. [The Explorer pane](#the-explorer-pane)
+4. [The load path](#the-load-path)
+5. [The graph model](#the-graph-model)
+6. [The blob format](#the-blob-format)
+7. [The SQL mirror](#the-sql-mirror)
+8. [Performance](#performance)
+9. [Gotchas](#gotchas)
+10. [Testing](#testing)
+11. [Loose ends](#loose-ends)
+12. [Layout](#layout)
 
 ---
 
@@ -71,7 +72,9 @@ body is three accordion sections: what the rule actually ran (`processes`), then
 _directories_ — the build's directory hierarchy, descended one level at a time.
 It is the view for when you do not yet know which node you are looking for. It
 is a second tab rather than a third area of the first: a directory tree wants
-the whole panel height, and it has nothing to do with what is selected.
+the whole panel height, and it has nothing to do with what is selected. The same
+pane also renders as a Data Explorer chart — see
+[The Explorer pane](#the-explorer-pane).
 
 ### Timeline — `views/graph_track.ts`, `views/arrows.ts`
 
@@ -127,10 +130,234 @@ Four separate offers into `dev.perfetto.DataExplorer`:
   `explorer/chart_node_column.ts` — the two cards say the same thing in those
   states, so they say it in one place.
 
+Both **sources** become a two-node chain wrapped in a group named after them:
+`sql_source (SELECT … FROM <table>) -> modify_columns`. The `modify_columns`
+node looks redundant — the source alone is the obvious graph — but it is what
+makes the chain usable on a dashboard, for a reason invisible from the dashboard
+end. A dashboard item renders nothing until its data source reports columns
+(`DashboardGridView` bails out with "No columns" before it would ever ask for
+execution), and a `sql_source`'s `finalCols` are _discovered by running it_:
+empty on a freshly loaded graph, and the node is `autoExecute: false`, so
+nothing runs it until someone presses "Run Query". A `modify_columns`'s
+`finalCols` come from its _serialized_ `selectedColumns` instead, so the columns
+are known the instant the graph loads, the grid renders, and its own
+wait-then-`requestExecution()` materialises the whole chain. It is also the only
+place a column's _type_ can be declared, which is what decides how the grid
+renders it.
+
+The chain is appended into the graph the user already has, in a group, and
+**nothing is exported to a dashboard**: the button's job is to make the data
+available, not to decide what is done with it, and connecting a `dashboard` node
+to the group's output is one drag away. Everything already in the graph survives
+untouched, ids and all — the ids are what the user's dashboard items name their
+data sources by.
+
 `views/node_cell.ts` additionally teaches **every** DataGrid in the UI to render
 a `JOINID(dune_node.node_id)` column as a node chip, so a grid built anywhere —
 the query page, a Data Explorer results panel, a dashboard — draws nodes the
 same way.
+
+## The Explorer pane
+
+One pane — `views/dir_explorer_panel.ts` — renders in two places, the side
+panel's Explorer tab and the `dune-dir-tree` chart. Almost none of it is about
+data: the expansion set, the inline/bucket decision, the paging, the label
+arithmetic and the filter menu are the same whatever is being explored. The
+handful of calls that _are_ about this tree in this mirror is the
+`DirExplorerSource` interface (`views/dir_explorer_source.ts`), which is what
+makes the pane mountable over something that is not `dune_dir`.
+
+### What an implementation has to promise
+
+The pane leans on more than the signatures:
+
+- **Directory ids are the identity of everything.** They key the pane's caches
+  and its expansion set, and `views/dir_filter.ts` additionally needs them dense
+  from zero with a parent's id always below its children's (which is where
+  `model/dir_tree.ts` gets that property). Numbering them another way breaks the
+  filtered tree silently.
+- **Compression is the source's job.** `rootDirs` / `childDirs` return rows that
+  may sit several directories below where they were asked for, and the pane
+  labels a row by subtracting the path of the row above it. What it must not get
+  is a pass-through row, or two rows for one seed.
+- **Members are paged, rules before deps, and a short page ends the list.** The
+  pane reads the end of a list off the row count rather than asking for a total,
+  so a source returning fewer rows than asked for while more remain hides them
+  behind a "show more" that is never offered. The order must be stable across
+  calls, so consecutive offsets are pages of one list.
+- **`matchingCounts` returning undefined means "all of them".** That is what
+  lets `FilteredTree` fall back to the stored `n_rules` / `n_deps`, and what
+  keeps a deps-only filter from counting rules at all.
+- **`version` is bumped when the ids stop meaning what they meant.** Everything
+  the pane holds is derived from the source, so this is how a source says so and
+  the pane drops the lot. Read every render, so it must be a field or a getter
+  over one.
+
+### Two shapes of source, and the mode each drives
+
+Which mode the pane is in is the source's to declare, via `rowDriven`:
+
+|                          | `SqlDirExplorerSource` (`views/dir_explorer_source.ts`) | `ChartDirExplorerSource` (`explorer/dir_chart_source.ts`)      |
+| ------------------------ | ------------------------------------------------------- | -------------------------------------------------------------- |
+| Is a source of           | a **hierarchy**, descended lazily a level at a time     | a **selection** — the rows a chart's query named               |
+| `rowDriven`              | `false`                                                 | `true`                                                         |
+| Builds a `FilteredTree`  | only when the user filters                              | always, from `allDirs` + `matchingCounts` with an empty filter |
+| `rootDirs` / `childDirs` | the lazy descent                                        | never called; they throw                                       |
+| Per-row counts read      | "3 rules"                                               | "3 of 1,204 rules"                                             |
+
+The SQL source is thin — every member is the matching `model/dir_explorer.ts`
+function with the engine bound, because that is the half worth unit-testing.
+
+A row-driven source is _always_ narrowed (its counts **are** the filter), which
+is a state the pane would otherwise never enter — hence the flag, since getting
+it wrong is silent either way. What `rowDriven` does not change: the pane's own
+path box and Filters menu are offered either way, and their predicates go into
+the same queries the source answers `matchingCounts` and `dirMembers` from, so
+the two narrowings AND.
+
+### Counts and members are bounded differently, because they are different sizes
+
+This is the whole design of `explorer/dir_chart_source.ts`. Pulling the input
+rows in once and deriving both from them ties both to the size of the _input_,
+which is unbounded: a bare `SELECT … FROM dune_node` chart is one button away
+and names all 818k nodes of the monorepo trace. So each is bounded by what
+actually bounds it:
+
+- **Counts** are an aggregate. One `GROUP BY dir_id, kind` returns at most two
+  rows per _directory_ however many input rows went into it, so it needs no cap
+  and the tree is complete at any scale.
+- **Members** are needed only for the directories the user expands, one
+  `MEMBER_PAGE` at a time. Each page is its own bounded query, so the input
+  query is re-run per page — which is what the trace processor is for, and the
+  same trade the SQL source makes on expansion.
+
+An input naming the same node more than once is normal rather than exotic — an
+edge query has a `src` per edge, not per node — so both queries count _nodes_,
+each the way its join direction suits. The counts query is driven **from** the
+input (there is no directory to start at, and the input is normally the small
+side), so it de-duplicates first with `SELECT DISTINCT` and then counts; member
+queries are driven **into** it, starting from one `dir_id` and testing against
+the input with `node_id IN (…)`, where a semi-join returns each node once by
+construction.
+
+Two things deliberately do not follow the pane's filter, both read off the
+unfiltered load: `state.nodeCount`, which answers "did this column name any Dune
+nodes at all" and so is about the chart's config rather than the filter, and
+`subtreeDirIds`, which is what a dashboard brush should name.
+
+### Why the pane owns its tree state
+
+`widgets/tree.ts`'s `LazyTreeNode` is very nearly this component: collapsed to
+start, `fetchData()` on first expand, children cached thereafter. What it cannot
+be is **invalidated**. The kind toggles change how much a directory has to show,
+and so whether its members are listed inline or bucketed by kind — a directory
+with 5 rules and 4,000 deps is bucketed with both kinds visible and inline with
+deps hidden — so a toggle has to reach into an already-expanded directory and
+re-decide that. `LazyTreeNode` keeps its children in a private field with no way
+in, and forcing the issue with a mithril `key` would destroy the component,
+collapsing every directory in the tree on every toggle.
+
+So the state lives in the pane: which rows are expanded, which fetches have
+completed, which pages of a bucket have been read. The payoff is that the caches
+are keyed by directory rather than by component, so expansion state and loaded
+rows both survive a toggle, and toggling a kind _off_ never needs a query.
+Toggling one _on_ can, for directories already expanded that now cross the
+inline threshold, and those fetches are issued by the render that needs them
+rather than all at once by the toggle.
+
+### The path filter's syntax
+
+`model/dir_explorer.ts`'s `compileFilter`. Wildcards are **detected** rather
+than assumed either way, because the two things people type want opposite
+treatment: `lib` means "anything with lib in it" and becomes a case-insensitive
+`*[lL][iI][bB]*`, while `lib/*.cmi` is a pattern the user wrote deliberately and
+is used as a glob — wrapping it in further stars would be harmless, silently
+case-folding it would not.
+
+A `\` escape sits underneath that choice rather than replacing it: it makes a
+metacharacter literal _and_ stops it counting as a wildcard when picking the
+arm. So `foo\*bar` searches case-insensitively for a literal star, while
+`lib/\*.cmi*` is a glob whose first star is literal and whose last is real.
+Plain text with no backslashes takes the plain arm untouched — the effortless
+case must not pay for the escape hatch. A `\` before anything not escapable is
+_itself_ literal and the next character is read normally (`a\b` searches for
+`a\b`, not `ab`), as is a trailing `\`: never discarding input beats a tidier
+rule, and a stray backslash in a build path is likelier than a deliberate escape
+of `b`.
+
+Two independent quoting layers meet here: this is **GLOB** quoting, and
+`sqlValue` separately does SQL string-literal quoting when the pattern is
+interpolated. Conflating them is a bug in both directions. GLOB is always
+case-sensitive with no pragma to change it, which is why a case-insensitive
+match is spelled as `[aA]` classes.
+
+Attribute filters are all per-kind, and the two kinds are narrowed
+independently: **a kind whose attributes nothing selects matches all of its
+members.** "Show me the failed rules" is an outcome filter plus hiding
+dependencies, not an outcome filter that silently also means "and no deps" — the
+pane already has a better answer to "which kinds am I looking at" in its
+Rules/Dependencies toggles. The path applies to both kinds on different columns:
+a dep's own full path, a rule's containing directory.
+
+### Clicking a directory narrows the dashboard
+
+A directory row's filter button emits `setBrushSelection('dir_id', [...])` over
+the directories its subtree actually holds rows in — not the whole subtree,
+which runs to thousands of directories holding none of the query's rows and
+would be that many more values in the `dir_id IN (…)` the filter becomes. That
+lands as repeated `=` filters and renders as `dir_id IN (…)`, so it needs
+nothing new from the host; it does need the query to _have_ a `dir_id` column,
+which is why the button is only offered when one is there. Any query over
+`dune_node` carries it for free. `dir_id` deliberately rather than the chart's
+primary column: what is being narrowed is _where_ the rows are, a different
+question from which column named them.
+
+The button is a toggle — clicking the already-brushed directory clears it —
+which needs someone to remember which directory that is. The pane cannot: it
+hands out a directory and hears nothing back. So the answer lives in
+`explorer/dir_explorer_chart.ts`'s `brushes` map, keyed by chart config id
+rather than held on the source, because a consumer card's own query carries the
+brush filters — brushing rebuilds the loader and the source with it, so state on
+the source would be dropped by the very click that set it.
+
+`brushes` dies with the trace and the brush is saved with the tab, so after a
+reload the card has filters and no `dirId` and works it out again from the
+persisted filters, which carry the id of the chart that set them
+(`recoverBrushedDir` → `rootOfDirIds`). Every step of that is optional and it is
+silent about failing: where it stops, the card is brush-blind but working.
+
+The pane's own path box and Filters menu narrow _this_ card's tree and nothing
+else. Deliberately: a brush persists with the tab and the pane's filter does
+not, so a dashboard reopened after a filter brush came back narrowed by a filter
+nothing on screen was showing.
+
+### The hard filter is client-side, and the unfiltered tree is not
+
+Everything downstream of the counts — the subtree rollup, the hard filter, the
+compression, the expansion remapping — is `views/dir_filter.ts`: client-side and
+arithmetic, over a whole-hierarchy `allDirs` read once per filter application
+rather than per expansion. Only member _rows_ are still fetched per directory.
+
+The unfiltered pane never needs to know what is deeper than the level it draws:
+`dune_dir`'s stored `t_*` rollups answer "is there anything down there" for
+free. A **hard** filter cannot work that way — hiding a directory needs to know
+whether its whole subtree holds a match, and the filter is user-typed, so no
+stored rollup answers it. That rollup needs the whole hierarchy at once, hence
+the one 19k-row read and the arithmetic.
+
+It rests on `model/dir_tree.ts`'s invariant: ids dense from zero, a parent's
+always below its children's. So id order _is_ topological order, the subtree
+rollup is one descending pass over an array, and no recursion or child index is
+needed for it.
+
+Hard-filtering creates new single-child chains — filter to one deep path and the
+tree above it is a ladder of one-child rows — so the pane's pass-through
+compression is re-run over the _filtered_ tree, reading "no matching members of
+its own, exactly one visible child". That subsumes the SQL compression rather
+than composing with it, which is why the filtered path ignores `compressedDirs`
+entirely. It is also why expanded ids have to be re-keyed (`remapExpanded`):
+compression re-decides which directory a row is keyed on, so an id that named a
+row before the filter can name a swallowed directory after it.
 
 ## The load path
 
@@ -324,7 +551,16 @@ names and types live.
 2. **A node's kind is its id.** `ruleCount` is inlined into every generated
    statement, so no table and no edge row carries a kind column.
 3. **Codes, not words.** An outcome / resolution / forcer kind is stored as its
-   index in `graph.ts`'s list and mapped back by a `CASE` in the view.
+   index in `graph.ts`'s list and mapped back by a `CASE` in the view — so those
+   lists are part of the encoding.
+
+The two header tables (`_dune_core`, `_dune_depset`) are the one departure from
+"keyed by `node_id`". Their key is the _dense index_ `model/graph_build.ts`
+assigned each core and set on arrival, not the blob's own `core_id` / `set_id`:
+dense from zero means the key is the rowid, so a header lookup needs no index,
+and the blob's own ids are per-process join keys with no meaning outside one
+blob. `BuildGraph.depSetOf` hands out the dense index anyway, so nothing has to
+translate, and `_dune_rule.dep_set` holds the same index.
 
 ### The public tables
 
@@ -344,9 +580,22 @@ Plus relation functions — bounded and unbounded, forward and reverse, all-edge
 and forced-only: `dune_descendants` / `dune_ancestors` (bounded, with
 `max_steps` and `step_kind`), `dune_all_descendants` / `dune_all_ancestors`, the
 one-hop `dune_children` / `dune_parents`, and `dune_forcers` / `dune_forced`.
-Each has a `!()` list-macro form taking a table of start nodes instead of one,
-and `dune_blocked!(edges)` appends blocked time to any table with `src` / `dst`
-node ids.
+
+All eight return the same nine columns, `src` being the depender and `dst` the
+prerequisite whichever direction the walk ran. The distances are
+**anchor-relative**: they count path nodes traversed _away from_ the anchor,
+excluding the anchor itself, in both directions — which is what makes the
+`step_kind` budget mean the same thing either way. The price is that the two
+directions can disagree on the rule/dep split for a pair they both report,
+whenever `kind(src) != kind(dst)`; they always agree on `distance` itself.
+
+There is deliberately **no `forced` column**: producing one costs a second
+forced-only BFS on every unbounded call, for something a caller can ask for when
+it wants it. Per-edge forcing is on `dune_edge.forced`; for transitive
+forced-reachability, join against `dune_forced` / `dune_forcers`. Each has a
+`!()` list-macro form taking a table of start nodes instead of one, and
+`dune_blocked!(edges)` appends blocked time to any table with `src` / `dst` node
+ids.
 
 ### Why it is shaped this way
 
@@ -425,6 +674,31 @@ on the monorepo trace, so the rewrite is not stylistic.
 Instants carry no occurrence index, so a key seen more than once (watch mode, or
 a dep built repeatedly) is paired **in timestamp order** — the same heuristic
 the JS did. `n_occurrences` on `dune_node` says when that happened.
+
+`_dune_timing` is a plain `WITHOUT ROWID` table keyed on `(kind, key)` rather
+than a `PERFETTO TABLE`, because every read of it is an equality lookup on that
+key and `dune_node` joins it that way for every row it projects. A
+`PERFETTO TABLE` serves such a probe by scanning the _whole table per driving
+row_ — 94 µs a probe natively, ~256 µs in wasm, i.e. **208 s** to project 818k
+nodes once. A `PERFETTO INDEX` does not change that, and nor does making `kind`
+an integer. A real primary key does: same rows out, byte-identical, and the
+projection drops to **2.2 s**. Both halves of the key are integers so the probe
+is one b-tree descent, which is why `kind` is stored as a code. A plain rowid
+table with a plain index fixes the asymptotics too, but at ~4x the lookup cost
+and an extra index object.
+
+**That shape costs 33.7 MB of resident SQLite pages, and that is the thing to
+watch.** They land inside the arena freed after the trace parse. While the edge
+tier stored one row per edge it needed that arena back, and _any_ ~34 MB of
+resident pages was enough to make `CREATE INDEX` over 28.7M rows fail with
+`database or disk is full` — a dummy rowid table of the same 1.2M rows failed it
+identically, so it was never this table's shape that did it. Factoring the edge
+tier removed the constraint (the widest index is now 4.03M rows) and the
+end-of-load heap is 1,530.3 MB either way, against a 4 GB memory32 ceiling; the
+db file grows 366.8 → 389.7 MB. If a future change makes the edge tier tight
+again, this is the first thing to give back — and measure it the way that
+failure was found: a full load through the wasm engine, reading the heap at the
+**end**, not after the step you changed.
 
 ### Processes — `sql/process_sql.ts`
 

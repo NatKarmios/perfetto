@@ -13,24 +13,19 @@
 // limitations under the License.
 
 /**
- * The directory explorer's data layer: the three queries the pane descends
- * `dune_dir` with, and the rules for how many rows it asks for at a time.
+ * The directory explorer's data layer: the queries the pane descends `dune_dir`
+ * with, the paging rules, and the path filter's syntax.
  *
- * Split out from dir_explorer_panel.ts because this half is the half worth
- * testing: there is no trace processor in a unit test, so what can be checked
- * is the SQL these functions generate, which is exactly where a mistake here
- * would live - an unbounded member query, a missing `ORDER BY`, a
- * `WHERE parent_id = NULL` that silently returns nothing.
+ * Split out from dir_explorer_panel.ts because this is the half worth testing -
+ * there is no trace processor in a unit test, so what can be checked is the SQL
+ * these functions generate, which is exactly where a mistake would live.
  *
- * **Every query is an index probe, and nothing here scans or walks a subtree.**
- * The indexes are `_dune_node(dir_id)` and `_dune_dir(parent_id)`; a
- * directory's subtree numbers are already stored on its row as the `t_*`
- * rollups. See README.md, *Performance*.
+ * **Every query is an index probe, and nothing here scans or walks a subtree**
+ * (`_dune_node(dir_id)` and `_dune_dir(parent_id)`; the subtree numbers are
+ * stored on a directory's row as the `t_*` rollups). The one recursion is
+ * `compressedDirs`, bounded and linear by construction.
  *
- * The one recursion is `compressedDirs`, and it is bounded and linear by
- * construction - it follows single-child directories downwards and stops at the
- * first one with anything of its own to show, so it visits at most one row per
- * level and never fans out.
+ * README.md, "The path filter's syntax", is the filter's user-facing contract.
  */
 
 import {sqlValue} from '../../../components/widgets/datagrid/sql_utils';
@@ -113,19 +108,8 @@ const GLOB_LITERAL: Readonly<Record<string, string>> = {
   '[': '[[]',
 };
 
-/**
- * Splits typed text into characters, resolving escapes.
- *
- * The rules, in full:
- *
- * - `\` before one of {@link ESCAPABLE} makes that character literal.
- * - `\` before anything else is *itself* literal, and the next character is read
- *   normally. So `a\b` searches for `a\b` rather than silently becoming `ab` -
- *   never discarding input is worth more here than a tidier rule, and a stray
- *   backslash in a build path is far likelier than a deliberate escape of `b`.
- * - A trailing `\` with nothing after it is a literal backslash, for the same
- *   reason: it is what the user typed.
- */
+// Splits typed text into characters, resolving escapes - see the README for the
+// rules and why an unrecognised or trailing `\` stays literal.
 function splitFilterText(text: string): FilterChar[] {
   const out: FilterChar[] = [];
   for (let i = 0; i < text.length; i++) {
@@ -151,19 +135,10 @@ function hasWildcard(chars: readonly FilterChar[]): boolean {
   return chars.some((c) => !c.literal && c.ch in GLOB_LITERAL);
 }
 
-/**
- * Emits a GLOB pattern from parsed characters.
- *
- * Every `[` this produces belongs to a complete class - either a
- * {@link GLOB_LITERAL} quote or a case fold - so it can never emit the
- * unterminated `[` that GLOB treats as a silent non-match rather than an error.
- * An unescaped `[` on the wildcard arm is passed through untouched: that is the
- * user's own character class, and theirs to get right.
- *
- * `caseFold` folds letters into `[aA]` classes: GLOB is always case-sensitive
- * with no pragma to change it, so that is the only way to get a case-insensitive
- * match out of it.
- */
+// Every `[` this emits belongs to a complete class - a {@link GLOB_LITERAL}
+// quote or a case fold - so it can never emit the unterminated `[` that GLOB
+// treats as a silent non-match rather than an error. An unescaped `[` on the
+// wildcard arm passes through: that is the user's own character class.
 function emitGlob(chars: readonly FilterChar[], caseFold: boolean): string {
   let out = '';
   for (const {ch, literal} of chars) {
@@ -178,30 +153,10 @@ function emitGlob(chars: readonly FilterChar[], caseFold: boolean): string {
   return out;
 }
 
-/**
- * Turns typed text into a {@link PathFilter}.
- *
- * Wildcards are detected rather than assumed either way, because the two things
- * people type want opposite treatment. `lib` means "anything with lib in it", so
- * it becomes a case-insensitive `*[lL][iI][bB]*`. `lib/*.cmi` is a pattern the
- * user wrote deliberately: wrapping it in further stars would be harmless, but
- * silently case-folding it would not be, and either way it is theirs to write.
- * So a string containing a wildcard is used as a glob.
- *
- * A `\` escape sits underneath that choice rather than replacing it: it makes a
- * metacharacter literal *and* stops it counting as a wildcard for the purposes of
- * picking an arm. So `foo\*bar` is a case-insensitive search for a literal star,
- * while `lib/\*.cmi*` is a glob whose first star is literal and whose last is a
- * real wildcard. Plain text with no backslashes takes the plain arm untouched:
- * the effortless case must not pay for the escape hatch.
- *
- * Note the two independent quoting layers here. This one is *GLOB* quoting;
- * `sqlValue` separately does SQL string-literal quoting when the pattern is
- * interpolated. Conflating them would be a bug in both directions.
- *
- * Returns undefined for blank text, which is "no filter" rather than "match
- * everything" - the caller uses it to clear.
- */
+// Typed text to a {@link PathFilter}, per README.md, "The path filter's
+// syntax": a wildcard picks the glob arm, anything else the case-insensitive
+// substring arm. Undefined for blank text, which is "no filter" rather than
+// "match everything" - the caller uses it to clear.
 export function compileFilter(text: string): PathFilter | undefined {
   const trimmed = text.trim();
   if (trimmed === '') return undefined;
@@ -211,22 +166,9 @@ export function compileFilter(text: string): PathFilter | undefined {
   return {text: trimmed, pattern: glob ? body : `*${body}*`};
 }
 
-/**
- * Everything the pane can narrow its members by.
- *
- * All of it is per-kind, and the two kinds are narrowed independently: a rule
- * has an outcome and a dep has a resolution, and neither has the other. The
- * combining rule is deliberately simple - **a kind whose attributes nothing
- * selects matches all of its members** - because the pane already has a better
- * answer to "which kinds am I looking at" in its Rules/Dependencies toggles.
- * "Show me the failed rules" is an outcome filter plus hiding dependencies, not
- * an outcome filter that silently also means "and no deps". The alternative -
- * a rule-only filter implying deps match nothing - reads as a filter on one kind
- * quietly emptying the other.
- *
- * The path applies to both kinds, on different columns (see dir_filter.ts): a
- * dep's own full path, a rule's containing directory.
- */
+// Everything the pane can narrow its members by. All per-kind, and **a kind
+// whose attributes nothing selects matches all of its members** - see the
+// README for why that combining rule rather than the stricter one.
 export interface MemberFilter {
   readonly path?: PathFilter;
   // Rules.
@@ -327,25 +269,16 @@ function conjunction(preds: readonly string[]): string {
   return preds.length === 0 ? '1' : preds.join(' AND ');
 }
 
-/**
- * The per-kind arms of a member query's filter.
- *
- * `rulePath` is how *this* query spells the rule half of a path filter, and is
- * the one part of the filter that cannot be written once for every query: a rule
- * carries no path of its own, so it is matched on the directory it is filed
- * under, and how that is spelt depends on what the query is keyed on. Inside a
- * query keyed on one `dir_id` it is a constant, so {@link memberFilterWhere}
- * passes `'0'` or nothing at all; a query spanning directories has to test the
- * column, so dir_chart_source.ts passes an `n.dir_id IN (...)` over
- * {@link ruleDirsQuery}. Undefined means nothing about the path excludes a rule
- * here.
- *
- * The path part for deps needs no such choice: it is always a predicate on
- * `label` - the expensive column, which resolves through a join to
- * `dune_string`. In a member query that is only ever ANDed onto the `dir_id`
- * probe, so it is tested against the handful of rows that probe already found
- * rather than against all 818k nodes.
- */
+// `rulePath` is the one part of a filter that cannot be written once for every
+// query: a rule carries no path, so it is matched on its directory, and how
+// that is spelt depends on what the query is keyed on. Keyed on one `dir_id` it
+// is a constant (`memberFilterWhere` passes `'0'` or nothing); spanning
+// directories it has to test the column (dir_chart_source.ts passes an
+// `n.dir_id IN (...)`). Undefined means nothing about the path excludes a rule.
+//
+// The dep half needs no such choice - always a predicate on `label`, the
+// expensive column, which in a member query is only ever ANDed onto the
+// `dir_id` probe and so tested against the handful of rows it already found.
 function memberArms(
   filter: MemberFilter,
   rulePath?: string,
@@ -374,26 +307,16 @@ export const MEMBER_FROM = `
   LEFT JOIN dune_dep d USING (node_id)
 `;
 
-/**
- * The kinds a member query asks for when it asks for both - and the order the
- * arms are written in, which is also the pane's listing order.
- */
+// The order the arms are written in, which is also the pane's listing order.
 export const BOTH_KINDS: readonly NodeKind[] = ['rule', 'dep'];
 
-/**
- * `kinds`' filter arms, ORed - the part of a filter that is the same wherever it
- * is applied.
- *
- * One arm per kind because the two kinds are narrowed on different columns, and
- * because of the combining rule in {@link MemberFilter}: a kind whose attributes
- * nothing selects gets `1` and so matches all of its members, rather than being
- * quietly emptied by a filter aimed at the other kind.
- *
- * Exported so that a query over a *selection* of nodes rather than over one
- * directory can narrow by the same filter (dir_chart_source.ts) - the predicates
- * are the filter's meaning, and having two spellings of them would be two things
- * to keep in step. See {@link memberArms} for `rulePath`.
- */
+// `kinds`' filter arms, ORed. One arm per kind because the two are narrowed on
+// different columns, and because of {@link MemberFilter}'s combining rule: a
+// kind whose attributes nothing selects gets `1`.
+//
+// Exported so a query over a *selection* of nodes can narrow by the same filter
+// (dir_chart_source.ts) - two spellings of the predicates would be two things
+// to keep in step.
 export function memberKindArms(
   kinds: readonly NodeKind[],
   filter: MemberFilter,
@@ -484,25 +407,19 @@ const DIR_COLUMNS = `
   d.total_dur_ns
 `;
 
-/**
- * Whether a directory is a *pass-through*: it holds nothing itself and leads to
- * exactly one place, so a row of its own would say only "keep going".
- *
- * This is what makes the pane a trie rather than a filesystem browser. A build's
- * paths are long and mostly scaffolding - `_build/default/lib/foo` is four rows
- * and three clicks to reach one directory that actually contains something - and
- * collapsing the runs is the difference between a tree you can read and one you
- * have to tunnel through.
- *
- * Deliberately absolute (`n_rules = 0 AND n_deps = 0`) rather than relative to
- * the kind toggles: compression decided by the current filter would restructure
- * the tree - and invalidate every cached level - on each toggle, and would move
- * rows around under the user for a filter that is meant only to hide some of
- * them.
- *
- * `{dir}` is the alias of the `dune_dir` row being tested. The child count is a
- * probe of `_dune_dir(parent_id)`, the same index the descent itself uses.
- */
+// A *pass-through* holds nothing itself and leads to exactly one place, so a
+// row of its own would say only "keep going". Collapsing the runs is what makes
+// the pane a trie rather than a filesystem browser: `_build/default/lib/foo` is
+// otherwise four rows and three clicks to reach one directory with anything in
+// it.
+//
+// Deliberately absolute (`n_rules = 0 AND n_deps = 0`) rather than relative to
+// the kind toggles: compression decided by the current filter would restructure
+// the tree - and invalidate every cached level - on every toggle, moving rows
+// under the user for a filter meant only to hide some of them.
+//
+// The child count is a probe of `_dune_dir(parent_id)`, the index the descent
+// already uses.
 function passThrough(dir: string): string {
   return `
     ${dir}.n_rules = 0 AND ${dir}.n_deps = 0
@@ -510,25 +427,16 @@ function passThrough(dir: string): string {
   `;
 }
 
-/**
- * The chain that collapses runs of pass-through directories, as a recursive CTE
- * over one level's worth of seeds.
- *
- * Seeded with the directories at the level being listed, it replaces each
- * pass-through with its only child and repeats. The chain is linear - the step
- * only fires where there is exactly one child - so it produces at most one row
- * per level of the tree per seed, and terminates at the first directory that has
- * members of its own, or branches, or has no children at all.
- *
- * The final SELECT then keeps exactly the *terminal* rows, by the same predicate
- * the step is gated on: a row that is still a pass-through has a descendant in
- * the chain standing in for it, and a row that isn't is where its chain stopped.
- * That is one row per seed with no GROUP BY and no max() - which is worth having
- * over the shorter phrasings, because "one row per seed" is the property the
- * whole pane rests on.
- *
- * `{seeds}` is the WHERE clause naming the level to list.
- */
+// Collapses runs of pass-through directories: seeded with one level, each
+// pass-through is replaced by its only child and repeated. Linear, since the
+// step only fires where there is exactly one child, so it produces at most one
+// row per level per seed and stops at the first directory with members of its
+// own, or branches, or no children.
+//
+// The final SELECT keeps exactly the *terminal* rows, by the same predicate the
+// step is gated on. One row per seed with no GROUP BY and no max() - worth
+// having over the shorter phrasings, because "one row per seed" is the property
+// the whole pane rests on.
 function compressedDirs(seeds: string): string {
   return `
     WITH RECURSIVE chain(id) AS (
@@ -548,35 +456,19 @@ function compressedDirs(seeds: string): string {
   `;
 }
 
-/**
- * The tree's roots.
- *
- * There are several, and that is not a degenerate case: a build's paths are a
- * mix of absolute and relative ones, so `_build`, the opam switch, `/usr` and
- * the top level (the empty path, which is a directory like any other - see
- * dir_tree.ts) are all parentless. Ordered by path so that ordering is stable
- * rather than insertion-dependent.
- *
- * Compressed like every other level, so a root that is pure scaffolding comes
- * back as the first directory below it that isn't - `_build/default` rather than
- * `_build`.
- */
+// Several roots is normal, not degenerate: a build's paths mix absolute and
+// relative ones, so `_build`, the opam switch, `/usr` and the top level are all
+// parentless. Ordered by path for stability, and compressed like every other
+// level - `_build/default` rather than `_build`.
 export async function rootDirs(engine: Engine): Promise<DirEntry[]> {
   // `IS NULL`, not `= NULL`: the latter is never true in SQL and would return
   // an empty tree.
   return readDirs(engine, compressedDirs('parent_id IS NULL'));
 }
 
-/**
- * The child directories of `id`, each collapsed past any run of pass-through
- * directories below it (see {@link compressedDirs}).
- *
- * So a child may come back as a directory several levels down - `default/lib`
- * rather than `default` - and its `path` is the honest one for wherever it
- * landed. What the pane *shows* is that path minus the parent's, which is why
- * the ordering is by `path` and not by `name`: `name` is only the last segment
- * of a compressed row and so isn't what the user reads.
- */
+// A child may come back several levels down - `default/lib` rather than
+// `default` - with the honest `path` for wherever it landed. Ordered by `path`
+// and not `name`, since `name` is only a compressed row's last segment.
 export async function childDirs(
   engine: Engine,
   id: number,
@@ -584,20 +476,13 @@ export async function childDirs(
   return readDirs(engine, compressedDirs(`parent_id = ${id}`));
 }
 
-/**
- * One page of the members of `id`, of `kind` if given and of both kinds
- * otherwise.
- *
- * Always bounded. An unbounded version of this query is the pane's one way to
- * hurt itself - `dune_node WHERE dir_id = ?` is an index probe, but a directory
- * holding 8,431 deps would still hand back 8,431 rows and ask mithril to render
- * them.
- *
- * `ORDER BY kind` puts rules before deps (`'dep' < 'rule'` descending), which
- * is the order the pane lists them in when it lists them inline. It is also
- * what makes paging coherent: an `OFFSET` into an unordered result is not a
- * page of anything.
- */
+// Always bounded. An unbounded version is the pane's one way to hurt itself:
+// `dune_node WHERE dir_id = ?` is an index probe, but a directory holding 8,431
+// deps still hands back 8,431 rows for mithril to render.
+//
+// `ORDER BY kind` puts rules before deps (`'dep' < 'rule'` descending), the
+// pane's inline listing order, and is what makes paging coherent - an `OFFSET`
+// into an unordered result is not a page of anything.
 export async function dirMembers(
   engine: Engine,
   id: number,
@@ -627,25 +512,13 @@ export async function dirMembers(
   return members;
 }
 
-/**
- * Every direct member of `id` of the given kinds, as node ids - what the bulk
- * add/remove buttons act on.
- *
- * Deliberately the directory's *direct* members rather than its subtree's. The
- * subtree count runs to six figures on a real trace (`t_deps` under `_build` on
- * the monorepo trace), and the graph pane it would be feeding is an SVG of one
- * dot per node; "add all" should mean the rows this directory is showing, which
- * is what a bounded, non-recursive query returns.
- *
- * Takes the same filter as {@link dirMembers}, so while a filter is active "add
- * all" means "add all *matching*". Ignoring it would make the button quietly
- * disregard the thing the user just asked to narrow by.
- *
- * Unbounded in row count, unlike {@link dirMembers}, because a node id is 8
- * bytes and the caller is about to put every one of them into a Set - there is
- * no rendering involved, so the number that matters is `n_rules + n_deps` and
- * it is known before the click.
- */
+// The directory's *direct* members, not its subtree's: the subtree count runs
+// to six figures on a real trace and the graph pane it feeds is an SVG of one
+// dot per node, so "add all" means the rows this directory is showing.
+//
+// Takes the same filter as {@link dirMembers}, so while one is active "add all"
+// means "add all *matching*". Unbounded in row count, unlike dirMembers, since
+// nothing is rendered and `n_rules + n_deps` is known before the click.
 export async function dirMemberIds(
   engine: Engine,
   id: number,
@@ -665,20 +538,10 @@ export async function dirMemberIds(
   return ids;
 }
 
-/**
- * Every directory in the build, in id order - the whole of `dune_dir`.
- *
- * Read in one go, and only when a filter is applied. Hard-filtering the tree
- * means deciding whether a *subtree* holds a match, which no per-level query can
- * answer, so the filtered view is computed client-side over the whole hierarchy
- * (see dir_filter.ts) rather than descended a level at a time. At 19k rows on the
- * monorepo trace that is a few MB and one query - cheaper than the per-level
- * queries it replaces, and paid once per filter rather than once per click.
- *
- * `dune_dir`'s ids are dense from zero and a parent's id is always lower than its
- * children's (see dir_tree.ts), so id order is also topological order, which is
- * what lets the rollup be one descending pass.
- */
+// The whole of `dune_dir`, in one go, and only when a filter is applied - see
+// README.md, "The hard filter is client-side". 19k rows on the monorepo trace:
+// a few MB and one query, cheaper than the per-level queries it replaces and
+// paid once per filter rather than once per click.
 export async function allDirs(engine: Engine): Promise<DirEntry[]> {
   return readDirs(
     engine,
@@ -721,30 +584,20 @@ export async function matchingRuleDirs(
   return ids;
 }
 
-/**
- * How many members of `kind` match `filter` in each directory, keyed by
- * directory id - or undefined when nothing in the filter narrows that kind, in
- * which case the caller uses the stored `n_rules` / `n_deps` and no query runs
- * at all.
- *
- * This is the pane's one scan, and it is per kind:
- *
- * - **Deps** are the expensive one. A dep's path lives in `dune_node.label`, a
- *   column the view computes through a join to `dune_string` with no index on the
- *   string, so a path filter has to visit every dep in the build. Its attributes
- *   (`resolution`, `status`) are real columns on `dune_dep`, reached by a
- *   primary-key join, so adding them costs nothing on top.
- * - **Rules** are cheaper - there are far fewer of them - and their path test is
- *   a set membership on `dir_id` against the directories {@link matchingRuleDirs}
- *   found, rather than a string comparison per rule.
- *
- * Either way it is paid once, when the filter is applied, rather than once per
- * directory expanded. The per-expansion member query ANDs the same predicates
- * onto its `dir_id` probe (see {@link memberFilterWhere}), so they never
- * become the clause that selects rows. Aggregating by `dir_id` here rather
- * than returning the matches is what keeps the result to one row per
- * directory.
- */
+// Per-directory match counts for `kind`, or undefined when nothing in the
+// filter narrows that kind - in which case the caller uses the stored
+// `n_rules` / `n_deps` and no query runs.
+//
+// The pane's one scan, and it is per kind. **Deps** are the expensive one: a
+// dep's path lives in `dune_node.label`, computed through a join to
+// `dune_string` with no index on the string, so a path filter visits every dep
+// in the build (its attributes are real columns reached by a primary-key join,
+// so they cost nothing on top). **Rules** are cheaper, and their path test is
+// set membership on `dir_id` against {@link matchingRuleDirs}.
+//
+// Paid once when the filter is applied, not once per expansion: the member
+// query ANDs the same predicates onto its `dir_id` probe, so they never become
+// the clause that selects rows.
 export async function matchingCounts(
   engine: Engine,
   kind: NodeKind,

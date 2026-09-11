@@ -13,27 +13,15 @@
 // limitations under the License.
 
 /**
- * The graph pane (graph_panel.ts) in both of the modes it now has: over the
- * controller's graph selection, which is what the side panel mounts, and over a
- * node set handed to it, which is what the Data Explorer's node graph chart
- * mounts (see node_graph_chart.ts).
+ * The graph pane (graph_panel.ts) in both its modes: over the controller's
+ * graph selection, and over a node set handed to it.
  *
- * One pane serves both modes, so what is worth pinning is exactly the seam
- * between them:
- *
- * - the selection mode is untouched by the injected one - same dots, same
- *   count, same four buttons - since the side panel must not notice that the
- *   second mode exists;
- * - an injected set draws *its* nodes and not the selection's, which is the
- *   whole feature;
- * - "Timeline" and "Clear" act on the selection, so they are gone in the
- *   injected mode: offered there they would be about nodes that are not on
- *   screen;
- * - the cap is reported by the toolbar's own count ("2 of 40 nodes"), since
- *   that is the one place a count is already shown;
- * - "Hide rules" still works in both, because it is a property of how a Dune
- *   graph is drawn rather than of who asked for one - and it has to relayout in
- *   the injected mode, where the set's own version knows nothing about it.
+ * One pane serves both, so what is worth pinning is the seam between them -
+ * that the selection mode is untouched by the injected one, that an injected
+ * set draws *its* nodes, that "Timeline" and "Clear" are gone in the injected
+ * mode (they act on the selection), and that "Hide rules" still works in both,
+ * including the relayout the injected mode needs since the set's own version
+ * knows nothing about it.
  */
 
 import m from 'mithril';

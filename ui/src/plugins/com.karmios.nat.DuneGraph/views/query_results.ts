@@ -121,19 +121,11 @@ const EXTRAS_OPTIONS = [
 ] as const;
 type ExtrasMode = (typeof EXTRAS_OPTIONS)[number]['key'];
 
-/**
- * A `slice_id` cell as a link into the timeline, shared by table and tree mode.
- * Three cases, in order of how much we know about the id:
- *
- * - it maps to a graph node (`node`): link through the node, which is the
- *   richer path - `goToNode` selects on whichever of our tracks *projects* the
- *   node while the Dune workspace is showing, where the real track isn't.
- * - it doesn't, but it is a number: any slice at all, joined in from the trace
- *   or belonging to a node the current graph doesn't have. Link straight to the
- *   slice.
- * - NULL, or not a number: inert text. There is no slice to go to, and a link
- *   that resolves to nothing would visibly do nothing when clicked.
- */
+// A `slice_id` cell as a timeline link, in order of how much is known about the
+// id: through the node when it maps to one (the richer path - `goToNode`
+// selects on whichever of our tracks projects it while the Dune workspace is
+// showing), straight to the slice when it is a number but no node's, and inert
+// text for a NULL or a non-number, where a link would visibly do nothing.
 export function sliceLink(
   controller: DuneGraphController,
   node: NodeId | undefined,
@@ -156,16 +148,11 @@ export interface TreeLeafEntry {
   readonly count: number;
 }
 
-/**
- * Groups `rows` into path-tree items keyed off `col` (a node-bearing column -
- * `node_id`/`src`/`dst`/`slice_id`): each row's cell resolves to a graph node via
- * `resolve` (or stays dangling, filed under its raw value as a top-level leaf
- * - dangling ids aren't paths). Null/missing cells are skipped.
- *
- * When `merge` is set, rows resolving to the same node (or, when dangling,
- * the same raw value) collapse into a single item with an incremented
- * `count`, keeping the first-seen row as the representative.
- */
+// Groups `rows` into path-tree items keyed off a node-bearing `col`. A cell
+// that resolves to no node stays dangling, filed under its raw value as a
+// top-level leaf, since a dangling id is not a path; null cells are skipped.
+// With `merge`, rows resolving to the same node collapse into one item with an
+// incremented `count`, keeping the first-seen row as the representative.
 export function buildNodeTreeItems(
   graph: BuildGraph,
   rows: readonly Row[],
@@ -205,19 +192,13 @@ export function buildNodeTreeItems(
   return items;
 }
 
-/**
- * The tree leaf "extras" suffix for one row, as a list of already-formatted
- * parts (joined with ", " by the caller): a leading `×N` when `count` merged
- * more than one result row, then each of `cols` in order.
- *
- * `forced_by_kind` folds together with `forced_by_target` (wherever either falls
- * in `cols`) into one `forced by <text>` part via `forcedByText`, consuming both
- * columns - unless
- * `forced_by_kind`'s value isn't a kind `forcedByText` recognises, in which
- * case both fall back to plain `col=value` rather than silently dropping the
- * target. Every other column delegates to `formatValue` (which decides
- * per-column whether a numeric value is worth resolving to a node label).
- */
+// A tree leaf's "extras" suffix as already-formatted parts, joined with ", "
+// by the caller: a leading `×N` when `count` merged rows, then `cols` in order.
+//
+// `forced_by_kind` folds together with `forced_by_target`, wherever either
+// falls in `cols`, into one `forced by <text>` part - unless the kind is one
+// `forcedByText` does not recognise, in which case both fall back to plain
+// `col=value` rather than silently dropping the target.
 export function formatExtraParts(
   cols: readonly string[],
   row: Row,
@@ -259,18 +240,11 @@ export function formatExtraParts(
   return parts;
 }
 
-/**
- * One "extras" value as text: a `dur_ns`/`action_dur_ns` column as a human
- * duration, a chip column (e.g. `dst` when grouping by `src`) as its node's
- * label via `nodeLabel`, anything else as the raw value.
- *
- * Only the chip columns take a label: their raw value is an internal graph
- * index that says nothing to the reader. A `slice_id` resolves to a node just
- * as well, but it is an id worth reading in its own right (and the one you'd
- * take to a `slice` query), so labelling it there would only restate the leaf's
- * own label under a misleading name. `nodeLabel` returning undefined (a
- * dangling id) also falls back to the raw value.
- */
+// One "extras" value as text. Only the chip columns take a node label: their
+// raw value is an internal graph index that says nothing to the reader. A
+// `slice_id` resolves to a node just as well, but it is an id worth reading in
+// its own right, so labelling it would restate the leaf's own label under a
+// misleading name.
 export function formatExtraValue(
   col: string,
   value: SqlValue,
@@ -298,15 +272,12 @@ function durationText(value: SqlValue): string | undefined {
 
 /**
  * Runs SQL over the Dune graph tables and renders the result, letting the user
- * push result rows into the graph selection - per-row via a ＋/－ toggle on a
- * node cell, or in bulk via the toolbar. Surface-agnostic: it owns the whole
- * result view (schema, cells, toolbar, tree mode) and nothing about where that
- * view is shown, so a tab and a page can both wrap one - see `DuneQueryTab`.
+ * push rows into the graph selection - per-row via a ＋/－ toggle on a node
+ * cell, or in bulk via the toolbar.
  *
- * Node-aware rendering (coloured chip + slice link + ＋/－ toggle) applies to
- * every column whose value is a `node_id`: `node_id` itself (dune_node and the
- * per-kind detail tables) and the `src`/`dst` endpoints of `dune_edge` and the
- * relation functions. A raw `slice_id` renders as a plain slice link.
+ * Surface-agnostic: it owns the whole result view (schema, cells, toolbar, tree
+ * mode) and nothing about where that view is shown, so a tab and a page can
+ * both wrap one.
  */
 export class DuneQueryResults {
   private loading = false;

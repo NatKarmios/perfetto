@@ -28,18 +28,13 @@ import type {
   RuleOutcome,
 } from '../model/graph';
 
-/**
- * Where a node files into a `path_tree.ts` tree: a dep's id is itself a path,
- * split into the dir it lives under and its own leaf segment; a rule files
- * under its own `dir` (top-level when unset), with its bare id as the leaf -
- * rule ids aren't paths themselves, so they never contribute further nesting
- * beyond `dir`. Shared by the current-selection panel and the query tab's
- * tree view so both group nodes identically.
- *
- * Note this splits the node's *raw* id, not `decorateDepPath`'s trimmed
- * display text - a `_build/<dir>` prefix becomes a real tree group here,
- * rather than being folded into a leading icon.
- */
+// Where a node files into a `path_tree.ts` tree: a dep's id is itself a path,
+// split into its dir and leaf; a rule files under its own `dir` with its bare
+// id as the leaf, since rule ids are not paths and contribute no nesting past
+// `dir`. Shared so the selection panel and the query tab group identically.
+//
+// Splits the node's *raw* id, not `decorateDepPath`'s trimmed display text - a
+// `_build/<dir>` prefix becomes a real tree group here rather than an icon.
 export function nodePathParts(
   kind: NodeKind,
   id: string,
@@ -54,20 +49,15 @@ export function nodePathParts(
   };
 }
 
-// The phrasing table behind a node's `dune.forced_by` (see `ForcedBy` in
-// graph.ts): shared by the current-selection panel's "Forced by" line (which
-// links `target` to its node when RULE/DEP resolve) and the query tab's tree
-// extras (plain text only, straight off the SQL `forced_by_kind` /
-// `forced_by_target` columns - hence taking `kind` as a bare string rather
-// than the typed union).
+// The phrasing table behind a node's `dune.forced_by`. Shared by the selection
+// panel's "Forced by" line and the query tab's tree extras, which reads the SQL
+// columns directly - hence `kind` as a bare string rather than the typed union.
 //
-// `target` is the forcing rule id / dep id / dune-file path
-// (`forcedByTarget(fb)` in graph.ts), absent for the payload-less kinds and,
-// degenerately, for a RULE/DEP forcer whose target column wasn't selected -
-// that falls back to a generic "a rule" / "a dep" rather than a dangling
-// "rule ". Returns undefined for a kind this table doesn't recognise, so a
-// caller can fall back to showing the raw column(s) instead of a bogus
-// phrase.
+// `target` is the forcing rule id / dep id / dune-file path, absent for the
+// payload-less kinds and, degenerately, for a RULE/DEP forcer whose target
+// column was not selected - which falls back to "a rule" / "a dep" rather than
+// a dangling "rule ". Undefined for an unrecognised kind, so a caller can show
+// the raw columns instead of a bogus phrase.
 export function forcedByText(
   kind: string,
   target?: string,
@@ -203,22 +193,17 @@ function healthMarker(health: NodeHealth): m.Children {
   });
 }
 
-/**
- * A node's kind as a small coloured chip, plus a marker for how the node ended
- * - the one visual marker that says "dep" or "rule" wherever a node is listed:
- * the current-selection panel's header and dependency lists, the query tab's
- * cells and tree leaves, and any DataGrid showing a node-id column (see
- * node_cell.ts).
- *
- * The chip's colour stays the *kind* encoding: health rides alongside as a
- * separate icon (and dims the chip for the two "didn't really finish" states)
- * rather than recolouring it, which would cost the reader the dep/rule
- * distinction on exactly the rows that need reading most carefully.
- *
- * Takes the kind rather than a node, since a dependency *reference* has a kind
- * even when the graph never recorded a node for it - and no health at all,
- * which is what the `ok` default means for such a caller.
- */
+// A node's kind as a small coloured chip plus a marker for how it ended - the
+// one visual marker saying "dep" or "rule" wherever a node is listed.
+//
+// The chip's colour stays the *kind* encoding: health rides alongside as a
+// separate icon (and dims the chip for the two "did not really finish" states)
+// rather than recolouring it, which would cost the reader the dep/rule
+// distinction on exactly the rows needing the most careful reading.
+//
+// Takes the kind rather than a node, since a dependency *reference* has a kind
+// even when the graph recorded no node for it - and no health, which is what
+// the `ok` default means for such a caller.
 export function kindChip(
   kind: NodeKind,
   health: NodeHealth = 'ok',
@@ -260,22 +245,17 @@ export function decorateNode(
     : decorateDepPath(label, graph.buildRoots);
 }
 
-/**
- * How a dep path is shown: a leading icon that encodes where the path lives, plus
- * the (possibly trimmed) display text.
- *
- * - A path under one of `buildRoots` (see {@link BuildGraph.buildRoots}) drops
- *   that prefix and gets a `build` icon whose tooltip is the stripped prefix.
- *   The rest may start with `/…` (stripped along with the prefix) or run
- *   straight into an `@alias`, and may be empty for a path that *is* a root.
- * - An absolute path (`/…`) is shown verbatim with no icon.
- * - Anything else is shown verbatim with a `code` icon tooltipped "Source".
- *
- * A path matching no root keeps its full text rather than having a plausible
- * prefix guessed off it: shown in full it is never wrong, only wider.
- *
- * @returns the rendered leading `icon` (or `undefined`) and the display `text`.
- */
+// How a dep path is shown: a leading icon encoding where it lives, plus the
+// possibly-trimmed display text.
+//
+// - Under one of `buildRoots`: the prefix is dropped and a `build` icon carries
+//   it as a tooltip. The rest may start with `/…`, run straight into an
+//   `@alias`, or be empty for a path that *is* a root.
+// - Absolute (`/…`): verbatim, no icon.
+// - Anything else: verbatim with a `code` icon tooltipped "Source".
+//
+// A path matching no root keeps its full text rather than having a plausible
+// prefix guessed off it: shown in full it is never wrong, only wider.
 export function decorateDepPath(
   path: string,
   buildRoots: readonly string[],

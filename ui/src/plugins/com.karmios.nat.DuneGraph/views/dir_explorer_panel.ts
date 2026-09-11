@@ -17,40 +17,13 @@
  * level at a time. The view for when you do not yet know which node you are
  * looking for; the other two both start from one.
  *
- * Where the rows come from is the `source` attr rather than anything in here
- * (see dir_explorer_source.ts), because this pane is mounted twice: as the side
- * panel's Explorer tab, over the SQL mirror, and as a Data Explorer chart, over
- * a query's rows. The side panel's source reads the mirror rather than the
- * in-memory graph because the mirror is where the directory hierarchy exists at
- * all - `BuildGraph` knows each node's directory *string*, and the tree over
- * those strings is interned during the node-tier build and then discarded.
+ * Where the rows come from is the `source` attr, not anything in here, because
+ * this pane is mounted twice - as the side panel's Explorer tab over the SQL
+ * mirror, and as a Data Explorer chart over a query's rows.
  *
- * ## Why this owns its tree state rather than using `LazyTreeNode`
- *
- * `widgets/tree.ts`'s `LazyTreeNode` is very nearly this component: collapsed to
- * start, `fetchData()` on first expand, children cached thereafter. What it
- * can't do is be *invalidated*. The kind toggles change how much a directory has
- * to show, and therefore whether its members are listed inline or bucketed by
- * kind - a directory with 5 rules and 4,000 deps is bucketed with both kinds
- * visible and inline with deps hidden - so a toggle has to be able to reach into
- * an already-expanded directory and re-decide that. `LazyTreeNode` keeps its
- * children in a private field with no way in, and forcing the issue with a
- * mithril `key` would destroy the component, which would collapse every
- * directory in the tree on every toggle.
- *
- * So the state lives here: which rows are expanded, which fetches have
- * completed, and which pages of a bucket have been read. That has a second
- * payoff - the caches are keyed by directory rather than by component, so
- * expansion state and loaded rows both survive a toggle, and toggling a kind
- * `off` never needs a query at all.
- *
- * ## What it costs
- *
- * Expanding a directory is two index probes at most, expanding a bucket one;
- * see README.md, "Performance". Toggling a kind *on* can need a fetch for
- * directories already expanded that now cross the inline threshold, and those
- * are issued lazily by the render that needs them rather than all at once by
- * the toggle.
+ * **README.md, "The Explorer pane", is the design**: the two source shapes, why
+ * the pane owns its tree state rather than using `LazyTreeNode`, how the
+ * narrow-to-this-directory brush works, and why the hard filter is client-side.
  */
 
 import m from 'mithril';
@@ -131,58 +104,23 @@ const KIND_LABEL: Record<NodeKind, string> = {
 
 interface DirExplorerPanelAttrs {
   readonly controller: DuneGraphController;
-  /**
-   * Where the tree's rows come from (see dir_explorer_source.ts).
-   *
-   * Required rather than defaulted to the SQL mirror, for two reasons. A
-   * default would have to be built here, which means this file importing the
-   * engine and the queries again - the coupling the seam exists to remove. And
-   * a mount that forgot to pass its own source would not fail: it would quietly
-   * show the whole mirror's tree instead of the rows it was given, which is
-   * worse than a type error.
-   */
+  // Required rather than defaulted to the SQL mirror: a default would drag the
+  // engine and the queries back into this file, and a mount that forgot its own
+  // source would quietly show the whole mirror's tree instead of failing.
   readonly source: DirExplorerSource;
 
-  /**
-   * Narrow whatever else is looking at these rows to one directory, or
-   * undefined where there is nothing to narrow.
-   *
-   * Absent in the side panel: the tree is the whole surface there, so there is
-   * nothing else to narrow - the pane's own filter bar narrows *this* pane,
-   * which is a different affordance and is offered either way. Present in a Data
-   * Explorer chart, where the tree is one card among several over one query and
-   * the dashboard's brush filters are what the other cards follow (see
-   * dir_explorer_chart.ts). Only the directory is passed - which rows that
-   * means, and which column carries them, is the caller's business and not
-   * something this pane could know.
-   *
-   * A *toggle* rather than a set: called on every click of the row's button,
-   * including a click on the directory that is already narrowed to (which
-   * {@link DirExplorerPanelAttrs.filteredDirId} is how the pane knows about).
-   * Which way that click goes is the caller's to decide, for the same reason the
-   * column is - it owns the filter, so it is the only side that knows what
-   * undoing one means.
-   *
-   * Deliberately a button on the row rather than the row's own click: that
-   * click expands the directory, and re-filtering a dashboard every time
-   * someone opens a directory to look inside it is not what they asked for.
-   */
+  // Narrow whatever else is looking at these rows to one directory. Absent in
+  // the side panel, where the tree is the whole surface. A *toggle*: called on
+  // every click, including on the already-narrowed directory, and which way it
+  // goes is the caller's to decide - it owns the filter.
+  //
+  // A button on the row rather than the row's own click, which expands it.
   readonly onFilterToDir?: (dir: DirEntry) => void;
 
-  /**
-   * The directory the caller's filter currently names, or undefined when
-   * nothing is narrowed to a directory.
-   *
-   * Comes back *in* because the pane cannot know it: it hands a directory to
-   * `onFilterToDir` and what becomes of it - a dashboard brush, in the one
-   * mount that passes either - is the caller's state, not the pane's. All the
-   * pane does with the answer is draw that row's button as pressed and say so
-   * in its tooltip, which is what makes the button read as a toggle rather than
-   * as a gesture with no visible effect and no way back.
-   *
-   * Absent in the side panel, together with `onFilterToDir`: there is no button
-   * there to light up.
-   */
+  // Comes back *in* because the pane cannot know it: what becomes of the
+  // directory it handed to `onFilterToDir` is the caller's state. All the pane
+  // does is draw that row's button pressed, which is what makes it read as a
+  // toggle rather than a gesture with no way back.
   readonly filteredDirId?: number;
 }
 
@@ -245,17 +183,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // rules match *here* rather than testing each rule's directory (see
   // `matchingRuleDirs`).
   private ruleDirs?: ReadonlySet<number>;
-  /**
-   * How many members the source offered before the filter narrowed them, or
-   * undefined when the source is not narrowed on its own.
-   *
-   * Only a row-driven source has such a number: its rows are a selection, so
-   * even an *empty* filter yields a tree, and that tree's match count is the
-   * total everything else is a subset of. Recorded whenever the empty filter is
-   * applied (see `apply`), which for such a source is the pane's initial state,
-   * and never set in the side panel - where an empty filter means no tree at all
-   * and "matching" is measured against the whole build.
-   */
+  // How many members the source offered before the filter narrowed them. Only
+  // a row-driven source has such a number, recorded when the empty filter is
+  // applied; in the side panel an empty filter means no tree at all.
   private selectedCount?: number;
   private filterLoading = false;
   private filterError?: string;
@@ -300,26 +230,18 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.roots = undefined;
     this.rootsLoading = false;
     this.rootsError = undefined;
-    // The filter survived, but everything derived from it was just dropped, and
-    // the pane is only coherent while the two agree: the tree would otherwise
-    // render from the source's unfiltered counts while the member queries still
-    // carried the filter, and `dirPathMatches` - with no `ruleDirs` left to
-    // consult - would claim every directory's path matched. So re-apply it, and
-    // let the tree, `ruleDirs` and the member queries all describe the one
-    // filter again.
+    // The filter survived but everything derived from it was dropped, and the
+    // pane is only coherent while the two agree - otherwise the tree renders
+    // from unfiltered counts while the member queries still carry the filter,
+    // and `dirPathMatches` claims every directory's path matched. So re-apply.
     //
-    // Only where `apply` has something to do. An empty filter on a hierarchy
-    // source is not a filter at all, and `apply` early-returns to `clearFilter`
-    // for it - which is the unfiltered lazy descent this has already set up,
-    // except that it would also empty the draft box the user may still be
-    // typing in.
-    // A row-driven source's empty filter *is* its tree, so that one goes
-    // through (see `apply`).
+    // Only where `apply` has something to do: an empty filter on a hierarchy
+    // source is the lazy descent already set up, and re-applying would also
+    // empty the draft box. A row-driven source's empty filter *is* its tree.
     //
-    // `filterLoading` is cleared above rather than below for the same reason:
-    // `apply` bails on a busy pane, so a reset arriving mid-apply would
-    // otherwise drop the re-apply and leave the pane in exactly the split state
-    // this is here to avoid.
+    // `filterLoading` is cleared above rather than below because `apply` bails
+    // on a busy pane, so a reset mid-apply would drop the re-apply and leave
+    // exactly the split state this avoids.
     if (filterActive(this.filter) || attrs.source.rowDriven) {
       this.apply(attrs, this.filter);
     }
@@ -357,17 +279,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * The filter input, and the active filter as a dismissible chip.
-   *
-   * Submitted on Enter only. Applying a filter costs a scan of every dep in the
-   * build (see `matchingCounts`), which is fine once but is not something to do
-   * while someone is still typing - so there is deliberately no debounce and no
-   * filter-as-you-type. A row-driven source tests the filter against its query's
-   * rows rather than the whole build, which makes a narrow query's filter much
-   * cheaper but a `SELECT * FROM dune_node` chart's exactly as expensive (see
-   * `fetchCounts` in dir_chart_source.ts) - so the same rule holds there.
-   */
+  // Submitted on Enter only: applying a filter costs a scan of every dep in the
+  // build, so no debounce and no filter-as-you-type. Same rule for a row-driven
+  // source - see `fetchCounts` in dir_chart_source.ts for why.
   private renderFilterBar(attrs: DirExplorerPanelAttrs): m.Children {
     return m(
       '.pf-dune-explorer__filter',
@@ -405,17 +319,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * What the chip says about the filter's reach. Exact rather than approximate:
-   * the counts come from the same rollup the tree itself is drawn from.
-   *
-   * Qualified by `selectedCount` where there is a second narrowing to qualify it
-   * against - a row-driven source's rows - because "412 matching" out of a
-   * chart's 1,204 rows and out of the build's 818k nodes are very different
-   * claims. Unqualified when the two are equal, which is the honest reading of a
-   * filter that excluded nothing: "1,204 of 1,204" is the same number twice, and
-   * the row counts below already spell out where anything was dropped.
-   */
+  // Exact, not approximate: the counts come from the rollup the tree is drawn
+  // from. Qualified by `selectedCount` where there is a second narrowing to
+  // qualify against, since "412 matching" out of a chart's 1,204 rows and out
+  // of the build's 818k nodes are very different claims. Unqualified when the
+  // two are equal - "1,204 of 1,204" is the same number twice.
   private filterSummary(): string {
     const tree = this.tree;
     if (tree === undefined) return '';
@@ -426,14 +334,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       : `${n.toLocaleString()} of ${of.toLocaleString()} matching`;
   }
 
-  /**
-   * Applies whatever is in the box: three queries, then the tree.
-   *
-   * Whatever was expanded stays expanded, re-keyed onto the new rows: a filter
-   * narrows what is on screen without moving the user somewhere else. Nothing is
-   * opened for them - the per-directory match counts are what say where to look
-   * next.
-   */
+  // Three queries, then the tree. Whatever was expanded stays expanded,
+  // re-keyed onto the new rows; nothing is opened for the user.
   /**
    * The attribute filters, as a popup menu.
    *
@@ -547,17 +449,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * A kind's show/hide toggle, at the head of its section.
-   *
-   * Deliberately the *first* item under each heading, and the thing everything
-   * below it is gated on: hiding a kind is the coarsest filter available, so a
-   * disabled `Outcome` submenu under a hidden `Rules` says why it would have no
-   * effect rather than letting someone set it and see nothing change.
-   *
-   * The selections themselves are kept while a kind is hidden, so showing it
-   * again restores what was asked rather than silently resetting it.
-   */
+  // The *first* item under each heading, and what everything below it is gated
+  // on: a disabled `Outcome` submenu under a hidden `Rules` says why it would
+  // have no effect. The selections are kept while a kind is hidden.
   private renderKindToggle(kind: NodeKind): m.Children {
     const on = this.show[kind];
     const noun = KIND_LABEL[kind].toLowerCase();
@@ -811,19 +705,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * Whether a directory is worth a row at all.
-   *
-   * With a kind hidden, a directory whose whole subtree holds only that kind has
-   * nothing to show, and drawing it makes the tree scaffolding you have to click
-   * through to find out there is nothing there. On a real trace this is most of
-   * the tree: hiding dependencies otherwise leaves all of `/usr` and the opam
-   * switch standing as empty directories.
-   *
-   * The exception is both kinds hidden, where every directory is empty by this
-   * test and the whole pane would blank. That state is a plain directory tree
-   * instead - see `renderToolbar`.
-   */
+  // With a kind hidden, a directory whose whole subtree holds only that kind is
+  // scaffolding you click through to find nothing - on a real trace, most of
+  // the tree (all of `/usr` and the opam switch). Both kinds hidden is the
+  // exception: that state is a plain directory tree, see `renderToolbar`.
   private visibleSubtree(dir: DirEntry): boolean {
     if (!this.show.rule && !this.show.dep) return true;
     return KINDS.some(
@@ -831,19 +716,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * Whether the rows on screen are a subset of what the directories hold.
-   *
-   * The tree's existence rather than `filterActive(this.filter)`, and the two
-   * are not the same question any more: a row-driven source is narrowed by the
-   * query behind it with no filter typed at all (see
-   * `DirExplorerSource.rowDriven`). In the side panel they coincide exactly -
-   * the tree exists precisely while a filter is applied - so this changes
-   * nothing there.
-   *
-   * What it gates is the honesty of the counts: which numbers may be shown bare
-   * and which have to be qualified by the total they were drawn from.
-   */
+  // Whether the rows on screen are a subset of what the directories hold - the
+  // tree's existence, not `filterActive(this.filter)`: a row-driven source is
+  // narrowed with no filter typed. Gates which counts may be shown bare.
   private narrowed(): boolean {
     return this.tree !== undefined;
   }
@@ -892,15 +767,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     return this.ruleDirs === undefined || this.ruleDirs.has(dir.id);
   }
 
-  /**
-   * One directory row.
-   *
-   * `parentPath` is the path of the row this one sits under, and is what the
-   * label is measured against - a compressed row is several directories deep
-   * (see dir_explorer.ts), so its `name` is only its last segment and showing
-   * that would claim a hierarchy the tree isn't drawing. `''` for a root, whose
-   * whole path is its label.
-   */
+  // `parentPath` is the path of the row above, which is what the label is
+  // measured against; `''` for a root. See `dirLabel`.
   private renderDir(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
@@ -932,22 +800,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * The ＋all / －all pair for a directory row or a bucket row, over the given
-   * kinds.
-   *
-   * The node ids are fetched by the click rather than held: this tree is lazy,
-   * and a row generally knows only its member *count* (off `dune_dir`) when it
-   * is drawn - which is all a label needs. See `bulkNodeActions`.
-   *
-   * Omitted entirely, box and all, when there is nothing to act on and nothing
-   * to narrow to: the box is a padded flex container, so an empty one is
-   * visible as a gap.
-   *
-   * `onFilterToDir` rides in the same box when the mount offers one, and only
-   * on the directory row - a bucket is one kind of one directory, and the thing
-   * being narrowed to is the directory.
-   */
+  // The node ids are fetched by the click rather than held: a row generally
+  // knows only its member count when drawn. Omitted box and all when there is
+  // nothing to act on, since the box is a padded flex container and an empty
+  // one shows as a gap. `onFilterToDir` rides in the same box, directory rows
+  // only - a bucket is one kind of one directory.
   private renderBulk(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
@@ -957,19 +814,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   ): m.Children {
     if (count === 0 && narrowTo === undefined) return undefined;
     const where = dir.path === '' ? TOP_LEVEL_LABEL : dir.path;
-    // Whether *this* row is the one the caller's filter names, which is what
-    // turns the button below into a toggle. Compared by id rather than by path
-    // because that is what was handed out and what comes back, and because a
-    // compressed row's directory is the deepest of the run it swallowed - the
-    // path on screen names several (see `dirLabel`).
-    //
-    // Which is also why the id has to go through `rowIdFor` first, exactly as
-    // the expansion set does (see `remapKeys`): compression re-decides which
-    // directory a row is keyed on every rebuild, so the id handed out with the
-    // brush can name a directory that some row has since swallowed. `undefined`
-    // back means nothing matching is under the brushed directory at all, which
-    // is the honest answer - no row draws pressed, because that directory has
-    // no row.
+    // Whether *this* row is the one the caller's filter names. By id, since
+    // that is what was handed out, and through `rowIdFor` first exactly as the
+    // expansion set goes through `remapKeys`: compression re-decides which
+    // directory carries a row on every rebuild. Undefined back means nothing
+    // matching is under the brushed directory, so no row draws pressed.
     const narrowedTo = attrs.filteredDirId;
     const narrowedRow =
       narrowedTo === undefined
@@ -1015,15 +864,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * A directory row's numbers: its subtree's while collapsed, its own once
-   * open.
-   *
-   * Collapsed, the subtree total is the only honest summary - it is what is
-   * hidden behind the caret. Open, the subtree total would be double-counting
-   * what the children now show for themselves, so it becomes the direct counts,
-   * which are what the rows immediately below add up to.
-   */
+  // Subtree totals while collapsed - that is what is behind the caret - and
+  // direct counts once open, where a subtree total would double-count what the
+  // children now show for themselves.
   private renderCounts(dir: DirEntry, open: boolean): m.Children {
     const total = (k: NodeKind) =>
       open
@@ -1097,16 +940,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       .map((child) => this.renderDir(attrs, child, dir.path));
   }
 
-  /**
-   * A directory's own members: listed inline while there are few enough of
-   * them, and behind a per-kind bucket otherwise.
-   *
-   * The threshold is on the *visible* count, so hiding dependencies genuinely
-   * un-buckets a directory that only had too many because of them - which is
-   * the point of the toggle. That is also the one case where toggling a kind on
-   * costs a query: the inline list is a different member query from either
-   * bucket's, and it is issued by the render that finds it missing.
-   */
+  // Inline while there are few enough, behind a per-kind bucket otherwise. The
+  // threshold is on the *visible* count, so hiding deps genuinely un-buckets a
+  // directory - and is the one case where toggling a kind on costs a query,
+  // since the inline list is a different member query from either bucket's.
   private renderMembers(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
@@ -1206,22 +1043,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     return rows;
   }
 
-  /**
-   * A member row: the same chip every other DataGrid and the query tab draw for
-   * a node id - kind chip, build/code icon, link to the slice - and the ＋/－
-   * toggle.
-   *
-   * The one thing this pane does differently is drop the directory from a dep's
-   * path: the row sits under a heading that already says `_build/default/lib`,
-   * so repeating it on every row is noise that pushes the part you are actually
-   * reading off the edge of a narrow panel. The full path stays on hover, since
-   * an abbreviated row you can't expand has lost information.
-   *
-   * Clicking the link moves the timeline selection, which is what brings the
-   * main Dune panel forward - the controller watches the selected node rather
-   * than this pane hooking the click, so every route to a node behaves the same
-   * (see `revealPanelWhenNodeSelected`).
-   */
+  // The same chip every other DataGrid draws for a node id, with one
+  // difference: a dep's path loses its directory, since the row already sits
+  // under a heading saying it. The full path stays on hover.
+  //
+  // Clicking the link moves the timeline selection, and the controller - not
+  // this pane - is what brings the main panel forward, so every route to a
+  // node behaves the same (see `revealPanelWhenNodeSelected`).
   private renderMember(
     attrs: DirExplorerPanelAttrs,
     entry: MemberEntry,
@@ -1243,15 +1071,9 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
-  /**
-   * A single-kind list derived from an already-loaded both-kinds list, or
-   * undefined if there isn't one to derive it from.
-   *
-   * Only valid off a *complete* both-kinds list: a truncated one is the first
-   * page of the two kinds interleaved, so filtering it would silently drop the
-   * members past the cut. In practice the both-kinds list only exists for
-   * directories under the inline threshold, where it is always complete.
-   */
+  // Only valid off a *complete* both-kinds list: a truncated one is the first
+  // page of the two kinds interleaved, so filtering it would silently drop the
+  // members past the cut.
   private filterFromLoaded(
     dir: DirEntry,
     kinds: readonly NodeKind[],
@@ -1290,17 +1112,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     }
   }
 
-  /**
-   * The cache key for one member list: a directory, which kinds, and which
-   * filter.
-   *
-   * Both kinds is its own key rather than the union of the two single-kind ones,
-   * because it is a different query and a differently paged one. The filter is in
-   * the key because it changes *which rows* independently of which kinds - the
-   * caches are also cleared when a filter is applied, so this is belt and braces,
-   * but a member list keyed only by kind would be a silently wrong cache hit if
-   * that ever stopped being true.
-   */
+  // Both kinds is its own key, not the union of the two single-kind ones: it is
+  // a different, differently paged query. The filter is in the key because it
+  // changes which rows independently of which kinds - belt and braces, since
+  // the caches are cleared on apply, but a key without it would be a silently
+  // wrong cache hit if that stopped being true.
   private memberKey(id: number, kinds: readonly NodeKind[]): string {
     const f = fingerprint(this.filter);
     return `${id}:${[...kinds].sort().join('+')}:${f}`;
@@ -1416,24 +1232,11 @@ const DIR_TREE_DEPENDANT: MirrorDependant = {
     'not been built for this trace yet.',
 };
 
-/**
- * The prompt shown in place of a surface whose node tier has not been built.
- *
- * `dune_dir` is part of that tier, so there is no hierarchy to draw until it is
- * up - true of the side panel tab and of the directory chart alike, which is why
- * this is exported rather than inlined: the chart cannot mount the pane to get
- * the prompt (the pane needs a source, and a source that cannot read anything
- * yet is not one), and a second copy of an offer to load the graph would be the
- * third. The node graph chart (node_graph_chart.ts) is the fourth surface that
- * needs the same offer for a different reason, which is what the parameter is
- * for.
- *
- * The offer itself is the same one panel.ts makes, so that any of the surfaces
- * is usable on its own rather than sending the user to another one first.
- *
- * @param controller The controller whose load the button starts.
- * @param what What could not be drawn; defaults to the directory tree.
- */
+// The prompt shown in place of a surface whose node tier has not been built.
+// Exported rather than inlined because four surfaces need the same offer and
+// the chart cannot mount the pane to get it: the pane needs a source, and a
+// source that cannot read anything yet is not one. `what` says which surface
+// is missing; it defaults to the directory tree.
 export function renderMirrorNotLoaded(
   controller: DuneGraphController,
   what: MirrorDependant = DIR_TREE_DEPENDANT,
@@ -1452,24 +1255,14 @@ export function renderMirrorNotLoaded(
   );
 }
 
-/**
- * What a directory row is called: its path relative to the row above it.
- *
- * For an uncompressed row that is just its own name; for a compressed one it is
- * the whole run that was collapsed (`default/lib`), which is the only label that
- * describes where clicking it goes. The trailing `/` marks it as a directory,
- * matching `PathTreeView`'s group headers.
- *
- * The parent's path is a prefix of the child's, and the separator between them is
- * a single character (`/` or `@` - see dir_tree.ts), so the suffix is a slice.
- * The top-level directory (the empty path) is the one row with no name at all,
- * and it is never a parent - a tree of absolute and relative paths simply has
- * several roots - so it only ever appears as its own label.
- *
- * Exported for its unit test: the slice is the sort of arithmetic that is right
- * or off by one, and being off by one here silently eats the first character of
- * every nested directory's name.
- */
+// A row's label: its path relative to the row above it - its own name when
+// uncompressed, the whole collapsed run (`default/lib`) when not. The parent's
+// path is a prefix and both separators are one character (see dir_tree.ts), so
+// the suffix is a slice. The top-level directory is never a parent, so it only
+// appears as its own label.
+//
+// Exported for its unit test: off by one here silently eats the first character
+// of every nested directory's name.
 export function dirLabel(
   dir: Pick<DirEntry, 'path'>,
   parentPath: string,
@@ -1480,25 +1273,15 @@ export function dirLabel(
   return `${suffix}/`;
 }
 
-/**
- * A dep's path with its containing directory dropped, or undefined when there is
- * nothing to drop.
- *
- * Undefined rather than the unchanged label, so the caller can tell "abbreviated,
- * put the full path on hover" from "already as short as it gets" and not attach a
- * tooltip that just repeats the row.
- *
- * Only deps: a rule's label is its bare dune id, which contains no path at all -
- * its directory is a *property* of the rule rather than a prefix of its name, so
- * there is nothing here to strip.
- *
- * The separator is checked rather than assumed. The directory came from
- * `parentDir` over this very path (see dir_tree.ts), so the prefix does match in
- * practice - but a silent `slice()` past a non-separator would chop a real
- * character off the name, and a wrong label on a build artefact is worse than an
- * unabbreviated one. Both separators (`/` and `@`) are one character, which is
- * what makes this a slice at all.
- */
+// A dep's path with its containing directory dropped, or undefined when there
+// is nothing to drop - so the caller can tell "abbreviated, put the full path
+// on hover" from "already as short as it gets".
+//
+// Only deps: a rule's label is its bare dune id and contains no path.
+//
+// The separator is checked rather than assumed: a silent `slice()` past a
+// non-separator would chop a real character off the name, and a wrong label on
+// a build artefact is worse than an unabbreviated one.
 export function strippedDepLabel(
   entry: Pick<MemberEntry, 'kind' | 'label'>,
   dirPath: string,
@@ -1538,15 +1321,9 @@ function dirIdOfKey(key: string): number {
   return Number(key.slice(key.indexOf(':') + 1).split(':')[0]);
 }
 
-/**
- * Re-keys an expansion set onto a filtered tree's rows, so that applying or
- * changing a filter leaves the tree where the user had it.
- *
- * Both kinds of key move: compression re-decides which directory carries a row,
- * so `dir:<_build>` can become `dir:<_build/default/lib>` and a bucket travels
- * with its directory. Keys whose directory has nothing matching under it any more
- * are dropped rather than kept as dead entries.
- */
+// Both kinds of key move: `dir:<_build>` can become `dir:<_build/default/lib>`
+// and a bucket travels with its directory. Keys whose directory has nothing
+// matching under it any more are dropped.
 function remapKeys(keys: ReadonlySet<string>, tree: FilteredTree): Set<string> {
   const out = new Set<string>();
   for (const key of keys) {

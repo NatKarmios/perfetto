@@ -14,25 +14,15 @@
 
 /**
  * How a graph node renders as a *cell*: a coloured kind chip, the node's label
- * linking to its slice, and the ＋/－ graph-membership toggle. Two layers:
- *
- * - Node-based (`nodeAnchor`, `renderNodeChip`): what the query tab's table and
- *   tree modes both draw, given a node they have already resolved. Only the
- *   anchors are shared out (`sliceAnchor` being the node-less twin, for a
- *   slice that belongs to no node); the chip is reached through the
- *   value-based layer.
- * - Value-based (`renderNodeCell` / `nodeCellLabel` / `renderNodeCellActions`):
- *   the same thing for a DataGrid cell whose value *is* a `dune_node.node_id`
- *   (optionally relabelled - see {@link NodeChipOptions}),
- *   plus `registerNodeColumnRenderer`, which teaches every DataGrid in the UI
- *   to draw a `JOINID(dune_node.node_id)` column that way - the query tab's
- *   results, a Data Explorer results panel, a dashboard grid.
+ * linking to its slice, and the ＋/－ graph-membership toggle. Two layers -
+ * node-based (`nodeAnchor`, `renderNodeChip`) for a caller that has resolved
+ * the node already, and value-based (`renderNodeCell` and friends) for a
+ * DataGrid cell whose value *is* a `dune_node.node_id`.
  *
  * **A value-based renderer may read its own cell value and the controller, and
- * nothing else** - in particular not a sibling column of the same row. See
- * README.md, "Gotchas". A node id is self-sufficient, which is what makes this
- * work at all: resolving one is a range check against the current graph (see
- * `controller.nodeForNodeId`), not a query.
+ * nothing else** - in particular not a sibling column of the same row (see
+ * README.md, "Gotchas"). A node id is self-sufficient, which is what makes this
+ * work: resolving one is a range check against the current graph, not a query.
  */
 
 import m from 'mithril';
@@ -240,20 +230,11 @@ function nodeColumnRenderers(controller: DuneGraphController): ColumnRenderers {
   };
 }
 
-/**
- * Teaches every DataGrid host how to render a reference to one of our nodes, so
- * that a column typed `JOINID(dune_node.node_id)` shows a node chip wherever it
- * appears - the query tab, a Data Explorer results panel, a dashboard grid.
- *
- * Registrations are global and outlive a trace, so this one is put in the
- * trace's trash: it is dropped when the trace is unloaded, and the next trace
- * load registers afresh. Registering a table twice throws by design, so a
- * leaked registration would surface on the next load rather than quietly
- * capturing a dead controller.
- *
- * @param trace The trace the registration's lifetime is tied to.
- * @param controller The controller whose graph node ids are resolved against.
- */
+// Teaches every DataGrid host to render a `JOINID(dune_node.node_id)` column
+// as a node chip, wherever it appears. Registrations are global and outlive a
+// trace, so this one goes in the trace's trash; registering a table twice
+// throws by design, so a leak surfaces on the next load rather than quietly
+// capturing a dead controller.
 export function registerNodeColumnRenderer(
   trace: Trace,
   controller: DuneGraphController,

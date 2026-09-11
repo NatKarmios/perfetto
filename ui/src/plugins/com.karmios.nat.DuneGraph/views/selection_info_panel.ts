@@ -72,16 +72,14 @@ interface Ref {
 }
 
 /**
- * Details for the build-graph node behind the current timeline selection, or an
- * empty state when the selection isn't a build-dep / exec-rule slice. Reads the
- * selection off the controller each render (selection is poll-based).
+ * Details for the node behind the current timeline selection, or an empty state
+ * when the selection is not one of ours. Reads the selection off the controller
+ * each render, since selection is poll-based.
  *
- * The body is three accordion sections. `processes` leads (and is a rule's only
- * - see `renderProcesses`): what the rule actually *ran* is the concrete answer,
- * where the two graph lists are for navigating outwards from it. Those two are
- * `dependants` (nodes that depend on this one) and `dependencies` (nodes this
- * one depends on), each a union of the node's own referenced ids and the graph's
- * accrued edges, with forced edges marked by a leading icon.
+ * Three accordion sections, `processes` leading: what the rule actually _ran_
+ * is the concrete answer, where `dependants` and `dependencies` are for
+ * navigating outwards from it. Those two are each a union of the node's own
+ * referenced ids and the graph's accrued edges, forced edges marked by icon.
  */
 export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAttrs> {
   // Collapse state for the dependants/dependencies path-tree groups, keyed by
@@ -498,18 +496,11 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     );
   }
 
-  /**
-   * The processes the selected rule is responsible for, as a third accordion
-   * section - one collapsible entry each.
-   *
-   * Rules only, and only when there are any: a dep spawns nothing (see
-   * fetchProcesses), and a trace whose dune doesn't emit the `forced_by` arg has
-   * no process slices at all, which is still the common case - an empty
-   * "Processes (0)" would then sit under every rule saying nothing. The section
-   * is likewise absent while the fetch is in flight rather than shown empty and
-   * then filled, since a rule forces at most a handful of processes and the
-   * query is one round trip.
-   */
+  // Rules only, and only when there are any: a dep spawns nothing, and a trace
+  // whose dune does not emit the `forced_by` arg has no process slices at all -
+  // still the common case, so an empty "Processes (0)" would sit under every
+  // rule saying nothing. Absent while the fetch is in flight too, since a rule
+  // forces a handful at most and the query is one round trip.
   private renderProcesses(controller: DuneGraphController): m.Children {
     const processes = this.processes;
     if (processes === undefined || processes.length === 0) return undefined;

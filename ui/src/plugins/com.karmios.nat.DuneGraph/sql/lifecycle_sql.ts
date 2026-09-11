@@ -13,24 +13,12 @@
 // limitations under the License.
 
 /**
- * Node timing, entirely in SQL.
+ * Node timing, entirely in SQL: one pipeline producing one row per (kind, key),
+ * with nothing timing-shaped crossing into JS during a load.
  *
- * A graph node's timing comes from the lifecycle instants on the `exec-rule` /
- * `build-dep` / `exec-rule-action` tracks: a `-start` paired with its matching
- * `-finish`, or a single collapsed `-resolved`. One SQL pipeline produces one
- * row per (kind, key), and nothing timing-shaped crosses into JS during a load.
- * See README.md, "The SQL mirror".
- *
- * **The pairing is deliberately join-free**: `-start` and `-finish` are matched
- * by numbering each phase's instants per key (`row_number()`) and collapsing
- * the two rows of an occurrence with a `GROUP BY`. The self-join that phrasing
- * replaces is the same shape and ran for **223 s** on the monorepo trace, so
- * this is not a stylistic choice.
- *
- * **Occurrences are paired in arrival order**, because instants carry no
- * occurrence index: a key seen more than once (watch mode, or a dep built
- * repeatedly) is paired in timestamp order. A heuristic, and one of the
- * plugin's reported schema gaps.
+ * **README.md, "Timing", is the reference** - why the pairing is join-free,
+ * why occurrences are paired in timestamp order, and why `_dune_timing` has a
+ * real primary key rather than being a `PERFETTO TABLE`.
  */
 
 import type {Engine} from '../../../trace_processor/engine';
@@ -87,42 +75,11 @@ export function timingKindCode(kind: TimingKind): number {
 // `SqlLifecycle` and joined by the node mirror's views (see sql_graph.ts).
 export const TIMING_TABLE = '_dune_timing';
 
-/**
- * Why this is a plain `WITHOUT ROWID` table keyed on (kind, key) rather than a
- * `PERFETTO TABLE`.
- *
- * Every read of it is an equality lookup on (kind, key), and `dune_node` joins
- * it that way for every row it projects. A `PERFETTO TABLE` serves that probe by
- * scanning the *whole table per driving row*: 94 µs a probe natively, ~256 µs in
- * the wasm engine, which is **208 s** to project the monorepo trace's 818k nodes
- * once. A `PERFETTO INDEX` on (kind, key) does not change that (it is not
- * serve a join probe), and neither does making `kind` an integer.
- *
- * A real primary key does: same rows out (byte-identical counts and duration
- * sums), the same projection takes **2.2 s** in wasm and 818k bare probes drop
- * from 209.4 s to 0.9 s. Both halves of the key are
- * integers so the probe is one b-tree descent, which is why `kind` is stored as
- * a code (see {@link KIND_CODES}) rather than as text. A plain rowid table with a
- * plain index on (kind, key) also fixes the asymptotics but is ~4× the lookup
- * cost and an extra index object.
- *
- * **This shape costs 33.7 MB of resident SQLite pages, and that is the thing to
- * watch.** They land inside the arena freed after the trace parse. While the
- * edge tier stored one row per edge it needed that arena back, and *any* ~34 MB
- * of resident pages was enough to make `CREATE INDEX` over 28.7M rows fail with
- * `database or disk is full` - a dummy rowid table of the same 1.2M rows failed
- * it identically, so it was never this table's shape that did it.
- *
- * Factoring the edge tier removed that constraint - the widest index is now
- * 4.03M rows - and with this table in place the end-of-load heap is 1,530.3 MB,
- * unchanged to the decimal, against a 4 GB memory32 ceiling. The db file grows
- * 366.8 -> 389.7 MB.
- *
- * So: if a future change makes the edge tier tight again, this is the first
- * thing to give back. Measure it the way that failure was found - a full load
- * through the wasm engine, reading the heap at the **end**, not after the step
- * you changed.
- */
+// A plain `WITHOUT ROWID` table keyed on (kind, key), not a `PERFETTO TABLE`.
+// **README.md, "Timing", has the measurements and the page budget** - including
+// why this table is the first thing to give back if the edge tier ever gets
+// tight again. `kind` is stored as a code (see {@link KIND_CODES}) so both
+// halves of the key are integers and the probe is one b-tree descent.
 // Intermediates, dropped as soon as the table above is built - `_dune_instant`
 // and `_dune_seq` are one row per instant, which is the biggest thing this
 // module ever holds.

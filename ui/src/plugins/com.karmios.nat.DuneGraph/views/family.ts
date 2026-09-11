@@ -13,22 +13,20 @@
 // limitations under the License.
 
 /**
- * What belongs with what: the index every cross-track feature reads - the
- * arrows, the hover shading, the details panel's family list. A *family* is one
- * rule plus everything around it: the selected dep that resolves to it, its
- * action, and the processes that action spawned. Every family has exactly one
- * rule, so a rule id names a family.
+ * What belongs with what: the index the arrows, the hover shading and the
+ * details panel's family list all read. A *family* is one rule plus everything
+ * around it - the selected dep that resolves to it, its action, and the
+ * processes that action spawned - so a rule id names a family.
  *
- * The index is rebuilt when the selection set changes; reading it is a map
- * lookup, which is what lets the callers stay synchronous (an overlay and a
- * per-frame colorizer both have to be).
+ * Rebuilt when the selection set changes; reading it is a map lookup, which is
+ * what lets an overlay and a per-frame colorizer stay synchronous.
  *
- * **Where the positions come from.** An arrow has to land on the row the track
- * actually drew, and those rows are assigned by the core's `internal_layout`
- * inside the query SliceTrack generates. Rather than reimplement that packing
- * (and drift from it), this runs the core's own `generateRenderQuery` over the
- * very same `SourceDataset` the track was given and reads `id`, `ts` and
- * `depth` straight back out - so the positions are correct by construction.
+ * **The positions come from the core.** An arrow has to land on the row the
+ * track actually drew, and those are assigned by `internal_layout` inside the
+ * query SliceTrack generates - so rather than reimplement that packing and
+ * drift from it, this runs the core's own `generateRenderQuery` over the same
+ * `SourceDataset` the track was given and reads `id`, `ts` and `depth` back
+ * out.
  */
 
 import {generateRenderQuery} from '../../../components/tracks/slice_track';

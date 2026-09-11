@@ -13,30 +13,20 @@
 // limitations under the License.
 
 /**
- * The side panel's node graph offered as a Data Explorer *chart type*: a query's
- * rows, drawn as the build graph between the nodes they named.
+ * The side panel's node graph offered as a Data Explorer *chart type*: a
+ * query's rows, drawn as the build graph between the nodes they named.
  *
- * The same pane the side panel draws (graph_panel.ts), over a different node
- * set: the card's query rather than the graph selection. That is the whole
- * point - a query says "every rule in this directory that failed" far faster
- * than clicking does, and the edges between whatever it names are drawn for
- * free, the graph being in memory already.
- *
- * Nothing else about the pane changes: same induced subgraph, same contraction
- * through hidden rules, same "Hide rules" toggle on the controller, same jump
- * to a node's slice on a click. The only things the card does not offer are the
- * two toolbar actions that act on the *selection* rather than on what is drawn,
- * "Timeline" and "Clear" - see `GraphPanelNodes`. `config.column` is read as
- * the node id column, exactly as the directory chart reads it (see
- * chart_node_column.ts).
+ * The same pane the side panel draws (graph_panel.ts) over a different node
+ * set - the card's query rather than the graph selection - which is the whole
+ * point: a query says "every rule in this directory that failed" far faster
+ * than clicking, and the edges between whatever it names are drawn for free.
+ * Nothing else about the pane changes except the two toolbar actions that act
+ * on the *selection*, "Timeline" and "Clear" (see `GraphPanelNodes`).
  *
  * **Unlike the directory chart, this one has a cap.** That chart's tree is
  * bounded by the mirror however large its query; this one draws a dot per node,
  * so the query's size is the card's size. {@link NODE_GRAPH_MAX_NODES} is the
- * limit, justified in node_graph_source.ts where it lives, and it is all or
- * nothing: a query within it is drawn entire, and one past it is refused by
- * name rather than sampled down to size, for the reason given at the refusal
- * below.
+ * limit, and it is all or nothing - the refusal below says why.
  */
 
 import m from 'mithril';
@@ -87,17 +77,8 @@ const NOT_LOADED = {
     "the graph's node tables, which have not been built for this trace yet.",
 };
 
-/**
- * Registers the node graph chart type for as long as `trace` lives.
- *
- * The chart registry is global and outlives a trace, and the pane it renders
- * closes over a controller belonging to *this* trace, so the registration goes
- * in the trace's trash and the next trace load registers afresh - see
- * dir_explorer_chart.ts, which says the same thing at length.
- *
- * @param trace The trace the registration's lifetime is tied to.
- * @param controller The controller whose graph the nodes are drawn from.
- */
+// Registered for as long as `trace` lives, for the reason dir_explorer_chart.ts
+// gives: the registry is global and the pane closes over *this* controller.
 export function registerNodeGraphChart(
   trace: Trace,
   controller: DuneGraphController,

@@ -16,37 +16,9 @@
  * The directory Explorer offered as a Data Explorer *chart type*: a query's
  * rows, drawn as the part of the build's directory tree they landed in.
  *
- * Its input is a **selection**, not a structure: the hierarchy comes from the
- * mirror, and the query's rows decide which directories are drawn and what
- * hangs off them, so the card is honestly a picture of its query rather than a
- * tree that highlights part of one. All of that is dir_chart_source.ts; this
- * file is the registration and the states around it, and `config.column` is
- * read as the node id column (see chart_node_column.ts).
- *
- * ## Clicking a directory narrows everything else
- *
- * The row's filter button emits `setBrushSelection('dir_id', [...])` over the
- * directories its subtree actually holds rows in. That lands as repeated `=`
- * filters and is rendered as `dir_id IN (...)` by the dashboard's own
- * `buildWhereClause`, so it needs nothing new from the host - but it does need
- * the query to *have* a `dir_id` column, which is why the button is only offered
- * when one is there. Any query over `dune_node` carries it for free.
- *
- * The button is a toggle: clicking the directory that is already brushed clears
- * the brush instead of re-applying it. That needs someone to remember which
- * directory that is, and the pane cannot - it hands out a directory and hears
- * nothing back - so the answer lives here, in `brushes`, and goes into the pane
- * as `filteredDirId` for it to draw the button pressed.
- *
- * `brushes` dies with the trace and the brush itself is saved with the tab, so
- * on the far side of a reload the card has to work out again which directory it
- * brushed. It reads that back off the persisted filters, which carry the id of
- * the chart that set them - see `recoverBrushedDir`.
- *
- * The pane's own path box and Filters menu narrow *this* card's tree and
- * nothing else. Deliberately: a brush is persisted with the tab and the pane's
- * filter is not, so a dashboard reopened after a filter brush came back
- * narrowed by a filter nothing on screen was showing.
+ * This file is the registration and the states around it; dir_chart_source.ts
+ * is the data. **README.md, "The Explorer pane", covers both** - what the card
+ * is a picture of, and how the narrow-to-this-directory brush works.
  */
 
 import m from 'mithril';
@@ -90,63 +62,29 @@ const DIR_TREE_CHART_TYPE = 'dune-dir-tree';
 // misconfigured chart still reads as this chart rather than as an error.
 const ICON = 'account_tree';
 
-/**
- * The column a directory click filters on, and the one the pane's narrowing
- * button needs the query to carry.
- *
- * `dune_node.dir_id` is a plain id column on the mirror's node view, so any
- * query over `dune_node` has it without asking (see sql_graph.ts). Deliberately
- * not the primary column: what is being narrowed is *where* the rows are, which
- * is a different question from which column named them.
- */
+// The column a directory click filters on. Any query over `dune_node` has it
+// without asking.
 const DIR_ID_COLUMN = 'dir_id';
 
-/**
- * Which directory this card's `dir_id` brush names, if any.
- *
- * Held per chart rather than per source because it has to outlive one: a
- * consumer card's own query carries the brush filters, so brushing rebuilds the
- * loader and with it the source (see `ensureLoader`), and state kept on the
- * source would be dropped by the very click that set it - the toggle would
- * un-light itself.
- */
+// Which directory this card's `dir_id` brush names, if any.
 interface CardBrush {
   dirId?: number;
-  /**
-   * Whether the persisted filters have already been asked what `dirId` was.
-   *
-   * The brush outlives this map - it is saved with the tab and the map is built
-   * per trace load - so a card coming back from a reload has filters and no
-   * `dirId`, and gets it back from `rootOfDirIds` (see `recoverBrushedDir`).
-   * That answer is a scan of the mirror's directories, so it is taken once and
-   * kept, including when it comes back undefined: a set that could not be
-   * explained this frame will not be explicable the next one either.
-   */
+  // Whether the persisted filters have already been asked what `dirId` was.
+  // Taken once and kept, including when it comes back undefined: a set that
+  // could not be explained this frame will not be explicable the next one.
   recovered?: boolean;
 }
 
-/**
- * Registers the directory-tree chart type for as long as `trace` lives.
- *
- * The chart registry is global and outlives a trace, and the pane it renders
- * closes over a controller belonging to *this* trace, so - exactly as with the
- * node column renderer in node_cell.ts - the registration goes in the trace's
- * trash and the next trace load registers afresh. Registering a chart type
- * twice throws by design, so a leaked registration would surface on the next
- * load rather than quietly capturing a dead controller.
- *
- * @param trace The trace the registration's lifetime is tied to.
- * @param controller The controller whose mirror the tree is read from.
- */
+// Registered for as long as `trace` lives: the chart registry is global and
+// outlives a trace, while the pane closes over *this* trace's controller.
+// Registering a type twice throws by design, so a leaked registration surfaces
+// on the next load rather than capturing a dead controller.
 export function registerDirExplorerChart(
   trace: Trace,
   controller: DuneGraphController,
 ): void {
-  // Which directory each card of this type has brushed, by chart config id -
-  // which is stable across the loader rebuilds a brush itself causes, unlike
-  // the source. Scoped to the registration, so it dies with the trace rather
-  // than being a module-level cache of cards from traces ago; within one trace
-  // it holds one number per chart ever configured.
+  // Scoped to the registration, so it dies with the trace; within one trace it
+  // holds one number per chart ever configured.
   const brushes = new Map<string, CardBrush>();
   trace.trash.use(
     registerChartType({
@@ -157,32 +95,22 @@ export function registerDirExplorerChart(
         "Browse the query's rows as the build's directory tree, with each " +
         "directory's rules and dependencies",
 
-      // Nothing to configure beyond the primary column: aggregating or binning
-      // a directory tree means nothing, and the pane picks every other column
-      // it reads out of the mirror itself.
+      // Aggregating or binning a directory tree means nothing, and the pane
+      // picks every other column it reads out of the mirror itself.
       supportsAggregation: false,
       supportsBinning: false,
       requiresNumericDimension: false,
-      // Named for what it is read as, since it is not a dimension or a measure
-      // and the popup offers no other hint (see `resolveNodeColumn`).
+      // Named for what it is read as: not a dimension or a measure.
       primaryColumnLabel: 'Node id column',
-      // So a chart dropped on a query that has one just draws, instead of
-      // landing on the host's generic first-non-numeric guess and having to
-      // ask (see chart_node_column.ts).
+      // So a chart dropped on a query that has one just draws.
       defaultColumn: defaultNodeColumn,
       supportsYColumn: false,
       supportsGroupColumn: false,
       supportsSizeColumn: false,
 
-      // The source is created here, once per (table, config) - which is exactly
-      // the lifetime the host already manages for a loader, disposing the old
-      // one when either changes. Building it in `render` instead would hand the
-      // pane a new source every frame, and the pane treats a new source as new
-      // data: the tree would collapse on every redraw.
-      //
-      // The query is *not* run here. The source loads lazily, so a chart whose
-      // column is not a node id (below) or whose graph is not loaded costs
-      // nothing until it can actually draw something.
+      // Once per (table, config), the lifetime the host already manages.
+      // The query is *not* run here: the source loads lazily, so a chart that
+      // cannot draw yet costs nothing.
       createLoader: (engine, query, config, entry) => {
         entry.custom = new ChartDirExplorerSource(
           engine,
@@ -198,9 +126,7 @@ export function registerDirExplorerChart(
           renderChartBody(controller, brushes, ctx, config, entry),
         ),
 
-      // The card is the query's tree, and the query is named by the node it
-      // sits on; the column that maps rows to nodes is plumbing rather than a
-      // title.
+      // The query is named by the node the card sits on.
       defaultLabel: () => 'Dune directory tree',
 
       // No `preview`: the picker falls back to `icon` for types without an SVG
@@ -209,14 +135,9 @@ export function registerDirExplorerChart(
   );
 }
 
-/**
- * Everything inside the card: the tree, or an honest account of why there isn't
- * one.
- *
- * The order of the checks is the order the answers become knowable - no mirror,
- * then no node id column, then no rows to load, then the load itself - so each
- * one only ever reports the first thing that is actually wrong.
- */
+// The checks run in the order their answers become knowable - no mirror, no
+// node id column, no results table, then the load - so each reports only the
+// first thing actually wrong.
 function renderChartBody(
   controller: DuneGraphController,
   brushes: Map<string, CardBrush>,
@@ -224,9 +145,8 @@ function renderChartBody(
   config: ChartConfig,
   entry: ChartLoaderEntry,
 ): m.Children {
-  // `dune_dir` is built as part of the node tier, so there is nothing to read
-  // until that is up - including the hierarchy, which is not the chart's input
-  // but is half of what it draws.
+  // `dune_dir` is built as part of the node tier, and the hierarchy is half of
+  // what this draws.
   if (!controller.nodeMirrorReady) return renderMirrorNotLoaded(controller);
 
   const suggestion = resolveNodeColumn(config.column, ctx.node.sourceCols);
@@ -284,22 +204,10 @@ function cardBrush(
   return brush;
 }
 
-/**
- * Fills in `brush.dirId` from the filters the card's own brush was persisted
- * as, for a card whose brush was set before a reload.
- *
- * `brushes` lives for one trace load and the brush it mirrors lives with the
- * tab, so reopening a dashboard leaves every other card narrowed by a filter
- * this one no longer knows it set: nothing draws pressed, and the row that
- * would clear the brush re-applies it instead. The filters are the only record
- * left, and `chartId` is what makes them readable - a `dir_id` selection
- * stamped with this chart's id is this card's own brush and no one else's.
- *
- * Silent about failure by design. Every step of the way back is optional - the
- * host may publish no filters at all (the visualisation-node path does not),
- * the set may not resolve to a directory - and where it stops the card is
- * exactly the card it was before, brush-blind but working.
- */
+// Fills in `brush.dirId` from the filters the brush was persisted as, for a
+// card whose brush predates a reload. `chartId` is what makes them readable: a
+// `dir_id` selection stamped with this chart's id is this card's brush and no
+// one else's. Silent about failure by design - see the README.
 function recoverBrushedDir(
   ctx: ChartRenderContext,
   source: ChartDirExplorerSource,
@@ -321,23 +229,12 @@ function recoverBrushedDir(
   brush.dirId = source.rootOfDirIds(ids);
 }
 
-/**
- * What a directory row's filter button does, or undefined when the query has no
- * `dir_id` column for the filter to name.
- *
- * Withheld rather than offered-and-broken: a filter on a column the query does
- * not have would either error downstream or quietly match nothing, and neither
- * is something to find out by clicking. The clear-then-set pair is the same one
- * every built-in renderer's brush does (see `handleBarBrush`), and it is what
- * makes clicking a second directory a *move* rather than a union with the
- * first.
- *
- * A toggle, because the pane's button is one: a click on the directory already
- * brushed clears the brush instead. The pane reports every click the same way
- * and this decides, since this is the side that knows what is brushed - the
- * `dirId` it records is also what goes back in as `filteredDirId` to draw the
- * button pressed.
- */
+// Undefined when the query has no `dir_id` column: withheld rather than
+// offered-and-broken, since such a filter would error downstream or quietly
+// match nothing. The clear-then-set pair is every built-in renderer's brush
+// (see `handleBarBrush`), and is what makes a second click a *move* rather
+// than a union. The pane reports every click the same way; this side decides,
+// because it is the side that knows what is brushed.
 function dirFilterHandler(
   ctx: ChartRenderContext,
   source: ChartDirExplorerSource,
@@ -347,9 +244,8 @@ function dirFilterHandler(
     return undefined;
   }
   return (dir: DirEntry) => {
-    // Whatever the click does, this card now knows what it brushed first-hand
-    // and has no more use for the persisted filters - which for one frame
-    // after a clear still describe the brush being cleared.
+    // This card now knows what it brushed first-hand, and the persisted
+    // filters still describe a cleared brush for one frame.
     brush.recovered = true;
     if (brush.dirId === dir.id) {
       brush.dirId = undefined;

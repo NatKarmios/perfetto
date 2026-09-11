@@ -132,20 +132,15 @@ export class TraceGraphSource implements GraphSource {
     };
   }
 
-  /**
-   * The structural graph, straight off the blob. Nothing timing-shaped is read
-   * here and no record is collected; see README.md, *The load path*.
-   *
-   * Throws (surfaced by the controller as the panel's error state) rather than
-   * returning an empty graph when the `dune-graph` track is absent: a trace
-   * without one should fail loudly rather than silently show nothing.
-   *
-   * Read in two passes - a metadata query that validates each section's chunk
-   * set without touching a payload, then one query *per chunk*. Deliberately
-   * not one query for everything: a query result holds every string column it
-   * returned for as long as it is alive, so a single blob query would keep the
-   * whole payload live for the entire parse, on top of what the parse builds.
-   */
+  // The structural graph, straight off the blob - see README.md, "The load
+  // path". Throws rather than returning an empty graph when the `dune-graph`
+  // track is absent: a trace without one should fail loudly.
+  //
+  // Two passes: a metadata query validating each section's chunk set without
+  // touching a payload, then one query *per chunk*. Not one query for
+  // everything, because a query result holds every string column it returned
+  // for as long as it is alive - so a single blob query would keep the whole
+  // payload live for the entire parse, on top of what the parse builds.
   async load(perf?: PerfRun): Promise<BuildGraph> {
     const index = await this.readChunkIndex(perf);
     if (index.size === 0) throw noBlobTrackError();

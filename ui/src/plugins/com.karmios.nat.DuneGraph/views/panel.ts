@@ -62,15 +62,13 @@ interface DuneGraphPanelAttrs {
 }
 
 /**
- * Root of the Dune-graph side panel. Two stacked areas: details for the
- * build-graph node behind the current timeline selection (top), and the set of
- * nodes chosen for the graph (bottom).
+ * Root of the Dune-graph side panel: details for the node behind the current
+ * timeline selection, and the set of nodes chosen for the graph.
  *
- * Before either of those, this is where a not-yet-loaded trace is explained -
- * nothing loads when the trace opens (see controller.ts). It shows what the
- * graph would cost to load, measured from the trace rather than guessed, and
- * offers the load as an explicit action; on a small trace the load has usually
- * started by itself and the same screen is a progress report.
+ * Before either, this is where a not-yet-loaded trace is explained - it shows
+ * what the graph would cost, measured rather than guessed, and offers the load
+ * as an explicit action. On a small trace the load has usually started by
+ * itself and the same screen is a progress report.
  */
 export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   // Which phase we last scrolled to, so the running one is revealed once per
@@ -114,24 +112,17 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     ];
   }
 
-  /**
-   * The one area here that isn't about the selected nodes: the mirror's tables,
-   * offered to the Data Explorer as data sources to add to the graph the user is
-   * building there (see data_explorer_handoff.ts). It lives at the top of the
-   * panel, above the two node-shaped areas, because it is about the whole build
-   * and not about anything selected - and only once the graph is up, so the
-   * pre-load screen keeps its single call to action.
-   *
-   * Only while the Data Explorer is the open page, though: "add to the current
-   * graph" means nothing anywhere else, and the buttons would be an invitation
-   * to a page the user isn't on. These buttons are the only way in, so the
-   * hand-off can assume this panel is on screen to report a load in - which is
-   * where a load reports itself anyway.
-   *
-   * The route is read straight off the URL rather than watched, which is all
-   * that's needed - the shell redraws on `hashchange`, so the section appears
-   * and disappears with the navigation that caused it.
-   */
+  // The mirror's tables, offered to the Data Explorer as data sources. At the
+  // top of the panel because it is about the whole build rather than anything
+  // selected, and only once the graph is up, so the pre-load screen keeps its
+  // single call to action.
+  //
+  // Only while the Data Explorer is the open page: "add to the current graph"
+  // means nothing elsewhere. These buttons being the only way in is what lets
+  // the hand-off assume this panel is on screen to report a load in.
+  //
+  // The route is read straight off the URL rather than watched - the shell
+  // redraws on `hashchange`, so the section appears with the navigation.
   private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
     if (!isExplorePageOpen()) {
       return undefined;
@@ -303,19 +294,10 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     ];
   }
 
-  /**
-   * Everything a step is going to build, listed in full from the moment it
-   * starts.
-   *
-   * The whole point of the list is that it shows what is left as well as what
-   * is now: a tier is minutes of work and naming only the current table said
-   * nothing about how much of it remained. So all of a started step's phases
-   * render, each with its own state, rather than only the active one.
-   *
-   * Not before it starts, though - a step that hasn't begun stays a single row,
-   * or the panel would open on thirty greyed-out table names - and not for the
-   * graph step, whose `phases` is empty (see controller.ts).
-   */
+  // Everything a step is going to build, in full, from the moment it starts -
+  // the point of the list is that it shows what is *left*, not only what is
+  // now. Not before it starts, or the panel would open on thirty greyed-out
+  // table names, and not for the graph step, whose `phases` is empty.
   private renderPhases(step: LoadStep): m.Children {
     if (step.status === 'idle' || step.phases.length === 0) return undefined;
     return m(
@@ -352,24 +334,14 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     );
   }
 
-  /**
-   * Keeps the running phase on screen.
-   *
-   * The two tiers declare 29 phases between them, which is taller than the
-   * panel, so the spinner otherwise walks off the bottom partway through the
-   * node tier and the list stops being a progress report - you would have to
-   * hunt for the row that is moving.
-   *
-   * Once per phase, not once per redraw, which is what `scrolledPhase` is for:
-   * the active row redraws on every row report (one per 50k inserted rows), and
-   * re-scrolling on each of those would fight a panel the user had deliberately
-   * scrolled elsewhere and re-run layout for no change. Scrolling only when the
-   * phase itself changes means a scroll-away survives until the build moves on.
-   *
-   * `block: 'nearest'` both keeps the movement minimal and makes an already
-   * visible row a no-op, so a panel tall enough to show the whole list never
-   * scrolls at all.
-   */
+  // Keeps the running phase on screen: the two tiers declare 29 phases between
+  // them, taller than the panel, so the spinner otherwise walks off the bottom
+  // partway through the node tier.
+  //
+  // Once per phase, not once per redraw (hence `scrolledPhase`): the active row
+  // redraws on every row report, and re-scrolling on each would fight a panel
+  // the user had deliberately scrolled elsewhere. `block: 'nearest'` keeps the
+  // movement minimal and makes an already visible row a no-op.
   private revealPhase(dom: Element, phaseId: string): void {
     if (this.scrolledPhase === phaseId) return;
     this.scrolledPhase = phaseId;
@@ -412,17 +384,11 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
     return this.renderEdgeTierPrompt(controller);
   }
 
-  /**
-   * What is left to say about the edge tier once a load has been through it:
-   * that it wasn't built at all, because the graph is past the hard limit.
-   *
-   * Not an offer. The tier is part of every load, bought by the one question
-   * asked before the graph is parsed (see controller.ts), so there is no
-   * "build it separately" left to prompt for. Past the hard limit the answer is
-   * no and the reason is the number - materializing it would take the trace
-   * processor down - so that reads as a callout rather than an error, because
-   * everything except `dune_edge` and the relation functions still works.
-   */
+  // Not an offer: the tier is part of every load, bought by the one question
+  // asked before the graph is parsed, so there is no "build it separately" to
+  // prompt for. Past the hard limit the answer is no and the reason is the
+  // number, so it reads as a callout rather than an error - everything except
+  // `dune_edge` and the relation functions still works.
   private renderEdgeTierPrompt(controller: DuneGraphController): m.Children {
     if (controller.edgeMirrorStep.status !== 'idle') return undefined;
     if (controller.edgeTierRefused) {

@@ -180,16 +180,10 @@ function patchTab(
   return {tabs, activeTabId: state.activeTabId};
 }
 
-/**
- * The tab list a stored blob restores to. Handed the tab factory rather than
- * owning one, for the same reason the helpers above are handed a state:
- * building a real {@link DunePageTab} needs a `DuneQueryResults` and so a
- * `Trace`, while the bookkeeping here - keep the stored order, land on a tab
- * that exists - is worth checking without either.
- *
- * `loadTabs` never returns a blob with no tabs, so the first tab is a fallback
- * rather than a case to handle.
- */
+// Handed the tab factory rather than owning one, for the same reason the
+// helpers above are handed a state: a real {@link DunePageTab} needs a `Trace`,
+// while the bookkeeping here is worth checking without one. `loadTabs` never
+// returns a blob with no tabs, so the first tab is a fallback, not a case.
 export function restoreTabs(
   persisted: PersistedTabs,
   makeTab: (fields: PersistedTab) => DunePageTab,
@@ -204,19 +198,13 @@ export function restoreTabs(
 
 /**
  * A full page of SQL over the Dune graph tables: a strip of editor tabs, each
- * with its own editor buffer and its own {@link DuneQueryResults} below it, and
- * a query-history sidebar.
- *
- * The sibling of `DuneQueryTab` rather than a replacement for it - both wrap
- * the same surface-agnostic results view, which is where all the node-aware
- * rendering (kind chips, ＋/－ toggles, tree mode) lives. What the page adds
- * over the drawer tab is room: several queries kept side by side, and the
- * graph-load state called out *before* a query is run rather than reported as
- * an error afterwards (see `renderGraphState`).
+ * with its own buffer and its own {@link DuneQueryResults}, and a
+ * query-history sidebar. The sibling of `DuneQueryTab`, not a replacement -
+ * both wrap the same surface-agnostic results view.
  *
  * Not an `m.ClassComponent`: the plugin builds one and calls `render()` from
  * the page route, so the tabs and their results survive navigating away and
- * back - a mithril component would be torn down with the route.
+ * back, where a mithril component would be torn down with the route.
  */
 export class DuneQueryPage {
   private state: DuneTabList = {tabs: [], activeTabId: ''};
@@ -237,17 +225,11 @@ export class DuneQueryPage {
     private readonly trace: Trace,
     private readonly controller: DuneGraphController,
   ) {
-    // Whatever was open last time, when the setting is on and there is
-    // something stored; otherwise the single empty tab the page has always
-    // opened on. Nothing is *run*: a restored buffer is something to read and
-    // re-run by hand, and on this page it may well name `dune_*` tables that
-    // don't exist yet - which `renderGraphState` says before a query is run,
-    // and `DuneQueryResults.missingTables` says again if one is.
-    //
-    // The blob isn't per-trace, so tabs also come back across *different*
-    // traces, as they do on the core query page. Fine, and the same reasoning:
-    // what you were writing is yours, and a query that doesn't fit the trace
-    // in front of you says so when it is run.
+    // Whatever was open last time, when the setting is on; otherwise one empty
+    // tab. Nothing is *run*: a restored buffer may well name `dune_*` tables
+    // that do not exist yet. The blob is not per-trace, so tabs come back
+    // across *different* traces too, as on the core query page - what you were
+    // writing is yours, and a query that does not fit says so when it is run.
     const persisted = this.persistenceEnabled
       ? loadTabs(QUERY_TABS_STORAGE_KEY)
       : undefined;

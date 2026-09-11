@@ -27,21 +27,15 @@ import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
 
 /**
  * A node set for the panel to draw that is *not* the controller's own graph
- * selection - what the Data Explorer's node graph chart hands it (see
- * node_graph_chart.ts).
+ * selection - what the node graph chart hands it.
  *
- * Only the node set is injected. Everything else the panel reads off the
- * controller stays there, because nothing else genuinely differs between the
- * two surfaces: the edges come from the same graph, "Hide rules" is a property
- * of how a Dune graph is drawn rather than of who asked for it, and clicking a
- * dot means the same thing wherever the dot is. What does differ is that the
- * two toolbar actions that act on the *selection* - "Timeline" and "Clear" -
- * would act on something other than what is on screen, so they are dropped
- * whenever this is present (see {@link GraphPanel.renderToolbar}).
+ * Only the node set is injected: nothing else genuinely differs between the two
+ * surfaces. What does differ is that "Timeline" and "Clear" act on the
+ * _selection_, so they would act on something other than what is on screen and
+ * are dropped whenever this is present.
  *
- * `nodes` is never empty: a caller with nothing to draw has a better thing to
- * say about why than "no nodes selected for the graph yet", and says it instead
- * of mounting the panel.
+ * `nodes` is never empty - a caller with nothing to draw has a better thing to
+ * say than "no nodes selected yet", and says it instead of mounting the panel.
  */
 export interface GraphPanelNodes {
   /**
@@ -58,16 +52,10 @@ export interface GraphPanelNodes {
    */
   readonly total: number;
 
-  /**
-   * A number that changes whenever `nodes` does: the panel's relayout key, in
-   * place of `controller.graphVersion` (which moves for the *selection*, and so
-   * is neither necessary nor sufficient here).
-   *
-   * Monotonic across every producer rather than per-producer, since the panel
-   * outlives the thing that fed it: a chart whose query changes builds a fresh
-   * source and hands the same mithril component instance its first result, and
-   * two sources' "first result" must not carry the same number.
-   */
+  // The panel's relayout key, in place of `controller.graphVersion` (which
+  // moves for the *selection*). Monotonic across every producer, not
+  // per-producer: the panel outlives the thing that fed it, so two sources'
+  // "first result" must not carry the same number.
   readonly version: number;
 }
 
@@ -102,17 +90,16 @@ const DOT_RADIUS = 6;
 const ARROW_GAP = 2;
 
 /**
- * Renders the induced subgraph over a set of nodes as a layered SVG diagram:
- * pan by dragging, zoom with the wheel, click a node to jump to its slice. The
- * layout is recomputed only when that set changes; a new one is shown at a
- * fixed 1:1 scale (one layout unit per CSS pixel), centred on the content -
- * pan/zoom then just move the viewport, and resizing the pane reveals more or
- * less of the graph rather than rescaling it. "Fit" is the one explicit way to
- * zoom to the content.
+ * The induced subgraph over a set of nodes as a layered SVG diagram: pan by
+ * dragging, zoom with the wheel, click a node to jump to its slice.
+ *
+ * The layout is recomputed only when the set changes, and a new one is shown at
+ * a fixed 1:1 scale (one layout unit per CSS pixel) centred on the content - so
+ * pan/zoom only move the viewport, and resizing the pane reveals more or less
+ * of the graph rather than rescaling it. "Fit" is the one explicit zoom-to-fit.
  *
  * The set is the controller's graph selection unless one is handed over in
- * `attrs.nodes`, which is what the Data Explorer's node graph chart does - see
- * {@link GraphPanelNodes} for what does and doesn't change with it.
+ * `attrs.nodes` - see {@link GraphPanelNodes}.
  */
 export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   // The node set's version as of the last layout, so we only relayout/recentre

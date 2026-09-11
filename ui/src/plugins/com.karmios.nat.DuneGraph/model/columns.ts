@@ -28,17 +28,15 @@ const CHUNK_MASK = CHUNK_SIZE - 1;
 
 /**
  * A growable vector of int32s, in fixed-size chunks rather than one contiguous
- * buffer.
- *
- * Chunked because the sizes are large and only known at the end. The edge
+ * buffer, because the sizes are large and only known at the end. The edge
  * vector is ~115 MB: double-and-copy means a ~190 MB transient peak at the last
  * doubling and up to 2x slack retained after it, and flattening to one
  * exact-sized array means a second full copy. Appending a chunk costs 4 MB and
  * no copy.
  *
- * The price is that a read goes through {@link Int32Vector.at} rather than an
- * index - two arithmetic ops, against an access pattern (random reads over
- * 115 MB) dominated by cache misses either way.
+ * The price is a read through {@link Int32Vector.at} rather than an index - two
+ * arithmetic ops, against random reads over 115 MB that are cache-miss bound
+ * either way.
  */
 export class Int32Vector {
   private readonly chunks: Int32Array[] = [];

@@ -15,33 +15,26 @@
 /**
  * Parses the Dune graph blob: the structural build graph, chunked onto instants
  * on the `dune-graph` track. Pure - no engine access - so every corner of the
- * grammar is unit-testable in isolation; `trace_graph_source.ts` is the only
- * caller.
+ * grammar is unit-testable; `trace_graph_source.ts` is the only caller.
  *
- * The grammar, the five sections and what each field means are in README.md
- * under "The blob format". The schema itself is dune's, in
- * `doc/dev/trace-graph-perfetto.md` in the dune repo. What is worth repeating
- * at this file's own level is the two things the parser is built around:
+ * **The grammar, the five sections and every field are in README.md, "The blob
+ * format"**; the schema itself is dune's, in `doc/dev/trace-graph-perfetto.md`
+ * in the dune repo. Two things the parser is built around:
  *
- * **Sections are parsed as a stream, one chunk at a time** ({@link
- * parseGraphBlob} takes an async iterable of chunk payloads per section, not a
- * reassembled string), and **a record never spans a chunk** - the exporter
- * splits only on line boundaries, so each chunk is closed off
- * (`LineReader.end`) before the next is pushed, and the dict's chunks are
- * joined on a newline rather than concatenated bare.
- *
- * Closing each chunk off is what makes an exporter that emits `\n`-*separated*
- * rows safe as well as one that emits `\n`-*terminated* rows. Dune emits
- * terminated now, but a separated blob drops the newline at each split, so a
- * carried partial would glue the last record of one chunk to the first of the
- * next and destroy both - exactly `chunks - 1` per section. Keep the guard: it
- * costs nothing against a terminated blob (the flush finds an empty partial,
- * the join adds a skipped blank line) and it is what lets an already-exported
- * trace still load.
+ * **Sections are parsed as a stream, one chunk at a time**, and **a record
+ * never spans a chunk**: the exporter splits only on line boundaries, so each
+ * chunk is closed off (`LineReader.end`) before the next is pushed and the
+ * dict's chunks are joined on a newline rather than concatenated bare. That
+ * guard is what makes an exporter emitting `\n`-*separated* rows safe as well
+ * as one emitting `\n`-*terminated* rows - dune emits terminated now, but a
+ * separated blob drops the newline at each split, so a carried partial would
+ * glue two records together and destroy both, exactly `chunks - 1` times per
+ * section. **Keep it**: it costs nothing against a terminated blob and it is
+ * what lets an already-exported trace still load.
  *
  * **Records are handed to a {@link GraphBlobSink} as they are parsed** rather
- * than collected into arrays, so `graph_build.ts` can copy each into its
- * columnar store and drop it. Nothing here keeps a record alive past the call.
+ * than collected, so `graph_build.ts` can copy each into its columnar store and
+ * drop it. Nothing here keeps a record alive past the call.
  */
 
 import type {PerfRun} from '../perf';
@@ -718,25 +711,20 @@ function parseDepLine(line: string): DepRecord | undefined {
 export type SectionChunks = AsyncIterable<string>;
 
 /**
- * Parses the five sections into `sink`, streaming each one chunk by chunk. A
- * missing section is treated as empty rather than an error, so a trace with e.g.
- * no build-dep spans at all still parses - and so does one with no
- * `graph-cores`, which is the normal shape for a build whose dep sets were all
- * too small to factor. **Nothing here may start treating an absent section as a
- * failure.**
+ * Parses the five sections into `sink`, streaming each chunk by chunk.
  *
- * The order is the blob's own: dict, cores, depsets, rules, deps. A sink can
- * rely on it, and `graph_build.ts` does - it expands each rule's dep set as the
- * rule arrives, which only works because every set is already in. The order is
- * this function's to choose (the caller hands over a section *per name*, and
- * fetches its chunks on demand), so it does not depend on the blob's own
- * emission order.
+ * A missing section is empty rather than an error, so a trace with no
+ * build-dep spans still parses - and so does one with no `graph-cores`, the
+ * normal shape for a build whose dep sets were all too small to factor.
+ * **Nothing here may start treating an absent section as a failure.**
  *
- * `perf`, when given, records one phase per section (see perf.ts) - measuring
- * only the synchronous parse of each chunk, so it never overlaps (and so never
- * double-counts) whatever phase the caller's iterable uses for the fetch. Note
- * the sink's own work is inside those phases, since it runs per record. The
- * parser itself stays pure either way: it never touches the engine.
+ * The order - dict, cores, depsets, rules, deps - is this function's to choose,
+ * and a sink may rely on it: `graph_build.ts` expands each rule's dep set as
+ * the rule arrives, which only works because every set is already in.
+ *
+ * `perf` records one phase per section, measuring only the synchronous parse of
+ * each chunk so it never double-counts the caller's fetch phase. The sink's own
+ * work is inside those phases, since it runs per record.
  */
 export async function parseGraphBlob(
   sections: ReadonlyMap<string, SectionChunks>,

@@ -15,29 +15,14 @@
 /**
  * The build graph: a columnar store plus the walks over it.
  *
- * The graph has two kinds of node, both sourced from the trace's graph blob
- * (structure) and lifecycle instants (timing) - see `graph_blob.ts`,
- * `trace_graph_source.ts` and `lifecycle_sql.ts`:
+ * **README.md, "The graph model", is the reference**: the two kinds of node and
+ * where each comes from, why every node is a dense integer {@link NodeId} that
+ * the SQL mirror reuses verbatim, why everything lives in typed-array columns
+ * with the edges in one CSR, and why the small enums below are append-only.
  *
- * - `dep` nodes come from `graph-deps` blob records / `build-dep` instants. A
- *   dep resolves either to a rule, or to a set of further deps (an expansion),
- *   or is a source file, or is unfinished.
- * - `rule` nodes come from `graph-rules` blob records / `exec-rule` instants,
- *   which carry the rule's static deps and dynamic deps (a list of stages).
- *
- * **Every node is a dense integer {@link NodeId}**, rules in `[0, ruleCount)`
- * and deps in `[ruleCount, nodeCount)`, so a node's kind is a comparison and the
- * SQL mirror's `node_id` (see sql_graph.ts) is the same number - no maps in
- * either direction. Trace-side ids (a dep's `graph-dict` id, a rule's `rule_id`)
- * are kept as columns and indexed back to node ids by {@link IntIndex}.
- *
- * **Everything about a node lives in a typed-array column, and its edges live in
- * one CSR** (`edgeOffset` + `edgeTarget`); a {@link GraphNode} is a *view*,
- * materialised on demand for the handful of nodes a panel is actually showing.
- * So the walks below (`descendants`, `ancestors`, `inducedEdges`, …) take and
- * return node ids, not nodes, and only the call sites that render something
- * materialise a view. See README.md, *The graph model*, for the scale that
- * forces this.
+ * The walks here (`descendants`, `ancestors`, `inducedEdges`, …) take and
+ * return node ids; only a call site that renders something materialises a
+ * {@link GraphNode} view.
  */
 
 import {IntIndex, Int32Vector} from './columns';
@@ -150,20 +135,12 @@ export const FAILED_STATUSES: readonly DepStatus[] = ['failed'];
  */
 export type NodeHealth = 'ok' | 'failed' | 'cancelled' | 'unfinished';
 
-/**
- * Every column that holds a node reference (an edge target, a forcer) encodes
- * three things in one int32:
- *
- * - a node id, `>= 0`;
- * - {@link NO_REF}, `-1`: nothing was recorded;
- * - a *dangling* reference, `<= -2`: an id the blob named but never recorded a
- *   node for, kept as `-(traceId + 2)` so the reference - and the id it names -
- *   survives for display without a node to point at.
- *
- * Dangling references are what {@link BuildGraph.outEdges}' consumers skip and
- * {@link BuildGraph.outRefs} renders as unlinked rows; they are not nodes, and
- * never reach the SQL mirror.
- */
+// Every column holding a node reference (an edge target, a forcer) encodes
+// three things in one int32: a node id (`>= 0`), {@link NO_REF} (`-1`, nothing
+// recorded), or a *dangling* reference (`<= -2`, an id the blob named but
+// recorded no node for, kept as `-(traceId + 2)` so both the reference and the
+// id survive for display). `outEdges`' consumers skip dangling refs and
+// `outRefs` renders them as unlinked rows; they never reach the SQL mirror.
 export const NO_REF = -1;
 
 export function dangling(traceId: number): number {
@@ -178,17 +155,11 @@ export function isDangling(ref: number): boolean {
   return ref <= -2;
 }
 
-// A span's timing, reconstructed by pairing a `-start` instant with its
-// matching `-finish` (or reading a single collapsed `-resolved` instant). Since
-// the perf plan's stage 2 that pairing happens entirely in SQL and a node's
-// timing is looked up on demand rather than carried on the node - see
-// `lifecycle_sql.ts`. `startSliceId`/`finishSliceId` are the instants to
-// navigate to; `durNs` is absent for a span that never got a finish (an
-// unfinished span flushed at EOF - see `RuleOutcome`/`DepResolutionKind`).
-// `occurrenceCount` counts how many same-keyed spans were seen for this node
-// (watch mode, or a dep built more than once) - the node's own timing is
-// always the *first* occurrence, a pairing heuristic since lifecycle instants
-// carry no occurrence index (see the plugin's reported schema gaps).
+// A span's timing, paired in SQL and looked up on demand rather than carried on
+// the node (see lifecycle_sql.ts). `durNs` is absent for a span that never got
+// a finish. `occurrenceCount` counts same-keyed spans (watch mode, or a dep
+// built more than once); the node's own timing is always the *first*, a
+// heuristic because lifecycle instants carry no occurrence index.
 export interface SpanTiming {
   readonly startSliceId?: number;
   readonly finishSliceId?: number;
@@ -337,7 +308,6 @@ export interface GraphColumns {
   // instead of one per reference (28M of them on the monorepo trace).
   readonly strings: StringTable;
 
-  // Rules, indexed by node id.
   readonly ruleId: Int32Array;
   readonly ruleDirId: Int32Array; // dict id; -1 when not recorded
   readonly ruleOutcome: Uint8Array; // index into RULE_OUTCOMES
@@ -379,23 +349,14 @@ export interface GraphColumns {
   readonly edgeOffset: Int32Array; // nodeCount + 1
   readonly edgeTarget: Int32Vector;
 
-  /**
-   * The blob's factored dep sets, kept alongside the flat CSR above rather than
-   * discarded once expanded.
-   *
-   * A rule names its deps by *set*, and the same set recurs across thousands
-   * of rules, the popular ones sharing a *core* as their common prefix (see
-   * README.md, *The blob format*). `graph_build.ts` expands all of that into
-   * the CSR, because the flat form is what makes the walks fast and is not what
-   * the memory goes on. The factored form is retained because the SQL edge
-   * mirror stores *it* - that is where the row count falls ~5x - and the only
-   * other way back to it would be re-parsing the blob. It costs ~4.2M ints.
-   *
-   * Both member tables hold node references in exactly the encoding
-   * `edgeTarget` uses (a node id, or a {@link dangling} reference), and are
-   * contiguous per owner and in owner order, so a rowid range serves the
-   * forward direction. Nothing on the traversal path reads any of this.
-   */
+  // The blob's factored dep sets, kept alongside the flat CSR rather than
+  // discarded once expanded (see README.md, "The blob format"): the SQL edge
+  // mirror stores *this* form - where the row count falls ~5x - and the only
+  // other way back to it would be re-parsing the blob. ~4.2M ints.
+  //
+  // Both member tables hold node references in `edgeTarget`'s encoding, and are
+  // contiguous per owner and in owner order, so a rowid range serves the
+  // forward direction. Nothing on the traversal path reads any of this.
   readonly coreBlobId: Int32Array; // the blob's own `core_id`, by core index
   readonly coreMemberOffset: Int32Array; // coreCount + 1, into coreMemberTarget
   readonly coreMemberTarget: Int32Vector;
@@ -599,36 +560,23 @@ export class BuildGraph {
     return DEP_RESOLUTIONS[this.resolutionCodeOf(id)] ?? 'unfinished';
   }
 
-  /**
-   * How building the dep itself ended - `ok` unless dune reported a failure or
-   * a cancellation. Independent of {@link BuildGraph.resolutionOf}: a failed
-   * dep can still
-   * have resolved to a known rule, and a dep whose resolution is `unknown` is
-   * `unknown` *because* of this status.
-   *
-   * `ok` for a rule, which reports the same thing through its outcome.
-   */
+  // How building the dep itself ended. Independent of `resolutionOf`: a failed
+  // dep can still have resolved to a known rule, and one whose resolution is
+  // `unknown` is `unknown` *because* of this status. `ok` for a rule, which
+  // reports the same thing through its outcome.
   statusOf(id: NodeId): DepStatus {
     if (this.isRule(id)) return 'ok';
     return DEP_STATUSES[this.statusCodeOf(id)] ?? 'ok';
   }
 
-  /**
-   * How this node ended, in the one vocabulary both kinds share - what anything
-   * that marks a node as failed/cancelled/unfinished should ask, rather than
-   * picking apart {@link BuildGraph.outcomeOf} / {@link BuildGraph.statusOf} /
-   * {@link BuildGraph.resolutionOf} itself.
-   *
-   * A rule says it all in its outcome. A dep needs two fields: `statusOf`
-   * returning `ok` does *not* on its own mean the dep is fine - a dep whose
-   * span never ended has nothing recorded to fail, and reports `ok` there while
-   * its resolution is `unfinished`. That fallback is the whole reason this
-   * isn't a single-field lookup.
-   *
-   * A resolution of `unknown` is deliberately not a state of its own: it means
-   * dune couldn't tell what the dep resolved to *because* its build failed or
-   * was cancelled, a cause `statusOf` has already reported.
-   */
+  // How this node ended, in the one vocabulary both kinds share - ask this
+  // rather than picking apart `outcomeOf` / `statusOf` / `resolutionOf`.
+  //
+  // A rule says it all in its outcome. A dep needs two fields: `statusOf`
+  // returning `ok` does not on its own mean the dep is fine, since a dep whose
+  // span never ended has nothing recorded to fail and reports `ok` while its
+  // resolution is `unfinished`. A resolution of `unknown` is not a state of its
+  // own - it means dune could not tell *because* of a cause `statusOf` reports.
   healthOf(id: NodeId): NodeHealth {
     if (this.isRule(id)) {
       const outcome = this.outcomeOf(id);
@@ -673,19 +621,10 @@ export class BuildGraph {
     return this.cols.ruleDynStages.get(id)?.length ?? 0;
   }
 
-  /**
-   * The dep set whose expansion *is* this rule's static edges, as an index into
-   * the factored tables (see GraphColumns), or undefined when the rule named no
-   * set at all.
-   *
-   * Undefined covers both a rule with no deps and one whose deps the blob could
-   * not determine - {@link BuildGraph.depsUnknownOf} is what tells those apart,
-   * exactly as it does for the edge count. Set indices start at 0, so a real
-   * set is never confusable with "none".
-   *
-   * For the SQL mirror only: the rule's edges are already expanded into the
-   * CSR, so nothing on the traversal path needs this.
-   */
+  // The dep set whose expansion *is* this rule's static edges, as an index into
+  // the factored tables. Undefined covers both a rule with no deps and one
+  // whose deps the blob could not determine - `depsUnknownOf` tells those
+  // apart. For the SQL mirror only; the CSR already has the edges.
   depSetOf(id: NodeId): number | undefined {
     if (!this.isRule(id)) return undefined;
     const set = this.cols.ruleDepSet[id];
@@ -707,18 +646,11 @@ export class BuildGraph {
     return this.cols.ruleTargetOffset[id + 1] - this.cols.ruleTargetOffset[id];
   }
 
-  /**
-   * A rule's declared output targets: each recorded relative name joined onto
-   * the rule's `dir` (see {@link joinDir}), files first then directories.
-   *
-   * Target paths share the dep *path* namespace, so a target names the build-dep
-   * node of the same path when one exists - but the joined path is not itself a
-   * dict id, so it can't be resolved back to a dep node by id (sql_graph.ts
-   * joins them as text instead). These are outputs, not dependency edges, so
-   * they are deliberately absent from `edges()`.
-   *
-   * @yields each declared target.
-   */
+  // A rule's declared outputs: each recorded relative name joined onto the
+  // rule's `dir`, files then directories. Target paths share the dep *path*
+  // namespace, but the joined path is not itself a dict id, so sql_graph.ts
+  // joins them as text rather than by id. Outputs, not dependency edges, so
+  // deliberately absent from `edges()`.
   *ruleTargets(id: NodeId): Iterable<RuleTarget> {
     if (!this.isRule(id)) return;
     const dir = this.dirOf(id);
@@ -881,18 +813,10 @@ export class BuildGraph {
     return this.cols.edgeTarget.at(i);
   }
 
-  /**
-   * The factored dep sets, read the same way as the CSR above: a half-open
-   * range of member slots per owner, and a target per slot (a node id, or a
-   * {@link dangling} reference for a member the blob never recorded a node
-   * for). A set's membership is its core's members followed by its own adds,
-   * and the two are disjoint - see GraphColumns' factored block, and
-   * `graph_build.ts` for why they are kept at all.
-   *
-   * Nothing on the traversal path reads these: the sets are already expanded
-   * into `edgeTarget`. They exist for the SQL mirror, which stores the factored
-   * form.
-   */
+  // The factored dep sets, read like the CSR above: a half-open range of member
+  // slots per owner, a target per slot. A set's membership is its core's
+  // members followed by its own adds, and the two are disjoint. For the SQL
+  // mirror only - the sets are already expanded into `edgeTarget`.
   coreOfDepSet(set: number): number | undefined {
     const core = this.cols.depSetCore[set];
     return core === NO_REF ? undefined : core;
@@ -933,16 +857,11 @@ export class BuildGraph {
     return this.cols.depSetAddTarget.at(i);
   }
 
-  /**
-   * A node's outgoing edges - the prerequisites it depends on - tagged with why
-   * each exists. The kind follows from the position in the node's CSR run rather
-   * than from a per-edge column: a rule's run is its static deps followed by its
-   * dynamic stages in order, and a dep's run is either the single rule it
-   * resolved to or the deps it expanded to.
-   *
-   * @yields each prerequisite as an {@link OutEdge}, dangling references
-   *     included (`target < 0`) - callers that want only real edges skip those.
-   */
+  // A node's prerequisites, tagged with why each edge exists. The kind follows
+  // from the *position* in the node's CSR run rather than a per-edge column: a
+  // rule's run is its static deps then its dynamic stages in order, a dep's is
+  // either the rule it resolved to or the deps it expanded to. Yields dangling
+  // references too (`target < 0`); callers wanting only real edges skip those.
   *outEdges(id: NodeId): Iterable<OutEdge> {
     const start = this.outStart(id);
     const end = this.outEnd(id);
@@ -988,13 +907,9 @@ export class BuildGraph {
     return targets;
   }
 
-  /**
-   * A node's outgoing edges as display rows, including the references the blob
-   * made to nodes it never recorded (which render as unlinked entries rather
-   * than silently vanishing).
-   *
-   * @yields each outgoing edge.
-   */
+  // A node's outgoing edges as display rows, including the references the blob
+  // made to nodes it never recorded - which render as unlinked entries rather
+  // than silently vanishing.
   *outRefs(id: NodeId): Iterable<OutRef> {
     for (const {target, edgeKind, dynStage} of this.outEdges(id)) {
       const kind: NodeKind = edgeKind === 'resolved' ? 'rule' : 'dep';
@@ -1024,17 +939,11 @@ export class BuildGraph {
 
 export const EMPTY_GRAPH = new BuildGraph(emptyColumns());
 
-/**
- * Whether the build edge `source -> dest` is *forced*: i.e. `dest` was forced
- * into the build by `source`, meaning `dest`'s `forcedBy` names `source`. Since
- * each node records a single forcer, forced edges pick out - per node - the one
- * dependency that caused it to be built (a spanning forest of the graph).
- *
- * `source` depends on `dest`, so `source` is the potential forcer: a rule forces
- * the deps it lists, a dep forces the rule it resolves to and the deps it
- * expands to. The other `forcedBy` kinds name non-node forcers (dune files, the
- * top-level request, …) and so never mark an edge forced.
- */
+// Whether `dest`'s `forcedBy` names `source`. Each node records a single
+// forcer, so forced edges pick out per node the one dependency that caused it
+// to be built - a spanning forest. `source` depends on `dest`, so `source` is
+// the potential forcer; the other `forcedBy` kinds name non-node forcers (dune
+// files, the top-level request) and never mark an edge forced.
 export function isForcedEdge(
   graph: BuildGraph,
   source: NodeId,
@@ -1057,22 +966,16 @@ export function joinDir(dir: string | undefined, rel: string): string {
   return dir.endsWith('/') ? `${dir}${rel}` : `${dir}/${rel}`;
 }
 
-/**
- * The build-output prefixes worth folding away when a path is displayed, given
- * every rule context dir in a graph. Backs {@link BuildGraph.buildRoots}.
- *
- * Dune lays its build dir out as `<build>/<context>/<pkg>` and, for the actions
- * and install trees, `<build>/<role>/<context>/<pkg>` - so the interesting
- * prefix ends at the *context*, one segment deeper for the roles. The context
- * is the name that appears both directly under the build dir and again one
- * level down under a sibling of it (`default`, in both `_build/default/src` and
- * `_build/.actions/default/src`), which is enough to spot it without
- * hardcoding either `_build` or `default` - neither of which a `--build-dir`
- * build or a non-default context would give us.
- *
- * Only prefixes actually observed are returned: a path matching none of them is
- * shown in full, which is never wrong, only wider.
- */
+// The build-output prefixes worth folding away when a path is displayed.
+//
+// Dune lays its build dir out as `<build>/<context>/<pkg>`, and for the actions
+// and install trees `<build>/<role>/<context>/<pkg>`, so the prefix ends at the
+// *context* - one segment deeper for the roles. The context is the name
+// appearing both directly under the build dir and again one level down under a
+// sibling of it (`default`, in both `_build/default/src` and
+// `_build/.actions/default/src`), which spots it without hardcoding `_build` or
+// `default` - neither of which a `--build-dir` or non-default-context build
+// would give us. Only observed prefixes are returned.
 function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
   // Names seen one and two levels under each build root. Kept per root so a
   // rule dir that isn't in a build tree at all can only ever produce a context
@@ -1110,15 +1013,10 @@ function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
   return [...roots];
 }
 
-/**
- * The whole graph's edge set (source depends on dest), dangling references
- * dropped. The SQL edge mirror (sql_graph.ts) is the only consumer at full
- * scale - 28.7M edges on the monorepo trace, so this is a generator rather than
- * an array, and even so the per-edge object is why materialising that mirror is
- * an opt-in step.
- *
- * @yields each build edge.
- */
+// The whole graph's edge set (source depends on dest), dangling references
+// dropped. The SQL edge mirror is the only consumer at full scale - 28.7M edges
+// on the monorepo trace, so this is a generator rather than an array, and even
+// so the per-edge object is why materialising that mirror is opt-in.
 export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
   for (let source = 0; source < graph.nodeCount; source++) {
     for (const {target, edgeKind, dynStage} of graph.outEdges(source)) {
@@ -1134,21 +1032,14 @@ export function* edges(graph: BuildGraph): Iterable<GraphEdge> {
   }
 }
 
-/**
- * The edges of the subgraph induced by `nodes`: every edge whose source and
- * dest are both in the set. Walks each node's out-edges (not the whole graph),
- * so it stays cheap when the selection is small.
- *
- * If `isHidden` is given, hidden nodes in the set are never emitted as an edge
- * endpoint but are still traversed *through*: an edge is emitted from each
- * visible source to the nearest visible node(s) reachable via hidden nodes
- * only, contracting the hidden run. This is how the graph pane implements
- * "hide rules" - a chain `dep -> rule -> dep` with the rule hidden collapses to
- * a single `dep -> dep` edge. Traversal never leaves `nodes` (only nodes
- * already in the selection are ever walked through), so hiding a kind can only
- * ever remove nodes from view, never surface a connection that wasn't already
- * reachable within the selection.
- */
+// Every edge whose source and dest are both in `nodes`. Walks each node's
+// out-edges rather than the whole graph, so it stays cheap for a small set.
+//
+// With `isHidden`, hidden nodes are never an edge endpoint but are still
+// traversed *through*, contracting the run: this is how the graph pane's "hide
+// rules" collapses `dep -> rule -> dep` to one `dep -> dep`. Traversal never
+// leaves `nodes`, so hiding a kind can only remove nodes from view, never
+// surface a connection that was not already reachable within the selection.
 export function inducedEdges(
   graph: BuildGraph,
   nodes: readonly NodeId[],
@@ -1198,19 +1089,13 @@ export function inducedEdges(
   return result;
 }
 
-/**
- * Reverse adjacency of the build graph: the nodes that directly depend on each
- * node (i.e. that have a build edge pointing at it). Built once per graph, on
- * first use, and dropped with it.
- *
- * Same CSR shape as the forward edges, produced by a counting sort over them -
- * as ~28M string-keyed map entries (one per edge, keyed by node key) this was
- * simply not buildable at monorepo scale, which is why dependants and ancestors
- * didn't work there at all before the perf plan's stage 3.
- *
- * Duplicate edges stay duplicated here (see {@link BuildGraph.outTargets});
- * {@link directParents} de-dups the small list it hands to a caller.
- */
+// Reverse adjacency: the nodes that directly depend on each node. Built once
+// per graph, on first use, and dropped with it. Same CSR shape as the forward
+// edges, produced by a counting sort over them - as ~28M string-keyed map
+// entries this was not buildable at monorepo scale at all.
+//
+// Duplicate edges stay duplicated; {@link directParents} de-dups the small
+// list it hands to a caller.
 export class ReverseIndex {
   private constructor(
     private readonly offset: Int32Array,
@@ -1315,20 +1200,14 @@ export function descendants(graph: BuildGraph, id: NodeId): readonly NodeId[] {
   return result;
 }
 
-/**
- * The chain of nodes that transitively forced `id` into the build, walking
- * `forcedBy` up to its root (excluding `id` itself). Since each node records a
- * single forcer, this is a single-parent walk, not a search: it stops as soon as
- * `forcedBy` is absent, names a non-node kind (a dune file / the request / the
- * configurator - see {@link ForcedBy}), or names an id the blob never recorded.
- * A visited set guards against a cyclic `forcedBy` even though that shouldn't
- * happen in practice.
- *
- * This walks the same spanning forest as {@link isForcedEdge}, so its result is
- * a subset of `ancestors(id)` wherever the forcer also lists `id` as a
- * dependency; a `forcedBy` that doesn't (a trace inconsistency) still yields the
- * node here, faithfully reflecting what the trace recorded.
- */
+// The chain that transitively forced `id` into the build, excluding `id`. A
+// single-parent walk rather than a search, since each node records one forcer:
+// it stops when `forcedBy` is absent, names a non-node kind, or names an id the
+// blob never recorded. The visited set guards a cyclic `forcedBy`.
+//
+// Same spanning forest as {@link isForcedEdge}, so the result is a subset of
+// `ancestors(id)` wherever the forcer also lists `id` as a dependency; one that
+// does not (a trace inconsistency) still yields the node, faithfully.
 export function forcers(graph: BuildGraph, id: NodeId): readonly NodeId[] {
   const seen = new Set<NodeId>([id]);
   const result: NodeId[] = [];

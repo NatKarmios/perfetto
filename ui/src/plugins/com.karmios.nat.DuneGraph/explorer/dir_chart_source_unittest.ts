@@ -14,30 +14,14 @@
 
 /**
  * The chart's row-driven source (dir_chart_source.ts), from the end that can be
- * checked without a trace processor: the three queries it generates, captured
- * through a stub engine, and what it makes of the rows they come back with.
+ * checked without a trace processor: the queries it generates, captured through
+ * a stub engine, and what it makes of the rows they come back with.
  *
- * The SQL is the whole of the interesting part now that nothing is derived
- * client-side, and the failures worth pinning are all silent ones:
- *
- * - an *unbounded* query. The chart's input can be every node in the build
- *   (`SELECT * FROM dune_node` is one button away, the "Dune nodes" source the
- *   side panel appends), so a query whose result size follows the input's -
- *   rather than the mirror's directory count, or a member page's `LIMIT` - is
- *   the bug this file exists to catch.
- * - a count that counts join rows rather than nodes, which double-counts an
- *   input naming a node twice (an edge query has a `src` per edge);
- * - a count keyed on the wrong thing, or a `matchingCounts` that returns
- *   undefined, which sends `FilteredTree` to the mirror's stored totals and
- *   draws the whole build instead of the query's rows;
- * - a member query missing its `ORDER BY`, which makes "show more" hand back
- *   pages of an unordered result;
- * - a source that answers `rootDirs` plausibly, which would put the pane back on
- *   its lazy descent and show the whole tree.
- * - a query that drops the pane's member filter, which is the same class of bug
- *   from the other side: the pane offers the filter, so a query that ignores it
- *   shows rows the user asked not to see (and, for the counts, draws
- *   directories that hold none of them).
+ * The failures worth pinning are all silent ones, and the chief of them is an
+ * _unbounded_ query: the chart's input can be every node in the build, so a
+ * query whose result size follows the input's - rather than the mirror's
+ * directory count, or a member page's `LIMIT` - is the bug this file exists to
+ * catch.
  */
 
 import {describe, expect, test} from 'vitest';

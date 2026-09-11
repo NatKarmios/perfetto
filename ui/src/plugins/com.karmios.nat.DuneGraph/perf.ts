@@ -304,7 +304,6 @@ export async function measure<T>(
   return run === undefined ? fn(NULL_PHASE) : run.phase(name, fn);
 }
 
-// Synchronous `measure()`.
 export function measureSync<T>(
   run: PerfRun | undefined,
   name: string,
