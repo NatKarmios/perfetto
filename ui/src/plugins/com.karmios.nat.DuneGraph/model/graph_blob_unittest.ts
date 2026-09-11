@@ -561,12 +561,12 @@ describe('parseGraphBlob - graph-deps', () => {
     expect(blob.deps[0].forcedBy).toEqual({kind: 'RULE_RECOVERY', ruleId: 77});
   });
 
-  // A trace written before `<status>` existed carries three fields at the same
-  // blob version, and its deps all succeeded as far as the schema could say.
-  it('reads a three-field line as a successful dep', async () => {
+  // All four fields are required. An *empty* `<status>` is the success case -
+  // every other test here relies on that - but a line missing the field is
+  // malformed, and is dropped rather than read as a dep that succeeded.
+  it('drops a line missing its status field', async () => {
     const blob = await parse({[DEPS_SECTION]: '9\ts\tr281\n'});
-    expect(blob.deps[0].status).toEqual('ok');
-    expect(blob.deps[0].resolution).toEqual({kind: 'source'});
+    expect(blob.deps).toEqual([]);
   });
 });
 

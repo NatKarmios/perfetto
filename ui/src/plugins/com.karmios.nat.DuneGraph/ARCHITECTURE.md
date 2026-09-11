@@ -518,8 +518,11 @@ Points that bite:
   `<dep_ids>` means "dune could not determine this rule's deps", which is not
   the empty field's "this rule has none" — `RuleRecord.depsUnknown` keeps them
   apart, since both parse to no set at all.
-- `<status>` is a later addition to `graph-deps`; a three-field line is read as
-  `ok`, which is what the schema meant before the field existed.
+- **Every field of a record is required**, and a line short of them is dropped
+  rather than defaulted — 8 for `graph-rules`, 4 for `graph-deps`, 3 for
+  `graph-depsets`. An _empty_ field is a different thing, and is usually
+  meaningful: an empty `<status>` is a dep that succeeded, an empty `<add_ids>`
+  a set that adds nothing to its core.
 - **Sections are parsed as a stream, one chunk at a time.** `parseGraphBlob`
   takes an async iterable of chunk payloads per section, not a reassembled
   string: `graph-rules` alone was ~190 MB of text on a v1 monorepo trace. **A

@@ -138,10 +138,10 @@ tables are not built at that size, because materialising them would exhaust the
 trace processor. The panel says so when it happens, and everything except
 `dune_edge` and the relation functions still works.
 
-While loading, the panel lists and checks off each step, so a minutes-long
-build shows what is left rather than only what it is doing now. Each load also
-prints a per-phase breakdown to the devtools console when it finishes, and
-leaves `dune:`-prefixed entries in the profiler's Timings track.
+While loading, the panel lists and checks off each step, so a minutes-long build
+shows what is left rather than only what it is doing now. Each load also prints
+a per-phase breakdown to the devtools console when it finishes, and leaves
+`dune:`-prefixed entries in the profiler's Timings track.
 
 A half-built graph is a **usable** state everywhere: the timeline tracks come
 back empty, the query surfaces refuse up front and name the command that would

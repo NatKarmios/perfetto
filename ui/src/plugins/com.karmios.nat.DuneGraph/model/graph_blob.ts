@@ -596,8 +596,7 @@ function parseOutcome(field: string): RuleOutcome {
   }
 }
 
-// The `<status>` field of a `graph-deps` line. Empty is the success case (and
-// also what a pre-`<status>` three-field line reads as - see the file header);
+// The `<status>` field of a `graph-deps` line. Empty is the success case;
 // anything unrecognised is treated as a failure rather than quietly as success,
 // since a status dune bothered to write is never "fine".
 function parseDepStatus(field: string): DepStatus {
@@ -671,10 +670,9 @@ function parseCoreLine(line: string): CoreRecord | undefined {
 }
 
 // A `graph-depsets` line, or undefined for one with no usable `set_id` or too
-// few fields. Unlike `graph-deps` there is no older short form of this section
-// to tolerate, so a line missing `<add_ids>` entirely is malformed - an *empty*
-// `<add_ids>` (the third field present and blank) is fine, and is the one shape
-// the guide asks us to parse without falling over.
+// few fields. A line missing `<add_ids>` entirely is malformed; an *empty*
+// `<add_ids>` - the third field present and blank - is fine, and is the one
+// shape the guide asks us to parse without falling over.
 function parseDepSetLine(line: string): DepSetRecord | undefined {
   const f = line.split('\t');
   if (f.length < 3) return undefined;
@@ -684,13 +682,12 @@ function parseDepSetLine(line: string): DepSetRecord | undefined {
   return {setId, coreId: optionalId(coreIdStr), addIds: idList(addIds)};
 }
 
-// A dep line. `<status>` is read positionally when present and defaults to `ok`
-// for a three-field line, which is how the section looked before the field was
-// added (see the file header) - the guard stays at three so an older trace
-// still parses rather than losing every dep node.
+// A `graph-deps` line, or undefined for one with no usable `dep_id` or too few
+// fields. All four are required: an *empty* `<status>` is the success case, but
+// a line missing the field entirely is malformed.
 function parseDepLine(line: string): DepRecord | undefined {
   const f = line.split('\t');
-  if (f.length < 3) return undefined;
+  if (f.length < 4) return undefined;
   const [depIdStr, resolution, forcedBy, status] = f;
   const depId = id(depIdStr);
   if (Number.isNaN(depId)) return undefined;
@@ -698,7 +695,7 @@ function parseDepLine(line: string): DepRecord | undefined {
     depId,
     resolution: parseResolution(resolution),
     forcedBy: parseForcedByTag(forcedBy),
-    status: parseDepStatus(status ?? ''),
+    status: parseDepStatus(status),
   };
 }
 
