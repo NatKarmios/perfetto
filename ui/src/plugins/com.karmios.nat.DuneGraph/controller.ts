@@ -54,7 +54,6 @@ import {TraceGraphSource} from './model/trace_graph_source';
 import {measure, PerfRun} from './perf';
 import type {ProcessDetails} from './sql/process_sql';
 import type {
-  Distances,
   MirrorPhase,
   MirrorProgress,
   SqlEdgeMirror,
@@ -883,24 +882,11 @@ export class DuneGraphController {
     return this.graphStep.ready && this.edgeCount > EDGE_HARD_LIMIT;
   }
 
-  get edgeHardLimit(): number {
-    return EDGE_HARD_LIMIT;
-  }
-
-  // Whether the built edge tier indexes `dst`, i.e. whether `dune_ancestors` /
-  // `dune_parents` can look an edge up rather than scanning for it. False on a
-  // graph too big to afford the index; the unbounded `dune_all_ancestors` is
-  // the fast answer there (see sql_graph.ts's REVERSE_INDEX_EDGE_LIMIT).
-  get reverseWalksIndexed(): boolean {
-    return this.edgeMirror?.reverseIndexed ?? false;
-  }
-
   // Parents/ancestors are walked in-memory over the reverse index; children/
   // descendants forward over the graph's own CSR (no index needed); forcers
   // walk the single-parent `forcedBy` chain. The same relations could be
   // computed in SQL via `dune_parents`/`dune_all_ancestors`/`dune_children`/
-  // `dune_all_descendants`/`dune_forcers` over the `dune_edge` table (the
-  // mirror `distances()` already uses `graph_reachable_bfs!` similarly) - now
+  // `dune_all_descendants`/`dune_forcers` over the `dune_edge` table - now
   // that node ids are shared, that's a pure swap, but it costs the opt-in edge
   // tier and makes every caller async, so the in-memory walk stays the default.
   //
@@ -1039,16 +1025,6 @@ export class DuneGraphController {
   // from - everything else only sees the GraphSource contract.
   private makeSource(): GraphSource {
     return new TraceGraphSource(this.trace.engine);
-  }
-
-  // Directed dependency distances between two nodes (see {@link Distances}), or
-  // undefined if either node is unknown, the edge mirror isn't built, or `to`
-  // is unreachable from `from`.
-  async distances(from: NodeId, to: NodeId): Promise<Distances | undefined> {
-    const edgeMirror = this.edgeMirror;
-    if (edgeMirror === undefined) return undefined;
-    if (!this.graph.has(from) || !this.graph.has(to)) return undefined;
-    return edgeMirror.distances(from, to);
   }
 
   // ---------------------------------------------------------------------

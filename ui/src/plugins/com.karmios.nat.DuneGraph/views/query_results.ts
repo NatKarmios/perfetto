@@ -45,6 +45,8 @@ import {StackAuto} from '../../../widgets/stack';
 import type {DuneGraphController} from '../controller';
 import type {BuildGraph, NodeId} from '../model/graph';
 import {
+  DUNE_NODE_ID_COLUMN,
+  DUNE_NODE_ID_COLUMNS,
   nodeAnchor,
   nodeCellLabel,
   renderNodeCell,
@@ -66,15 +68,14 @@ import type {PathTreeItem, PathTreeLeaf, PathTreeRow} from '../model/path_tree';
 import {buildPathTree, collectGroupKeys} from '../model/path_tree';
 import {PathTreeView} from './path_tree_view';
 
-// Columns whose value IS a graph node's id (`dune_node.node_id`), so a row maps
-// back to a node without touching the trace: `node_id` itself, from `dune_node`
-// and the per-kind detail tables, and the `src`/`dst` endpoints of `dune_edge`
-// and of every relation function. All three render as a coloured kind chip +
-// label + ＋/－ toggle.
-const NODE_COL = 'node_id';
+// The node-bearing columns, named one at a time for the places that ask about
+// one of them. All three render as a coloured kind chip + label + ＋/－ toggle;
+// `CHIP_COLS` is the shared list (see node_cell.ts) rather than a second
+// spelling of it.
+const NODE_COL = DUNE_NODE_ID_COLUMN;
 const SRC_COL = 'src';
 const DST_COL = 'dst';
-const CHIP_COLS = [NODE_COL, SRC_COL, DST_COL];
+const CHIP_COLS = DUNE_NODE_ID_COLUMNS;
 
 // A node's primary lifecycle slice (`dune_node.slice_id`), rendered as a plain
 // slice link. Node-bearing too, but only indirectly: it's timing data rather

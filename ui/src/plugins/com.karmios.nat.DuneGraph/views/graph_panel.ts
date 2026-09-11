@@ -14,6 +14,7 @@
 
 import m from 'mithril';
 import {classNames} from '../../../base/classnames';
+import {clamp} from '../../../base/math_utils';
 import {SimpleResizeObserver} from '../../../base/resize_observer';
 import {Button} from '../../../widgets/button';
 import {EmptyState} from '../../../widgets/empty_state';
@@ -99,10 +100,6 @@ const DRAG_THRESHOLD = 3;
 // Rendered node dot radius, and the gap left before the arrowhead at the dest.
 const DOT_RADIUS = 6;
 const ARROW_GAP = 2;
-
-function clampZoom(zoom: number): number {
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
-}
 
 /**
  * Renders the induced subgraph over a set of nodes as a layered SVG diagram:
@@ -361,7 +358,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     if (rect === undefined || rect.width === 0 || rect.height === 0) return;
     const w = Math.max(this.layout.width, NODE_WIDTH) + 2 * FIT_PADDING;
     const h = Math.max(this.layout.height, NODE_HEIGHT) + 2 * FIT_PADDING;
-    this.zoom = clampZoom(Math.max(w / rect.width, h / rect.height));
+    this.zoom = clamp(
+      Math.max(w / rect.width, h / rect.height),
+      MIN_ZOOM,
+      MAX_ZOOM,
+    );
     this.center = {x: this.layout.width / 2, y: this.layout.height / 2};
   }
 
@@ -376,7 +377,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       ctm.inverse(),
     );
 
-    const next = clampZoom(this.zoom * (e.deltaY < 0 ? ZOOM_IN : ZOOM_OUT));
+    const next = clamp(
+      this.zoom * (e.deltaY < 0 ? ZOOM_IN : ZOOM_OUT),
+      MIN_ZOOM,
+      MAX_ZOOM,
+    );
     const scale = next / this.zoom;
     // Scaling the centre about the cursor point (by the same factor the
     // viewport is scaling by) keeps that point fixed under the cursor.

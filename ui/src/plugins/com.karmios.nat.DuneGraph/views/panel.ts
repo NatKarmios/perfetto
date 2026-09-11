@@ -29,6 +29,7 @@ import {
 import {plural} from '../model/graph';
 import {SelectionInfoPanel} from './selection_info_panel';
 import {GraphPanel} from './graph_panel';
+import {EDGE_HARD_LIMIT} from '../sql/sql_graph';
 import type {MirrorPhase} from '../sql/sql_graph';
 
 // The Data Explorer's route (`DataExplorerPlugin`'s registered page), which is
@@ -413,8 +414,7 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
 
   /**
    * What is left to say about the edge tier once a load has been through it:
-   * either it was built without its reverse index, or it wasn't built at all
-   * because the graph is past the hard limit.
+   * that it wasn't built at all, because the graph is past the hard limit.
    *
    * Not an offer. The tier is part of every load, bought by the one question
    * asked before the graph is parsed (see controller.ts), so there is no
@@ -424,27 +424,13 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
    * everything except `dune_edge` and the relation functions still works.
    */
   private renderEdgeTierPrompt(controller: DuneGraphController): m.Children {
-    const {edgeMirrorStep} = controller;
-    if (edgeMirrorStep.ready) {
-      // Built, but on a graph too big to index the reverse direction - the two
-      // bounded reverse walks still work, they just scan.
-      if (controller.reverseWalksIndexed) return undefined;
-      return m(
-        Callout,
-        {icon: 'info'},
-        `Edge tables built without a reverse index (${controller.edgeCount.toLocaleString()} ` +
-          'edges). dune_ancestors / dune_parents will scan the edge table per ' +
-          'hop; prefer dune_all_ancestors, or the Dependants list here, which ' +
-          'is answered in memory either way.',
-      );
-    }
-    if (edgeMirrorStep.status !== 'idle') return undefined;
+    if (controller.edgeMirrorStep.status !== 'idle') return undefined;
     if (controller.edgeTierRefused) {
       return m(
         Callout,
         {icon: 'warning'},
         `This graph's ${controller.edgeCount.toLocaleString()} edges are past ` +
-          `the ${controller.edgeHardLimit.toLocaleString()} the edge tables ` +
+          `the ${EDGE_HARD_LIMIT.toLocaleString()} the edge tables ` +
           'can be built for - materializing them would exhaust the trace ' +
           'processor. dune_edge and the relation functions are unavailable on ' +
           'this trace; everything else here works.',

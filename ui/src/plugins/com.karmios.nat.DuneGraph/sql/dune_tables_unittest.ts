@@ -28,7 +28,6 @@ import {readFileSync} from 'fs';
 import * as path from 'path';
 import {
   DUNE_FUNCTIONS,
-  DUNE_INTERNAL_TABLES,
   DUNE_MACROS,
   DUNE_TABLES,
   duneTableSections,
@@ -68,17 +67,16 @@ function declaredColumns(constName: string): string[] | undefined {
     .filter((name) => name !== '');
 }
 
-// The SQL names the mirror defines, from constants named `*_TABLE` / `*_VIEW`.
-// That naming is the mirror's own way of separating a table or view from the
-// other things it names: `NODE_ORIG_ID_INDEX` is an index and `BLOCKED_MACRO`
-// is a macro, and neither belongs in a list of tables.
-function definedNames(prefix: '_dune_' | 'dune_'): Set<string> {
-  const re = new RegExp(
-    `const [A-Z_]*(?:TABLE|VIEW) = '(${prefix}[a-z_]+)'`,
-    'g',
-  );
-  // The quote in the pattern anchors the prefix to the start of the name, so
-  // a `dune_` search can't pick up the `_dune_` internals by accident.
+// The public SQL names the mirror defines, from constants named `*_TABLE` /
+// `*_VIEW`. That naming is the mirror's own way of separating a table or view
+// from the other things it names: `NODE_ORIG_ID_INDEX` is an index and
+// `BLOCKED_MACRO` is a macro, and neither belongs in a list of tables.
+//
+// The quote in the pattern anchors `dune_` to the start of the name, so this
+// can't pick up the `_dune_` storage tables by accident - those are
+// deliberately undocumented (see dune_tables.ts's header).
+function definedNames(): Set<string> {
+  const re = /const [A-Z_]*(?:TABLE|VIEW) = '(dune_[a-z_]+)'/g;
   return new Set([...ALL_SQL.matchAll(re)].map((m) => m[1]));
 }
 
@@ -242,17 +240,8 @@ describe('dune_tables matches sql_graph', () => {
     }
   });
 
-  it('documents every _dune_ table the mirror creates', () => {
-    const declared = definedNames('_dune_');
-    expect(declared.size).toBeGreaterThan(0);
-    const documented = new Set(DUNE_INTERNAL_TABLES.map((t) => t.name));
-    expect([...declared].filter((n) => !documented.has(n))).toEqual([]);
-    // And nothing documented that no longer exists.
-    expect([...documented].filter((n) => !declared.has(n))).toEqual([]);
-  });
-
   it('documents every public dune_ view the mirror creates', () => {
-    const declared = definedNames('dune_');
+    const declared = definedNames();
     expect(declared.size).toBeGreaterThan(0);
     const documented = new Set(DUNE_TABLES.map((t) => t.name));
     expect([...declared].filter((n) => !documented.has(n))).toEqual([]);
@@ -266,9 +255,8 @@ describe('duneTableSections', () => {
       'Dune tables',
       'Dune functions',
       'Dune macros',
-      'Dune internals',
     ]);
-    expect(duneTableSections([]).map((s) => s.title)).toHaveLength(4);
+    expect(duneTableSections([]).map((s) => s.title)).toHaveLength(3);
   });
 
   it('appends the stdlib section last', () => {
@@ -279,9 +267,8 @@ describe('duneTableSections', () => {
       'Dune tables',
       'Dune functions',
       'Dune macros',
-      'Dune internals',
       'Perfetto stdlib',
     ]);
-    expect(sections[4].tables).toHaveLength(1);
+    expect(sections[3].tables).toHaveLength(1);
   });
 });

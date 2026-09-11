@@ -276,12 +276,6 @@
     font-family: monospace;
   }
 
-  &__empty-note {
-    padding: 4px 0;
-    font-size: 11px;
-    color: var(--pf-color-text-muted);
-  }
-
   // The "dir" / "action" / "Forced by …" lines under the selection header.
   &__dir,
   &__action,
@@ -601,58 +595,6 @@
     color: var(--pf-color-text-muted);
   }
 
-  &__distance {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 4px 8px 8px;
-    border-top: 1px solid var(--pf-color-border);
-  }
-
-  &__distance-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  &__distance-node {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11px;
-    color: var(--pf-color-text-muted);
-  }
-
-  &__distance-result {
-    font-size: 11px;
-    color: var(--pf-color-text-muted);
-  }
-
-  &__list {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    border-top: 1px solid var(--pf-color-border);
-  }
-
-  &__row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 4px 8px;
-    cursor: pointer;
-
-    &:hover {
-      background: var(--pf-color-background-hover);
-    }
-
-    &--selected {
-      background: var(--pf-color-background-hover);
-      box-shadow: inset 3px 0 0 var(--pf-color-primary);
-    }
-  }
-
   // A node cell in any DataGrid (see node_cell.ts): the kind chip alongside the
   // node's label link. Lives in this block rather than the query tab's, since
   // the cell now renders wherever a `JOINID(dune_node.node_id)` column does.
@@ -706,19 +648,6 @@
     &--unfinished {
       color: var(--pf-color-text-muted);
     }
-  }
-
-  &__row-label {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  &__row-summary {
-    flex-shrink: 0;
-    font-size: 11px;
-    color: var(--pf-color-text-muted);
   }
 }
 

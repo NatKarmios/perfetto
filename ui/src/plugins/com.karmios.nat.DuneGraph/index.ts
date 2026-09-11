@@ -32,7 +32,6 @@ import {SqlDirExplorerSource} from './views/dir_explorer_source';
 import {DuneGraphPanel} from './views/panel';
 import {DuneQueryPage, QUERY_TAB_PERSISTENCE_SETTING} from './views/query_page';
 import {DuneQueryTab} from './views/query_tab';
-import {dumpPerfRuns} from './perf';
 import './styles.scss';
 
 const PLUGIN_ID = 'com.karmios.nat.DuneGraph';
@@ -170,18 +169,6 @@ export default class implements PerfettoPlugin {
     trace.sidePanel.showTab(SIDE_PANEL_URI);
 
     trace.commands.registerCommand({
-      id: `${PLUGIN_ID}#ShowNodes`,
-      name: 'Dune: show build graph',
-      callback: () => trace.sidePanel.showTab(SIDE_PANEL_URI),
-    });
-
-    trace.commands.registerCommand({
-      id: `${PLUGIN_ID}#ShowExplorer`,
-      name: 'Dune: show directory explorer',
-      callback: () => trace.sidePanel.showTab(EXPLORER_URI),
-    });
-
-    trace.commands.registerCommand({
       id: `${PLUGIN_ID}#Load`,
       name: 'Dune: load build graph',
       callback: () => controller.load(),
@@ -201,15 +188,6 @@ export default class implements PerfettoPlugin {
       id: `${PLUGIN_ID}#MaterialiseEdges`,
       name: 'Dune: materialise edge table',
       callback: () => controller.buildEdgeMirror(),
-    });
-
-    // Re-prints the per-phase timing/heap breakdown of the last few loads to
-    // the devtools console (each load also prints its own when it finishes).
-    // See perf.ts and PERF_PLAN.LOCAL.md.
-    trace.commands.registerCommand({
-      id: `${PLUGIN_ID}#DumpLoadStats`,
-      name: 'Dune: dump load stats',
-      callback: () => dumpPerfRuns(),
     });
 
     // The full-page query surface (see README.md, "The four surfaces"). Built

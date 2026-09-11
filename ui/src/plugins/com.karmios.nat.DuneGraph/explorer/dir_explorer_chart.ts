@@ -58,11 +58,12 @@ import type {
   ChartRenderContext,
 } from '../../dev.perfetto.DataExplorer/query_builder/charts/chart_renderers';
 import {registerChartType} from '../../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
-import {Callout} from '../../../widgets/callout';
-import {EmptyState} from '../../../widgets/empty_state';
-import {Spinner} from '../../../widgets/spinner';
 import {
   defaultNodeColumn,
+  renderChartError,
+  renderChartLoading,
+  renderChartNoNodes,
+  renderChartWaiting,
   renderNodeColumnPrompt,
   resolveNodeColumn,
 } from './chart_node_column';
@@ -84,6 +85,10 @@ import {
  * this one is registered with, so nothing outside needs the string.
  */
 const DIR_TREE_CHART_TYPE = 'dune-dir-tree';
+
+// The card's icon, reused by every state that stands in for it so a
+// misconfigured chart still reads as this chart rather than as an error.
+const ICON = 'account_tree';
 
 /**
  * The column a directory click filters on, and the one the pane's narrowing
@@ -147,7 +152,7 @@ export function registerDirExplorerChart(
     registerChartType({
       type: DIR_TREE_CHART_TYPE,
       label: 'Dune Directories',
-      icon: 'account_tree',
+      icon: ICON,
       description:
         "Browse the query's rows as the build's directory tree, with each " +
         "directory's rules and dependencies",
@@ -226,21 +231,12 @@ function renderChartBody(
 
   const suggestion = resolveNodeColumn(config.column, ctx.node.sourceCols);
   if (suggestion !== undefined) {
-    return renderNodeColumnPrompt(ctx, config, suggestion, 'account_tree');
+    return renderNodeColumnPrompt(ctx, config, suggestion, ICON);
   }
 
-  // No loader entry means the host has no results table yet (it creates loaders
-  // only once the upstream node has run), so there is nothing to have loaded.
   const source = entry.custom;
   if (!(source instanceof ChartDirExplorerSource)) {
-    return m(
-      EmptyState,
-      {icon: 'account_tree', title: 'Waiting for results'},
-      m(
-        '.pf-dune-graph__load-note',
-        'This query has not produced a results table yet.',
-      ),
-    );
+    return renderChartWaiting(ICON);
   }
 
   // Kicked from the render rather than from the pane, so the states below can
@@ -251,35 +247,16 @@ function renderChartBody(
   switch (state.phase) {
     case 'idle':
     case 'loading':
-      return m(
-        '.pf-dune-graph__status',
-        m(Spinner),
-        m('span', "Reading the query's rows…"),
-      );
+      return renderChartLoading();
     case 'error':
-      return m(
-        Callout,
-        {icon: 'error'},
-        `Could not map the query's rows to Dune nodes: ${state.message}`,
-      );
+      return renderChartError(state.message);
     case 'ready':
       break;
     default:
       assertUnreachable(state);
   }
 
-  if (state.nodeCount === 0) {
-    return m(
-      EmptyState,
-      {icon: 'search_off', title: 'No Dune nodes in these rows'},
-      m(
-        '.pf-dune-graph__load-note',
-        `Nothing in "${config.column}" matched a node in the graph. That ` +
-          'column has to hold a dune_node.node_id for its rows to have a ' +
-          'place in the tree.',
-      ),
-    );
-  }
+  if (state.nodeCount === 0) return renderChartNoNodes(config, 'the tree');
 
   const brush = cardBrush(brushes, config.id);
   recoverBrushedDir(ctx, source, config.id, brush);

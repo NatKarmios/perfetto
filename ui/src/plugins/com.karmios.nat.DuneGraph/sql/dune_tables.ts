@@ -25,11 +25,9 @@
  * and fails if the two ever disagree - which is what stops this file rotting
  * silently as the mirror changes.
  *
- * The public/internal split is the mirror's own naming convention, not a
- * judgement call made here: `dune_*` is the surface meant to be queried,
- * `_dune_*` is storage backing it (see sql_graph.ts's header). The internal
- * section exists so that a `SELECT * FROM _dune_...` seen in a profile or a
- * stack trace can be looked up; it is deliberately documented one line deep.
+ * Only the public surface is documented: `dune_*` is what is meant to be
+ * queried, `_dune_*` is storage backing it whose shape changes without notice
+ * (see sql_graph.ts's header), so the sidebar does not advertise it.
  */
 
 import type {
@@ -616,63 +614,8 @@ function macroFor(fn: TableListEntry): TableListEntry {
 }
 
 /**
- * The storage behind the public views. Documented one line each: enough to
- * recognise one in a query plan or a stack trace, not enough to encourage
- * querying it. Shapes here change without notice - the `dune_*` views are the
- * contract.
- */
-export const DUNE_INTERNAL_TABLES: ReadonlyArray<TableListEntry> = [
-  ['_dune_node', 'Raw node rows; dune_node is the typed view over this.'],
-  ['_dune_rule', 'Raw per-rule rows behind dune_rule.'],
-  ['_dune_dep', 'Raw per-dep rows behind dune_dep.'],
-  [
-    '_dune_edge',
-    'Materialised edge set, built only when the edge tier is loaded.',
-  ],
-  ['_dune_edge_all', 'The whole edge set for a directed walk, as one view.'],
-  [
-    '_dune_node_out',
-    "A dep node's out-edges as a rowid range into _dune_edge, so a walk finds " +
-      'them without an index on src.',
-  ],
-  ['_dune_core', 'Shared dependency cores - dep sets reused across rules.'],
-  ['_dune_core_member', 'Membership of those cores.'],
-  ['_dune_depset', 'A rule’s dependency set, as a factored reference.'],
-  ['_dune_depset_add', 'Additions layered on top of a factored dep set.'],
-  ['_dune_rule_dyn_stage', "One row per round of a rule's dynamic deps."],
-  ['_dune_forced_edge', 'The forced-edge subset, precomputed.'],
-  ['_dune_dir', 'Raw directory rows; dune_dir is the typed view.'],
-  ['_dune_rule_dir', "Each rule's directory, before the tree is built."],
-  [
-    '_dune_span',
-    "A node's lifecycle as a half-open interval, for the blocked-time macro.",
-  ],
-  [
-    '_dune_timing',
-    'One row per (kind, key): the canonical occurrence’s slice ids and ' +
-      'duration, plus how many occurrences were seen. What the views join for ' +
-      '`ts` / `dur_ns` (see lifecycle_sql.ts).',
-  ],
-  [
-    '_dune_instant',
-    'Raw lifecycle instants, one row each - the biggest thing the timing ' +
-      'build ever holds. Dropped once _dune_timing is built.',
-  ],
-  [
-    '_dune_seq',
-    'Instants in sequence, on the way to pairing them. Also dropped.',
-  ],
-  ['_dune_pair', 'Paired start/finish instants, before they are collapsed.'],
-  [
-    '_dune_process',
-    'The processes the build spawned; dune_process is the typed view over ' +
-      'this (see process_sql.ts).',
-  ],
-].map(([name, description]) => ({name, description, columns: []}));
-
-/**
  * The sidebar's sections, in display order: what to query, how to walk it,
- * what backs it, then the trace's own stdlib.
+ * then the trace's own stdlib.
  *
  * `stdlibTables` comes from SqlModules and is absent while its catalogue is
  * still loading; its section is dropped until it arrives rather than shown
@@ -685,7 +628,6 @@ export function duneTableSections(
     {title: 'Dune tables', tables: DUNE_TABLES},
     {title: 'Dune functions', tables: DUNE_FUNCTIONS},
     {title: 'Dune macros', tables: DUNE_MACROS},
-    {title: 'Dune internals', tables: DUNE_INTERNAL_TABLES},
   ];
   if (stdlibTables !== undefined && stdlibTables.length > 0) {
     sections.push({title: 'Perfetto stdlib', tables: stdlibTables});

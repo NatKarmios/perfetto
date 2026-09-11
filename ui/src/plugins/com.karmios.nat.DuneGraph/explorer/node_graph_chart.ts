@@ -48,11 +48,13 @@ import type {
   ChartRenderContext,
 } from '../../dev.perfetto.DataExplorer/query_builder/charts/chart_renderers';
 import {registerChartType} from '../../dev.perfetto.DataExplorer/query_builder/charts/chart_type_registry';
-import {Callout} from '../../../widgets/callout';
 import {EmptyState} from '../../../widgets/empty_state';
-import {Spinner} from '../../../widgets/spinner';
 import {
   defaultNodeColumn,
+  renderChartError,
+  renderChartLoading,
+  renderChartNoNodes,
+  renderChartWaiting,
   renderNodeColumnPrompt,
   resolveNodeColumn,
 } from './chart_node_column';
@@ -183,18 +185,9 @@ function renderChartBody(
     return renderNodeColumnPrompt(ctx, config, suggestion, ICON);
   }
 
-  // No loader entry means the host has no results table yet (it creates loaders
-  // only once the upstream node has run), so there is nothing to have loaded.
   const source = entry.custom;
   if (!(source instanceof ChartNodeGraphSource)) {
-    return m(
-      EmptyState,
-      {icon: ICON, title: 'Waiting for results'},
-      m(
-        '.pf-dune-graph__load-note',
-        'This query has not produced a results table yet.',
-      ),
-    );
+    return renderChartWaiting(ICON);
   }
 
   // Kicked from the render rather than from the pane, so the states below can
@@ -205,35 +198,16 @@ function renderChartBody(
   switch (state.phase) {
     case 'idle':
     case 'loading':
-      return m(
-        '.pf-dune-graph__status',
-        m(Spinner),
-        m('span', "Reading the query's rows…"),
-      );
+      return renderChartLoading();
     case 'error':
-      return m(
-        Callout,
-        {icon: 'error'},
-        `Could not map the query's rows to Dune nodes: ${state.message}`,
-      );
+      return renderChartError(state.message);
     case 'ready':
       break;
     default:
       assertUnreachable(state);
   }
 
-  if (state.total === 0) {
-    return m(
-      EmptyState,
-      {icon: 'search_off', title: 'No Dune nodes in these rows'},
-      m(
-        '.pf-dune-graph__load-note',
-        `Nothing in "${config.column}" matched a node in the graph. That ` +
-          'column has to hold a dune_node.node_id for its rows to have a ' +
-          'place in the build graph.',
-      ),
-    );
-  }
+  if (state.total === 0) return renderChartNoNodes(config, 'the build graph');
 
   // The refusal, and the whole reason the cap is all-or-nothing rather than a
   // sample with a warning over it: a partial picture of a build graph is not a

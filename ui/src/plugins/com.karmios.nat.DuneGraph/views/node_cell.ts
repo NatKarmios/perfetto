@@ -57,6 +57,23 @@ export const DUNE_NODE_TABLE = 'dune_node';
 export const DUNE_NODE_ID_COLUMN = 'node_id';
 
 /**
+ * Every column name whose value IS a `dune_node.node_id`, in the order to
+ * prefer them - `node_id` itself, off `dune_node` and the per-kind detail
+ * tables, then the `src` / `dst` endpoints of `dune_edge` and of every relation
+ * function.
+ *
+ * One list, because a query written for one surface should not need rewriting
+ * for the other: the query page reads it to decide which cells become chips
+ * (`query_results.ts`), and both Data Explorer charts read it to pick the
+ * column they map rows through (`chart_node_column.ts`).
+ */
+export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
+  DUNE_NODE_ID_COLUMN,
+  'src',
+  'dst',
+];
+
+/**
  * The type a column of graph-node ids should declare to render as a node chip.
  * Exported so a builder emitting serialized Data Explorer JSON (see
  * dir_tree_source.ts for the shape) can stamp it on a column rather than

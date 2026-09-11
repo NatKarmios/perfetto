@@ -28,13 +28,12 @@
  *   rows.
  */
 
+import {formatBytesIec} from '../../base/bytes_format';
+
 // Prefix for every `performance.mark`/`measure` name this module emits, so the
 // plugin's entries are greppable/filterable in the profiler and in
 // `performance.getEntriesByType('measure')`.
 const MARK_PREFIX = 'dune:';
-
-// How many completed runs to keep for `Dune: dump load stats`.
-const MAX_RETAINED_RUNS = 10;
 
 // Chrome-only, non-standard. Absent on Firefox/Safari (and in vitest), so every
 // read is optional and heap columns simply don't appear when it's missing.
@@ -90,7 +89,6 @@ interface PhaseRecord {
 }
 
 let nextRunId = 0;
-const retainedRuns: PerfRun[] = [];
 
 /**
  * One instrumented operation (in practice: one graph load), made of flat named
@@ -204,20 +202,23 @@ export class PerfRun {
   }
 
   /**
-   * Close the run, retain it for {@link dumpPerfRuns}, and print its breakdown.
-   * Calling this twice is a no-op after the first.
+   * Close the run and print its breakdown. Calling this twice is a no-op after
+   * the first.
+   *
+   * The console table is the only report: the marks this module emits are left
+   * in the user-timing buffer as `dune:`-prefixed measures, so the profiler and
+   * `performance.getEntriesByType('measure')` keep the timings on their own -
+   * there is nothing for this module to retain and re-print.
    */
   finish(): void {
     if (this.endedAt !== undefined) return;
     this.endedAt = performance.now();
     this.endHeap = usedHeap();
-    retainedRuns.push(this);
-    while (retainedRuns.length > MAX_RETAINED_RUNS) retainedRuns.shift();
     this.dump();
   }
 
   // Print this run's breakdown as a console table.
-  dump(): void {
+  private dump(): void {
     const heapTotal =
       this.startHeap !== undefined && this.endHeap !== undefined
         ? this.endHeap - this.startHeap
@@ -312,21 +313,6 @@ export function measureSync<T>(
   return run === undefined ? fn(NULL_PHASE) : run.phaseSync(name, fn);
 }
 
-/**
- * Re-print every retained run, most recent last - what the `Dune: dump load
- * stats` command calls. Says so explicitly when nothing has been measured yet,
- * rather than printing nothing.
- */
-export function dumpPerfRuns(): void {
-  if (retainedRuns.length === 0) {
-    console.log(
-      `${MARK_PREFIX} no load stats recorded yet - load the graph first.`,
-    );
-    return;
-  }
-  for (const run of retainedRuns) run.dump();
-}
-
 // One line of the dump. The keys are the console table's column headers, hence
 // the display-friendly (and not identifier-shaped) names.
 type TableRow = Record<string, string>;
@@ -350,7 +336,7 @@ function tableRow(
     // Only worth showing when a phase ran more than once.
     'n': extra.count === undefined || extra.count === 1 ? '' : `${extra.count}`,
     'rows': extra.rows === undefined ? '' : extra.rows.toLocaleString(),
-    'bytes': extra.bytes === undefined ? '' : formatBytes(extra.bytes),
+    'bytes': extra.bytes === undefined ? '' : formatBytesIec(extra.bytes),
     'heap Δ':
       extra.heapDelta === undefined ? '' : formatSignedBytes(extra.heapDelta),
     'notes': extra.notes ?? '',
@@ -368,17 +354,9 @@ function formatPercent(part: number, whole: number): string {
   return `${((100 * part) / whole).toFixed(1)}%`;
 }
 
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unit = 0;
-  while (Math.abs(value) >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
-}
-
+// A heap delta, which is only readable with its sign spelled out: a phase that
+// frees is as interesting as one that allocates. `formatBytesIec` writes the
+// minus itself, so only the plus needs adding.
 function formatSignedBytes(bytes: number): string {
-  return `${bytes < 0 ? '-' : '+'}${formatBytes(Math.abs(bytes))}`;
+  return bytes < 0 ? formatBytesIec(bytes) : `+${formatBytesIec(bytes)}`;
 }

@@ -50,7 +50,7 @@ describe('PerfRun', () => {
     const row = rowFor(run, 'chunk');
     expect(row['n']).toBe('3');
     expect(row['rows']).toBe('30');
-    expect(row['bytes']).toBe('3.0 KB');
+    expect(row['bytes']).toBe('3.0 KiB');
   });
 
   it('leaves counters blank when nothing reported them', () => {

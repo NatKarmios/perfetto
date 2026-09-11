@@ -15,7 +15,7 @@
 /**
  * Materializes the in-memory {@link BuildGraph} into Perfetto SQL tables, so
  * the graph can be queried by relationship in the same engine as the rest of
- * the trace, and drives the distance query.
+ * the trace.
  *
  * **The table inventory, what each column means and why the mirror is shaped
  * this way are in README.md, "The SQL mirror".** dune_tables.ts carries the
@@ -91,7 +91,7 @@ import {
 // (so slice-id columns are real SliceTable::Ids, and the stored integer codes
 // and dict ids read back as text) over the raw tables we actually INSERT the rows into - a CREATE
 // PERFETTO TABLE/VIEW can't be chunk-inserted, and a plain CREATE TABLE can't
-// express the column types. Internal queries (relation functions, distance) read
+// express the column types. Internal queries (the relation functions) read
 // the raw tables directly.
 const NODE_TABLE = 'dune_node';
 const RAW_NODE_TABLE = '_dune_node';
@@ -199,44 +199,6 @@ const YIELD_EVERY = 10;
 export const EDGE_HARD_LIMIT = 100_000_000;
 
 /**
- * Edge count above which the reverse path is left unindexed.
- *
- * Forward walks never need an index (they read owner tables by primary key and
- * member tables by rowid range - see {@link edgeArms}), and neither does the
- * unbounded reverse BFS in principle (`graph_reachable_bfs!` reads the edge set
- * once however it's shaped). Only the *bounded* reverse walk - `dune_ancestors`
- * / `dune_parents` - has to find an edge by where it lands, which now means six
- * indexes rather than one (see {@link buildEdgeMirror}) over ~5M rows rather
- * than one over 28.8M.
- *
- * Effectively never reached, and deliberately so. Indexing the reverse path was
- * once estimated at ~1.1 GB; measured in the wasm engine it is **27.5 s and
- * +101 MB**, 11x cheaper, and now that the tier is factored the widest of the
- * six indexes is `_dune_depset_add(dep_node_id)` at 4.03M rows rather than one
- * at 28.7M. It is also what makes the reverse direction usable at all:
- * `dune_parents` on the most-depended node goes from **39.8 s to 1.2 s**, and
- * even `dune_all_ancestors`, which was supposed not to care, halves (43.4 s to
- * 19.1 s). So the two thresholds collapse into one: if the edge tier is built at
- * all, the indexes are built with it.
- *
- * The threshold and {@link SqlEdgeMirror.reverseIndexed} stay rather than being
- * deleted, because the index is still the first thing to give up if a graph ever
- * turns up that the edge tier itself fits but the index doesn't.
- */
-export const REVERSE_INDEX_EDGE_LIMIT = EDGE_HARD_LIMIT;
-
-// Directed dependency distance between two nodes, broken down by node kind.
-// `total` is the number of hops on a shortest path; `dep`/`rule` are how many
-// of the traversed nodes are deps / rules (so `total === dep + rule`). Counts
-// path nodes excluding `fromId` - the same "anchor-relative" convention the
-// relation functions below use.
-export interface Distances {
-  readonly total: number;
-  readonly dep: number;
-  readonly rule: number;
-}
-
-/**
  * Where a build has got to, as reported to {@link MirrorOptions.onProgress}.
  *
  * `phase` is the id of one of {@link NODE_MIRROR_PHASES} /
@@ -336,12 +298,6 @@ export const NODE_MIRROR_PHASES: readonly MirrorPhase[] = [
 /**
  * Everything {@link buildEdgeMirror} does, in execution order. See
  * {@link NODE_MIRROR_PHASES} for why this is a list rather than a refactor.
- *
- * The reverse-index phase is the one entry that is conditional
- * (`edgeCount <= REVERSE_INDEX_EDGE_LIMIT`). That limit is the hard cap, so a
- * build that reaches this list at all runs it; a renderer that wants to be
- * exact about it would have to know the edge count, which is not worth a field
- * for a case the builder refuses to reach.
  */
 export const EDGE_MIRROR_PHASES: readonly MirrorPhase[] = [
   {id: 'sql: edge census', label: 'Edge census'},
@@ -421,21 +377,12 @@ export interface SqlNodeMirror extends AsyncDisposable {
 
 /**
  * The expensive tier: `dune_edge` plus everything that walks it (the relation
- * functions and `distances()`). Built on top of - and disposed before - the
+ * functions). Built on top of - and disposed before - the
  * {@link SqlNodeMirror} its endpoints come from.
  */
 export interface SqlEdgeMirror extends AsyncDisposable {
   // How many edges were mirrored.
   readonly edgeCount: number;
-
-  // Whether `_dune_edge` is indexed by `dst`, i.e. whether the *bounded* reverse
-  // walks (`dune_ancestors` / `dune_parents`) can look an edge up rather than
-  // scanning for it. See REVERSE_INDEX_EDGE_LIMIT.
-  readonly reverseIndexed: boolean;
-
-  // Directed distances following build-dependency edges from `fromId` to
-  // `toId`, or undefined if `toId` is unreachable from `fromId`.
-  distances(fromId: number, toId: number): Promise<Distances | undefined>;
 }
 
 interface DroppableTable extends AsyncDisposable {
@@ -1835,9 +1782,8 @@ function edgeArms(
 
 /**
  * The whole edge relation as `(src, dst)`, for the callers that read it in full
- * - `graph_reachable_bfs!` and the distance query, which scan the edge set once
- * however it is shaped, so there is nothing a constraint or an index could save
- * them. Written driving from the *owner* tables, so a full scan of it is a scan
+ * - `graph_reachable_bfs!`, which scans the edge set once however it is shaped,
+ * so there is nothing a constraint or an index could save it. Written driving from the *owner* tables, so a full scan of it is a scan
  * of `_dune_rule` with a rowid-range scan of the member tables per set.
  *
  * A plain view, not a PERFETTO one: it is internal, its two columns need no
@@ -1964,8 +1910,8 @@ function edgeBlockedView(): string {
 }
 
 /**
- * Builds the edge tier of the mirror (`dune_edge` + the relation functions +
- * `distances()`) on top of an already-built {@link SqlNodeMirror}, whose
+ * Builds the edge tier of the mirror (`dune_edge` + the relation functions)
+ * on top of an already-built {@link SqlNodeMirror}, whose
  * `node_id` space the edge endpoints live in.
  *
  * A rule's edges are stored *factored* - as the dep set the blob named, shared
@@ -2157,34 +2103,31 @@ export async function buildEdgeMirror(
   // Plain (non-PERFETTO) indexes on plain tables - a PERFETTO INDEX is not used
   // to serve a join probe (see PERF_SUMMARY.LOCAL.md), which is the trap this
   // design would otherwise walk straight into.
-  const reverseIndexed = edgeCount <= REVERSE_INDEX_EDGE_LIMIT;
-  if (reverseIndexed) {
-    await phase(opts, 'sql: index the reverse path', async (p) => {
-      const index = async (table: string, column: string) => {
-        await engine.query(
-          `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
-        );
-      };
-      await index(CORE_MEMBER_TABLE, 'dep_node_id');
-      await index(DEPSET_ADD_TABLE, 'dep_node_id');
-      await index(DEPSET_TABLE, 'core_id');
-      await index(DYN_STAGE_TABLE, 'set_id');
-      await index(RAW_EDGE_TABLE, 'dst');
-      await index(FORCED_EDGE_TABLE, 'src');
+  await phase(opts, 'sql: index the reverse path', async (p) => {
+    const index = async (table: string, column: string) => {
       await engine.query(
-        `CREATE INDEX IF NOT EXISTS ${RULE_DEP_SET_INDEX} ` +
-          `ON ${RAW_RULE_TABLE}(dep_set)`,
+        `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
       );
-      p.rows(
-        coreOffsets[graph.coreCount] +
-          setOffsets[graph.depSetCount] +
-          graph.depSetCount +
-          depOffsets[graph.nodeCount] +
-          census.forcedCount +
-          graph.ruleCount,
-      );
-    });
-  }
+    };
+    await index(CORE_MEMBER_TABLE, 'dep_node_id');
+    await index(DEPSET_ADD_TABLE, 'dep_node_id');
+    await index(DEPSET_TABLE, 'core_id');
+    await index(DYN_STAGE_TABLE, 'set_id');
+    await index(RAW_EDGE_TABLE, 'dst');
+    await index(FORCED_EDGE_TABLE, 'src');
+    await engine.query(
+      `CREATE INDEX IF NOT EXISTS ${RULE_DEP_SET_INDEX} ` +
+        `ON ${RAW_RULE_TABLE}(dep_set)`,
+    );
+    p.rows(
+      coreOffsets[graph.coreCount] +
+        setOffsets[graph.depSetCount] +
+        graph.depSetCount +
+        depOffsets[graph.nodeCount] +
+        census.forcedCount +
+        graph.ruleCount,
+    );
+  });
 
   // The internal (src, dst) view the full-relation scans read, and the public
   // typed view. Both spell out the same five arms - see {@link edgeArms} for
@@ -2204,22 +2147,6 @@ export async function buildEdgeMirror(
 
   return {
     edgeCount,
-    reverseIndexed,
-
-    async distances(
-      fromId: number,
-      toId: number,
-    ): Promise<Distances | undefined> {
-      const result = await engine.query(distanceQuery(fromId, toId, space));
-      const row = result.firstRow({
-        reachable: NUM,
-        total: NUM,
-        dep: NUM,
-        rule: NUM,
-      });
-      if (row.reachable === 0) return undefined;
-      return {total: row.total, dep: row.dep, rule: row.rule};
-    },
 
     async [Symbol.asyncDispose](): Promise<void> {
       // Drop the relation function/macro vtabs first (a stale one left around
@@ -2587,51 +2514,4 @@ async function createRelationFunctions(
       RETURNS TableOrSubquery AS
       (SELECT d.* FROM ($starts) s JOIN ${name}(${callArgs.join(', ')}) d)`);
   }
-}
-
-// Single-source directed BFS from `fromId`, then walk the BFS parent tree back
-// up from `toId` to reconstruct one shortest path and count its nodes by kind.
-//
-// The BFS macro yields each reachable node once with the id of its first
-// encountered predecessor, so `path` is a simple parent walk (no cycles, no
-// exponential blow-up) that terminates on reaching `fromId` or a self/NULL
-// parent. `reachable` distinguishes an unreachable `toId` (no row) from a
-// genuine distance of 0 (fromId == toId).
-//
-// This reports the dep/rule split *of a shortest total-hop path*. Minimizing
-// dep-only or rule-only counts independently would be a different weighting and
-// a separate query.
-//
-// `bfs` is MATERIALIZED for the reason spelled out in `bfsBody`: it is read from
-// inside the recursive `path` walk, and without the hint the C++ BFS runs again
-// for every hop of the path it is reconstructing.
-function distanceQuery(fromId: number, toId: number, space: NodeSpace): string {
-  return `
-    WITH
-    bfs AS MATERIALIZED (
-      SELECT node_id, parent_node_id
-      FROM graph_reachable_bfs!(
-        ${edgeSet('down')},
-        (SELECT ${fromId} AS node_id)
-      )
-    ),
-    path(node_id, parent_node_id) AS (
-      SELECT node_id, parent_node_id FROM bfs WHERE node_id = ${toId}
-      UNION ALL
-      SELECT b.node_id, b.parent_node_id
-      FROM bfs b JOIN path p ON b.node_id = p.parent_node_id
-      WHERE p.node_id != ${fromId}
-        AND p.parent_node_id IS NOT NULL
-        AND p.parent_node_id != p.node_id
-    )
-    SELECT
-      (SELECT count(*) FROM bfs WHERE node_id = ${toId}) AS reachable,
-      (SELECT count(*) FROM path WHERE node_id != ${fromId}) AS total,
-      (SELECT count(*) FROM path
-        WHERE node_id != ${fromId}
-          AND NOT (${isRuleExpr('node_id', space)})) AS dep,
-      (SELECT count(*) FROM path
-        WHERE node_id != ${fromId}
-          AND ${isRuleExpr('node_id', space)}) AS rule
-  `;
 }

@@ -121,8 +121,11 @@ Four separate offers into `dev.perfetto.DataExplorer`:
   (`explorer/dir_explorer_chart.ts`) draws a query's rows as the part of the
   directory tree they landed in, and `dune-node-graph`
   (`explorer/node_graph_chart.ts`) draws them as the build graph between them.
-  Both read `config.column` as _the column holding a `dune_node.node_id`_ — the
-  shared handling of that is `explorer/chart_node_column.ts`.
+  Both read `config.column` as _the column holding a `dune_node.node_id`_. That
+  handling, and the stand-in views both cards draw before they have a picture
+  (waiting, loading, error, no matching nodes), are shared in
+  `explorer/chart_node_column.ts` — the two cards say the same thing in those
+  states, so they say it in one place.
 
 `views/node_cell.ts` additionally teaches **every** DataGrid in the UI to render
 a `JOINID(dune_node.node_id)` column as a node chip, so a grid built anywhere —
@@ -291,11 +294,13 @@ Points that bite:
 
 `sql/sql_graph.ts` materialises the in-memory graph into Perfetto SQL, so the
 graph can be queried by _relationship_ in the same engine as the rest of the
-trace. `sql/dune_tables.ts` is the hand-written catalogue of that surface for
-the query page's sidebar — hand-written because the tables are created at
-runtime and so are not in the `SqlModules` stdlib catalogue, and because the
-wire format carries no column comments. A unit test parses `sql_graph.ts`'s
-`CREATE` strings and fails if the two disagree.
+trace. `sql/dune_tables.ts` is the hand-written catalogue of the _public_
+surface for the query page's sidebar — hand-written because the tables are
+created at runtime and so are not in the `SqlModules` stdlib catalogue, and
+because the wire format carries no column comments. The `_dune_*` storage is
+deliberately not catalogued: its shape changes without notice, and the sidebar
+is an invitation to query. A unit test parses `sql_graph.ts`'s `CREATE` strings
+and fails if the catalogue and the public views disagree.
 
 ### Two tiers
 
@@ -506,14 +511,15 @@ module at runtime and there is no silent fallback — a browser without it throw
 ### Instrumentation
 
 `perf.ts`. A `PerfRun` accumulates a flat list of named phases (`ms`, rows,
-bytes, heap delta) and dumps them as a console table when the run finishes;
-`Dune: dump load stats` re-prints the last 10. Phases are flat, not nested, so
-they sum to just under the run's wall clock and the dump makes the residue
-explicit as an `(unaccounted)` row. Each phase also emits a
-`performance.measure()` under a `dune:` prefix, so the profiler's Timings track
-shows the same breakdown. Heap deltas are Chrome-only and are deltas _across_ a
-phase, so a mid-phase GC reads negative — treat them as a hint about
-steady-state growth, not an allocation count.
+bytes, heap delta) and dumps them as a console table when the run finishes.
+Phases are flat, not nested, so they sum to just under the run's wall clock and
+the dump makes the residue explicit as an `(unaccounted)` row. Each phase also
+emits a `performance.measure()` under a `dune:` prefix, so the profiler's
+Timings track — and `performance.getEntriesByType('measure')` — keep the timings
+after the console table has scrolled away; nothing is retained on this side to
+re-print. Heap deltas are Chrome-only and are deltas _across_ a phase, so a
+mid-phase GC reads negative — treat them as a hint about steady-state growth,
+not an allocation count.
 
 ## Gotchas
 
@@ -571,7 +577,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**619 tests across 32 files** as of 2026-09-10.
+**618 tests across 32 files** as of 2026-09-11.
 
 `model/graph_test_helper.ts` builds small graphs and controllers for the tests
 that need one. `layering_unittest.ts` is not a test of behaviour: it reads the
@@ -621,7 +627,7 @@ Files are laid out in dependency order; imports only ever point _downwards_, and
 
 | Layer | Directory             | Holds                                                                                                                                                                                |
 | ----- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0     | `perf.ts`             | Load-time instrumentation. Depended on by everything, depends on nothing.                                                                                                            |
+| 0     | `perf.ts`             | Load-time instrumentation. Depended on by everything, depends on nothing of the plugin's own.                                                                                        |
 | 1     | `model/`              | The graph: the columnar store and its walks, the blob parser and builder, the integer containers, the path/directory algorithms, the track vocabulary. Pure — no engine, no mithril. |
 | 2     | `sql/`                | The SQL mirror: the two tiers, the timing pipeline, the process table, the catalogue.                                                                                                |
 | 3     | `controller.ts`       | Owns the graph, the mirror handles, the load queue, the selection and the timeline workspace. Everything above reads state off it.                                                   |

@@ -103,21 +103,21 @@ export interface ExploreSource {
   readonly title: string;
 }
 
-/** The chain a source always becomes, by id. */
+/**
+ * The chain a source always becomes, by id: the two inner nodes, and the group
+ * wrapped over them. {@link chainNodes} numbers the inner pair and the group is
+ * added on top afterwards, so that step works in the `Omit` of this.
+ */
 interface ExploreSourceIds {
   readonly sourceNodeId: string;
   readonly columnsNodeId: string;
-}
-
-/** ...plus the group the chain is wrapped in. */
-interface GroupedSourceIds extends ExploreSourceIds {
   readonly groupNodeId: string;
 }
 
 /** A serialized graph plus the ids the source's own nodes ended up with. */
 interface ExploreSourceGraph {
   readonly json: string;
-  readonly ids: GroupedSourceIds;
+  readonly ids: ExploreSourceIds;
 }
 
 /**
@@ -251,8 +251,8 @@ function parseGraph(existing: string | undefined): SerializedGraph {
 function chainNodes(
   source: ExploreSource,
   base: number,
-): {nodes: SerializedNode[]; ids: ExploreSourceIds} {
-  const ids: ExploreSourceIds = {
+): {nodes: SerializedNode[]; ids: Omit<ExploreSourceIds, 'groupNodeId'>} {
+  const ids: Omit<ExploreSourceIds, 'groupNodeId'> = {
     sourceNodeId: String(base),
     columnsNodeId: String(base + 1),
   };
