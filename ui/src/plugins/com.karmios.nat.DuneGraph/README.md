@@ -36,8 +36,8 @@ want to capture, which adds the `graph` category to whatever dune would
 otherwise record:
 
 ```sh
-DUNE_TRACE=+graph dune build @install
-dune trace perfetto --trace-file _build/trace.csexp | gzip > build.perfetto.gz
+$ DUNE_TRACE=+graph dune build @install
+$ dune trace perfetto | gzip > build.perfetto.gz
 ```
 
 The first command leaves a `_build/trace.csexp`; the second converts it to the
