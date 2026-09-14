@@ -41,25 +41,46 @@ import {
   buildNodeMirror,
 } from './sql_graph';
 
-// An engine that answers nothing and appends every statement issued against it
-// to `sql`. Enough for the builders, which only read back a query's result for
-// the directory duration rollup (empty here) and the row counts.
-function stubEngine(sql: string[]): Engine {
-  const result = {
+// An engine that answers nothing - bar the census's `gen-rules` key query,
+// whose keys the caller supplies - and appends every statement issued against
+// it to `sql`. Enough for the builders, which read a query's result back only
+// for that, for the directory duration rollup (empty here) and for the row
+// counts.
+function stubEngine(
+  sql: string[],
+  genRulesKeys: readonly number[] = [],
+): Engine {
+  const empty = {
     firstRow: () => ({n: 0}),
     iter: () => ({valid: () => false, next: () => {}}),
   };
+  const keys = {
+    ...empty,
+    iter: () => {
+      let i = 0;
+      return {
+        valid: () => i < genRulesKeys.length,
+        next: () => i++,
+        get str_id() {
+          return genRulesKeys[i];
+        },
+      };
+    },
+  };
   const record = async (q: string) => {
     sql.push(q);
-    return result;
+    return q.includes('DISTINCT key AS str_id') ? keys : empty;
   };
   return {query: record, tryQuery: record} as unknown as Engine;
 }
 
 // Every statement the two mirror builders issue, in order.
-async function capture(graph: BuildGraph): Promise<string[]> {
+async function capture(
+  graph: BuildGraph,
+  genRulesKeys: readonly number[] = [],
+): Promise<string[]> {
   const sql: string[] = [];
-  const engine = stubEngine(sql);
+  const engine = stubEngine(sql, genRulesKeys);
   const nodes = await buildNodeMirror(engine, graph);
   await buildEdgeMirror(engine, graph, nodes);
   return sql;
@@ -82,15 +103,17 @@ function rowsOf(sql: readonly string[], table: string): string[][] {
 }
 
 // `_dune_dir`'s rows, each as `path@depth ^parent n=direct t=subtree d=durations`
-// with the direct/subtree triples being rules/deps/failed. Paths keep their SQL
-// quotes, so what is asserted below is the literal text inserted.
+// with the direct/subtree quadruples being rules/deps/failed/gen-rules. Paths
+// keep their SQL quotes, so what is asserted below is the literal text
+// inserted.
 function dirRows(sql: readonly string[]): string[] {
   const rows = rowsOf(sql, '_dune_dir');
   const pathOf = new Map(rows.map((r) => [r[0], r[3]]));
   return rows.map(
     (r) =>
       `${r[3]}@${r[4]} ^${r[1] === 'NULL' ? '-' : pathOf.get(r[1])} ` +
-      `n=${r[5]}/${r[6]}/${r[7]} t=${r[8]}/${r[9]}/${r[10]} d=${r[11]}/${r[12]}`,
+      `n=${r[5]}/${r[6]}/${r[7]}/${r[8]} ` +
+      `t=${r[9]}/${r[10]}/${r[11]}/${r[12]} d=${r[13]}/${r[14]}`,
   );
 }
 
@@ -277,17 +300,44 @@ describe('sql_graph dir tier', () => {
     const sql = await capture(fixture().graph);
     expect(dirRows(sql)).toEqual([
       // Interior directories hold no rules of their own, only subtree totals.
-      "'_build'@0 ^- n=0/0/0 t=3/1/1 d=0/0",
-      "'_build/default'@1 ^'_build' n=0/0/0 t=3/1/1 d=0/0",
-      "'_build/default/lib'@2 ^'_build/default' n=2/1/1 t=2/1/1 d=0/0",
-      "'_build/default/bin'@2 ^'_build/default' n=1/0/0 t=1/0/0 d=0/0",
+      "'_build'@0 ^- n=0/0/0/0 t=3/1/1/0 d=0/0",
+      "'_build/default'@1 ^'_build' n=0/0/0/0 t=3/1/1/0 d=0/0",
+      "'_build/default/lib'@2 ^'_build/default' n=2/1/1/0 t=2/1/1/0 d=0/0",
+      "'_build/default/bin'@2 ^'_build/default' n=1/0/0/0 t=1/0/0/0 d=0/0",
       // The top level: both `.` and an absent dir land here, as does a dep with
       // no directory in its path.
-      "''@0 ^- n=2/1/0 t=2/1/0 d=0/0",
+      "''@0 ^- n=2/1/0/0 t=2/1/0/0 d=0/0",
       // An absolute path's leading `/` stays with its first segment, so `/usr`
       // is a root rather than an empty root holding `usr`.
-      "'/usr'@0 ^- n=0/0/0 t=0/1/0 d=0/0",
-      "'/usr/bin'@1 ^'/usr' n=0/1/0 t=0/1/0 d=0/0",
+      "'/usr'@0 ^- n=0/0/0/0 t=0/1/0/0 d=0/0",
+      "'/usr/bin'@1 ^'/usr' n=0/1/0/0 t=0/1/0/0 d=0/0",
+    ]);
+  });
+
+  it('interns a directory dune generated rules for, members or not', async () => {
+    // A `gen-rules` span is keyed by the dict id of its directory, and dune
+    // generates rules for output directories that hold no rule and no dep at
+    // all - half of them on the monorepo trace. Here the dep's own path stands
+    // in for one: nothing in the graph is filed under it, so it is a row only
+    // because `gen-rules` ran there.
+    const g = fixture();
+    const key = g.graph.traceIdOf(g.id('_build/default/lib/x.cmi'));
+    const rows = dirRows(await capture(g.graph, [key]));
+
+    // The whole table, because what matters is as much what did *not* move:
+    // the new row is the only one with members of its own it did not have
+    // before, and `t_gen_rules` reaches its ancestors and nothing else.
+    expect(rows).toEqual([
+      "'_build'@0 ^- n=0/0/0/0 t=3/1/1/1 d=0/0",
+      "'_build/default'@1 ^'_build' n=0/0/0/0 t=3/1/1/1 d=0/0",
+      "'_build/default/lib'@2 ^'_build/default' n=2/1/1/0 t=2/1/1/1 d=0/0",
+      // The row that exists only because dune generated rules there.
+      "'_build/default/lib/x.cmi'@3 ^'_build/default/lib' " +
+        'n=0/0/0/1 t=0/0/0/1 d=0/0',
+      "'_build/default/bin'@2 ^'_build/default' n=1/0/0/0 t=1/0/0/0 d=0/0",
+      "''@0 ^- n=2/1/0/0 t=2/1/0/0 d=0/0",
+      "'/usr'@0 ^- n=0/0/0/0 t=0/1/0/0 d=0/0",
+      "'/usr/bin'@1 ^'/usr' n=0/1/0/0 t=0/1/0/0 d=0/0",
     ]);
   });
 

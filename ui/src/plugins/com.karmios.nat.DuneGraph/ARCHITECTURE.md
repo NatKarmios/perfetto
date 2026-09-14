@@ -640,13 +640,29 @@ to `dune_string` with no index to probe back with — that phrasing does not
 finish. `dune_dir.name` / `.path` are prefixes of interned directories, which
 are not themselves interned.
 
-**`dune_dir`'s directories are the union of every rule's `dir` and the
-containing directory of every dep's path**, because ~23% of the deps on a real
-trace (the opam switch, the compiler, `/usr/bin`) live under no rule's `dir` at
-all. `self_dur_ns` / `total_dur_ns` sum _rule_ spans only — a dep's span is
-waiting for build work rather than build work, so adding it would double-count.
-`n_failed` counts `failed-deps` and `failed-action`; a cancelled or unfinished
-rule is not a failure.
+**`dune_dir`'s directories are the union of every rule's `dir`, the containing
+directory of every dep's path, and every directory dune ran `gen-rules` for.**
+The dep half is there because ~23% of the deps on a real trace (the opam switch,
+the compiler, `/usr/bin`) live under no rule's `dir` at all; the `gen-rules`
+half because a directory dune generates rules for need not hold anything — only
+17.4k of the monorepo trace's 34.8k `gen-rules` directories are derivable from
+rules and deps, the rest being generated output trees (`.bin`, `.utop`) — so a
+table keyed on `dune_dir.id` would otherwise drop half its rows. They are the
+only rows whose whole subtree can be empty, which is what `n_gen_rules` /
+`t_gen_rules` exist to find: the explorer's hard filter reads stored rollups
+because it cannot walk a subtree a level at a time. (That 50% is measured off
+the monorepo trace's _pre-interning_ `dir` args. It has not been regenerated
+since, so its `gen-rules` spans carry no key and contribute nothing today; on
+the four small traces that have been regenerated — `merlin`, `lwt`,
+`ocaml-cohttp`, `dynamic-includes` — every `gen-rules` directory was already in
+`dune_dir`, so the figure wants re-measuring when a regenerated monorepo trace
+exists.) Their keys are read from `_dune_timing` and interned as paths out of
+the dict the blob parse already holds, which is why the emitter interns them
+(`gen-rules` spans are keyed by a dict id, not a string). `self_dur_ns` /
+`total_dur_ns` sum _rule_ spans only — a dep's span is waiting for build work
+rather than build work, so adding it would double-count. `n_failed` counts
+`failed-deps` and `failed-action`; a cancelled or unfinished rule is not a
+failure.
 
 ### Timing — `sql/lifecycle_sql.ts`
 
@@ -828,7 +844,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**625 tests across 34 files** as of 2026-09-14.
+**626 tests across 34 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

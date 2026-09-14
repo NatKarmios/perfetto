@@ -213,6 +213,12 @@ keeps its node links.
   parallel, so their waits overlap and adding them double-counts — a rule
   blocked for 1 s on ten concurrent deps sums to 10 s. `max(blocked_ns)` is the
   honest per-node figure.
+- **A `dune_dir` row need not hold anything.** Every directory dune ran
+  `gen-rules` for gets a row, and on a large build about half of those hold no
+  rule and no dep anywhere beneath them — generated output trees such as `.bin`
+  and `.utop`. `n_gen_rules` / `t_gen_rules` is how you tell them apart:
+  `t_rules = 0 AND t_deps = 0 AND t_gen_rules > 0` is exactly the
+  generated-but-empty set.
 - **`dune_node.dir_id` and `orig_id` are not node ids.** `dir_id` indexes
   `dune_dir` and `orig_id` is the trace-side id dune used; both collide with
   unrelated `node_id`s by construction, so joining either to `dune_node.node_id`

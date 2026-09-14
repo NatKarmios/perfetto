@@ -576,9 +576,11 @@ const DIR_COLUMNS = [
   'n_rules',
   'n_deps',
   'n_failed',
+  'n_gen_rules',
   't_rules',
   't_deps',
   't_failed',
+  't_gen_rules',
   'self_dur_ns',
   'total_dur_ns',
 ];
@@ -590,6 +592,15 @@ const DIR_COLUMNS = [
 // path lives in - because ~23% of the deps on a real trace live under no rule's
 // `dir` at all (the opam switch, the compiler, `/usr/bin`). Rules and deps are
 // counted separately, so a directory holding only deps is still a visible row.
+//
+// A third contribution has no members at all: a directory dune ran `gen-rules`
+// for, which need hold no rule and no dep anywhere beneath it. These are the
+// only rows whose whole *subtree* can be empty - every other row is a member's
+// directory or a prefix on the way to one - which is why `n_gen_rules` is
+// stored and rolled up rather than derived: the explorer's hard filter cannot
+// walk a subtree a level at a time, so hiding, or finding, them has to be a
+// test on a stored rollup. **ARCHITECTURE.md, "Why it is shaped this way", has
+// the proportions** and why the keys are dict ids rather than strings.
 //
 // The counts come from here rather than an aggregate over `_dune_node.dir_id`
 // because the pass that has to happen anyway - interning every directory, which
@@ -607,10 +618,21 @@ interface DirCensus {
   readonly dirId: Int32Array;
 
   // Per directory id: rules whose `dir` it is, deps whose path is directly in
-  // it, and how many of those rules failed. All three are `tree.size` long.
+  // it, how many of those rules failed, and whether dune ran `gen-rules` for
+  // it. All four are `tree.size` long. `nGenRules` is 0 or 1 on every trace
+  // measured - a directory has at most one `gen-rules` span - but it is a count
+  // rather than a flag so a trace that breaks that says so instead of lying.
   readonly nRules: Int32Array;
   readonly nDeps: Int32Array;
   readonly nFailed: Int32Array;
+  readonly nGenRules: Int32Array;
+
+  // The `gen-rules` directories as parallel arrays, one entry per key read from
+  // the timing table: the dict id it is keyed by, against its id in `tree`.
+  // Nothing reads these yet - they are what a table keyed on `dune_dir.id` has
+  // to join a `genrules` timing row back through.
+  readonly genRulesStrIds: Int32Array;
+  readonly genRulesDirIds: Int32Array;
 }
 
 // The directory a rule is filed under, spelled the way dir_tree.ts wants it:
@@ -621,7 +643,10 @@ function ruleDirKey(dir: string | undefined): string {
   return dir === undefined || dir === '.' ? '' : dir;
 }
 
-function censusDirs(graph: BuildGraph): DirCensus {
+function censusDirs(
+  graph: BuildGraph,
+  genRulesStrIds: readonly number[],
+): DirCensus {
   const tree = new DirTree();
   const dirId = new Int32Array(graph.nodeCount);
   // Grown as directories are interned; a directory that exists only as an
@@ -630,10 +655,19 @@ function censusDirs(graph: BuildGraph): DirCensus {
   const nRules: number[] = [];
   const nDeps: number[] = [];
   const nFailed: number[] = [];
+  const nGenRules: number[] = [];
   const bump = (counts: number[], id: number) => {
     while (counts.length <= id) counts.push(0);
     counts[id]++;
   };
+  // First, so the directories dune generated rules for are in the tree before
+  // anything asks for a node's directory id.
+  const genRulesDirIds = new Int32Array(genRulesStrIds.length);
+  for (let i = 0; i < genRulesStrIds.length; i++) {
+    const dir = tree.intern(graph.path(genRulesStrIds[i]));
+    genRulesDirIds[i] = dir;
+    bump(nGenRules, dir);
+  }
   for (let id = 0; id < graph.ruleCount; id++) {
     const dir = tree.intern(ruleDirKey(graph.dirOf(id)));
     dirId[id] = dir;
@@ -660,7 +694,31 @@ function censusDirs(graph: BuildGraph): DirCensus {
     nRules: sized(nRules),
     nDeps: sized(nDeps),
     nFailed: sized(nFailed),
+    nGenRules: sized(nGenRules),
+    genRulesStrIds: Int32Array.from(genRulesStrIds),
+    genRulesDirIds,
   };
+}
+
+// The dict ids of the directories dune ran `gen-rules` for, straight off the
+// timing table (see lifecycle_sql.ts). Filtered on `kind` rather than read as
+// bare keys: a `genrules` key and a dep's `orig_id` are both dict ids in the
+// same space, so an unfiltered read would intern deps as directories.
+//
+// Ids rather than the strings themselves - which the emitter interns for this
+// very reason - because the census wants the *paths* and can resolve them out
+// of the dict the blob parse already holds, instead of megabytes of text coming
+// back through SQL.
+async function genRulesDirStrIds(engine: Engine): Promise<number[]> {
+  const result = await engine.query(`
+    SELECT DISTINCT key AS str_id
+    FROM ${TIMING_TABLE}
+    WHERE kind = ${timingKindCode('genrules')}
+  `);
+  const ids: number[] = [];
+  const it = result.iter({str_id: NUM});
+  for (; it.valid(); it.next()) ids.push(it.str_id);
+  return ids;
 }
 
 // RULE_DIR_TABLE's rows: a rule's *trace-side* id (which is what the timing
@@ -741,6 +799,7 @@ function dirRows(census: DirCensus, selfDurNs: readonly bigint[]): RowSource {
   const tRules = census.nRules.slice();
   const tDeps = census.nDeps.slice();
   const tFailed = census.nFailed.slice();
+  const tGenRules = census.nGenRules.slice();
   const totalDurNs = [...selfDurNs];
   for (let id = dirs.length - 1; id > 0; id--) {
     const parent = dirs[id].parentId;
@@ -748,6 +807,7 @@ function dirRows(census: DirCensus, selfDurNs: readonly bigint[]): RowSource {
     tRules[parent] += tRules[id];
     tDeps[parent] += tDeps[id];
     tFailed[parent] += tFailed[id];
+    tGenRules[parent] += tGenRules[id];
     totalDurNs[parent] += totalDurNs[id];
   }
   return {
@@ -757,8 +817,10 @@ function dirRows(census: DirCensus, selfDurNs: readonly bigint[]): RowSource {
         yield `(${dir.id}, ${int(dir.parentId)}, ${sqliteString(dir.name)}, ` +
           `${sqliteString(dir.path)}, ${dir.depth}, ` +
           `${census.nRules[dir.id]}, ${census.nDeps[dir.id]}, ` +
-          `${census.nFailed[dir.id]}, ${tRules[dir.id]}, ${tDeps[dir.id]}, ` +
-          `${tFailed[dir.id]}, ${selfDurNs[dir.id]}, ${totalDurNs[dir.id]})`;
+          `${census.nFailed[dir.id]}, ${census.nGenRules[dir.id]}, ` +
+          `${tRules[dir.id]}, ${tDeps[dir.id]}, ${tFailed[dir.id]}, ` +
+          `${tGenRules[dir.id]}, ${selfDurNs[dir.id]}, ` +
+          `${totalDurNs[dir.id]})`;
       }
     },
   };
@@ -937,12 +999,17 @@ export async function buildNodeMirror(
   opts.onProgress?.({phase: PROCESS_INDEX_PHASE});
   const processes: SqlProcessSlices = await buildProcessSlices(engine, perf);
 
-  // The directory census runs first, ahead of every insert: it is a pure pass
-  // over the graph (no engine), and `_dune_node.dir_id` comes out of it. Only
-  // the census moves up - RAW_DIR_TABLE itself is still built last, because its
-  // duration rollup has to read the timing table.
-  const dirs = phaseSync(opts, `sql: ${DIR_TABLE} census`, (p) => {
-    const census = censusDirs(graph);
+  // The directory census runs first, ahead of every insert: `_dune_node.dir_id`
+  // comes out of it. Only the census moves up - RAW_DIR_TABLE itself is still
+  // built last, because its duration rollup has to read the timing table.
+  //
+  // The census proper is a pure pass over the graph; the one query it needs is
+  // read here and handed to it, rather than the pass reaching for an engine of
+  // its own. It is folded into this phase rather than given one of its own
+  // because it is a keyed range scan of the table the phase above just built,
+  // and the census is what it exists for.
+  const dirs = await phase(opts, `sql: ${DIR_TABLE} census`, async (p) => {
+    const census = censusDirs(graph, await genRulesDirStrIds(engine));
     p.rows(census.tree.size);
     return census;
   });
@@ -1032,7 +1099,8 @@ export async function buildNodeMirror(
     RAW_DIR_TABLE,
     'id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT, path TEXT, ' +
       'depth INTEGER, n_rules INTEGER, n_deps INTEGER, n_failed INTEGER, ' +
-      't_rules INTEGER, t_deps INTEGER, t_failed INTEGER, ' +
+      'n_gen_rules INTEGER, t_rules INTEGER, t_deps INTEGER, ' +
+      't_failed INTEGER, t_gen_rules INTEGER, ' +
       'self_dur_ns INTEGER, total_dur_ns INTEGER',
     DIR_COLUMNS,
     dirRows(dirs, selfDurNs),

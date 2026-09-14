@@ -419,6 +419,14 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       },
       {name: 'n_failed', description: 'Of those, how many failed.', type: INT},
       {
+        name: 'n_gen_rules',
+        description:
+          'Whether dune ran `gen-rules` for this directory: 1 if it did, 0 ' +
+          'otherwise. A directory with this set may hold no rule and no dep ' +
+          'at all.',
+        type: INT,
+      },
+      {
         name: 't_rules',
         description: 'n_rules, rolled up over the whole subtree.',
         type: INT,
@@ -431,6 +439,11 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {
         name: 't_failed',
         description: 'n_failed, rolled up over the whole subtree.',
+        type: INT,
+      },
+      {
+        name: 't_gen_rules',
+        description: 'n_gen_rules, rolled up over the whole subtree.',
         type: INT,
       },
       {
