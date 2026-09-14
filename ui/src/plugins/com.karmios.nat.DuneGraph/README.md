@@ -63,10 +63,10 @@ and zoom. Every node in the UI carries a ＋/－ toggle that adds it to or remov
 it from that set.
 
 Select a `gen-rules` slice and the same area shows the **directory** behind it
-instead: the span's timestamp and duration, the `dune` file it read (or, when it
-recorded none, the nearest ancestor directory's, marked as inherited), its
-parent and child directories, and — counted first, listed only when you ask —
-the rules and dependencies filed directly in it. A node's panel carries the link
+instead: how long the span took, the `dune` file it read (or, when it recorded
+none, the nearest ancestor directory's, with how many levels up that was as a
+link to it), its parent and subdirectories, and — counted first, listed only
+when you ask — the rules and dependencies filed directly in it. A node's panel carries the link
 the other way, as the `dir` line under its title, so you can walk between the
 node view and the directory view without leaving the tab. "Show in Explorer"
 opens the other tab and expands its tree down to the directory.

@@ -716,7 +716,7 @@ hanging off `node_id`, and for the same reason: `dune_dir` is one row per path
 _prefix_ and a `gen-rules` is a span present on only some of them. Its only
 stored part is `_dune_gen_rules(dir_id, dir_str_id)`, two integers mapping the
 dict id the timing row is keyed by to the directory the census interned it as;
-everything else — the slices, the timestamp, the duration, the `dune` file —
+everything else — the slices, the duration, the `dune` file —
 comes from `_dune_timing` and a per-row `extract_arg` on the finish slice, which
 is ~35k rows at monorepo scale and cheap enough not to materialise until a phase
 timing says otherwise. `dune_dyn_includes` is the same view with no map table at
@@ -907,7 +907,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**689 tests across 35 files** as of 2026-09-14.
+**690 tests across 35 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

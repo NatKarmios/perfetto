@@ -261,12 +261,13 @@ export function dirAnchor(
   controller: DuneGraphController,
   dirId: number,
   label: string,
+  title: string = "Go to this directory's gen-rules span on the timeline",
 ): m.Children {
   return m(
     Anchor,
     {
       icon: Icons.UpdateSelection,
-      title: "Go to this directory's gen-rules span on the timeline",
+      title,
       onclick: () => void controller.goToDir(dirId),
     },
     label,

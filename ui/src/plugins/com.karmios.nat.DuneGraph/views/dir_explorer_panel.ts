@@ -901,6 +901,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           className: 'pf-dune-tree__group-caret',
         }),
         m('span.pf-dune-explorer__dir-name', dirLabel(dir, parentPath)),
+        this.renderSelect(attrs, dir),
         m('span.pf-dune-tree__group-count', this.renderCounts(dir, open)),
         this.renderBulk(attrs, dir, kinds, memberCount, attrs.onFilterToDir),
       ),
@@ -913,12 +914,39 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     );
   }
 
+  // Selecting the directory itself, beside its name rather than out with the
+  // member actions on the right: it acts on the directory, which is what the
+  // name names, while everything in the actions box acts on what the directory
+  // *holds*.
+  //
+  // Only where dune generated rules for this directory. Everywhere else
+  // `goToDir` resolves no slice and returns, so the button would be a control
+  // that does nothing on the ~15% of rows that have no span (see
+  // model/dir_explorer.ts's `DirEntry.nGenRules`).
+  private renderSelect(
+    attrs: DirExplorerPanelAttrs,
+    dir: DirEntry,
+  ): m.Children {
+    if (dir.nGenRules !== 1) return undefined;
+    return m(
+      'span.pf-dune-tree__group-select',
+      // Not part of the row's collapse toggle: the header's own `onclick`
+      // would otherwise expand the directory as well as select it.
+      {onclick: (e: Event) => e.stopPropagation()},
+      m(Button, {
+        icon: Icons.UpdateSelection,
+        compact: true,
+        title: `Select ${dirPathLabel(dir.path)}`,
+        onclick: () => void attrs.controller.goToDir(dir.id),
+      }),
+    );
+  }
+
   // The node ids are fetched by the click rather than held: a row generally
   // knows only its member count when drawn. Omitted box and all when there is
   // nothing to act on, since the box is a padded flex container and an empty
   // one shows as a gap. `onFilterToDir` rides in the same box, directory rows
-  // only - a bucket is one kind of one directory, and so is the select
-  // affordance: a `gen-rules` span is the directory's.
+  // only - a bucket is one kind of one directory.
   private renderBulk(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
@@ -926,12 +954,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     count: number,
     narrowTo?: (dir: DirEntry) => void,
   ): m.Children {
-    // Only where dune generated rules for this directory. Everywhere else
-    // `goToDir` resolves no slice and returns, so the button would be a
-    // control that does nothing on the ~15% of rows that have no span (see
-    // model/dir_explorer.ts's `DirEntry.nGenRules`).
-    const selectable = dir.nGenRules === 1;
-    if (count === 0 && narrowTo === undefined && !selectable) return undefined;
+    if (count === 0 && narrowTo === undefined) return undefined;
     const where = dirPathLabel(dir.path);
     // Whether *this* row is the one the caller's filter names. By id, since
     // that is what was handed out, and through `rowIdFor` first exactly as the
@@ -950,16 +973,6 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       // keeps the narrowing toggle from also expanding the directory - the
       // header's own `onclick` would otherwise see the same click.
       {onclick: (e: Event) => e.stopPropagation()},
-      // The same navigation the directory chip everywhere else in the plugin
-      // is: select the span, which re-points the selection panel at this
-      // directory (see views/dir_info_panel.ts).
-      selectable &&
-        m(Button, {
-          icon: Icons.UpdateSelection,
-          compact: true,
-          title: `Select ${where}'s gen-rules span`,
-          onclick: () => void attrs.controller.goToDir(dir.id),
-        }),
       // Offered whatever this directory holds *directly*, unlike the bulk pair:
       // narrowing is to the subtree, and a directory of pure scaffolding with
       // 5,000 rows below it is exactly the one worth narrowing to.

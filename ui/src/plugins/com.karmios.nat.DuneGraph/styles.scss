@@ -699,6 +699,14 @@
     flex-shrink: 0;
   }
 
+  // Selecting the directory itself, beside its name. Not part of the row's
+  // collapse toggle, so it does not take the header's pointer cursor.
+  &__group-select {
+    display: flex;
+    flex-shrink: 0;
+    cursor: default;
+  }
+
   &__group-actions {
     display: flex;
     gap: 2px;

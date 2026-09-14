@@ -32,8 +32,6 @@
  */
 
 import m from 'mithril';
-import {Time} from '../../../base/time';
-import {Timestamp} from '../../../components/widgets/timestamp';
 import type {Trace} from '../../../public/trace';
 import {Accordion, AccordionSection} from '../../../widgets/accordion';
 import {Button} from '../../../widgets/button';
@@ -46,14 +44,14 @@ import {
   dirMembers,
 } from '../model/dir_explorer';
 import {TOP_LEVEL_LABEL, dirPathLabel} from '../model/dir_tree';
+import {dirLabel} from './dir_explorer_panel';
 import {dirAnchor, renderNodeCell, renderNodeCellActions} from './node_cell';
 import {decorateDepPath, formatDurNs} from './node_display';
 
 interface DirInfoPanelAttrs {
   readonly controller: DuneGraphController;
-  // For the queries below and for the shared `Timestamp` widget, which needs
-  // the trace's own time domain and format setting. Everything else this panel
-  // shows comes off the controller.
+  // For the queries below; everything else this panel shows comes off the
+  // controller.
   readonly trace: Trace;
   readonly dirId: number;
 }
@@ -75,20 +73,19 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
   private membersAsked = false;
 
   view({attrs}: m.CVnode<DirInfoPanelAttrs>): m.Children {
-    const {controller, trace, dirId} = attrs;
+    const {controller, dirId} = attrs;
     this.fetch(attrs);
     const path = controller.dirPath(dirId) ?? '';
     return m(
       '.pf-dune-graph__info',
       this.renderHeader(controller, path),
-      this.renderDuneFile(controller, dirId),
-      this.renderTimestamp(trace),
+      this.renderDuneFile(controller, dirId, path),
       this.renderParent(controller),
       this.renderReveal(controller, dirId),
       m(
         Accordion,
         {multi: true},
-        this.renderChildren(controller),
+        this.renderChildren(controller, path),
         this.renderMembers(attrs),
       ),
     );
@@ -201,62 +198,58 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
   private renderDuneFile(
     controller: DuneGraphController,
     dirId: number,
+    path: string,
   ): m.Children {
     const details = this.details;
-    if (details?.genRules === undefined) return undefined;
+    if (details === undefined) return undefined;
     const file = details.duneFile;
     if (file === undefined) {
       return m(
         '.pf-dune-graph__dir',
-        m('span.pf-dune-graph__dir-label', 'dune'),
-        m('span.pf-dune-graph__refs-empty', 'not recorded'),
+        m('span.pf-dune-graph__refs-empty', 'No dune file'),
       );
     }
     const {icon, text} = decorateDepPath(
       file.path,
       controller.graph.buildRoots,
     );
-    const inherited = file.dirId !== dirId;
+    // How far up the walk went, said in tree terms rather than by naming the
+    // ancestor: the ancestor's path is a prefix of this one, so its own name
+    // adds nothing the reader cannot already see, while the distance is the
+    // part that is not on screen. Off the two paths rather than a `depth`
+    // column, because the mirror answers both synchronously.
+    const up = levelsUp(controller, dirId, path, file.dirId);
     return m(
       '.pf-dune-graph__dir',
       {title: file.path},
-      m(
-        'span.pf-dune-graph__dir-label',
-        {
-          title: inherited
-            ? 'This gen-rules recorded no dune file; this is the nearest ' +
-              'ancestor directory that did'
-            : undefined,
-        },
-        inherited ? 'dune (inherited)' : 'dune',
-      ),
+      m('span.pf-dune-graph__dir-label', 'Dune file'),
       icon,
       text,
-      inherited && ' from ',
-      inherited && dirLink(controller, file.dirId),
-    );
-  }
-
-  // When the span ran. The shared widget rather than a formatted string, so it
-  // reads in whatever format the rest of the UI is set to and copies its raw
-  // value like every other timestamp.
-  private renderTimestamp(trace: Trace): m.Children {
-    const ts = this.details?.genRules?.ts;
-    if (ts === undefined) return undefined;
-    return m(
-      '.pf-dune-graph__dir',
-      m('span.pf-dune-graph__dir-label', 'ts'),
-      m(Timestamp, {trace, ts: Time.fromRaw(ts)}),
+      up !== undefined && ' via ',
+      up !== undefined &&
+        dirAnchor(
+          controller,
+          file.dirId,
+          `${up} level${up === 1 ? '' : 's'} up`,
+          'This directory recorded no dune file of its own; ' +
+            'this is the nearest ancestor that did',
+        ),
     );
   }
 
   private renderParent(controller: DuneGraphController): m.Children {
     const parentId = this.details?.parentId;
     if (parentId === undefined) return undefined;
+    // Labelled by the relationship, not the path: the path is the header's,
+    // minus its last segment, so repeating it says nothing.
     return m(
       '.pf-dune-graph__dir',
-      m('span.pf-dune-graph__dir-label', 'parent'),
-      dirLink(controller, parentId),
+      dirAnchor(
+        controller,
+        parentId,
+        'Parent',
+        dirPathLabel(controller.dirPath(parentId) ?? ''),
+      ),
     );
   }
 
@@ -282,7 +275,10 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
   // The child directories, compressed past runs of pass-through directories
   // exactly as the Explorer pane's are - so this lists the directories that
   // hold something rather than the next path segment.
-  private renderChildren(controller: DuneGraphController): m.Children {
+  private renderChildren(
+    controller: DuneGraphController,
+    path: string,
+  ): m.Children {
     const children = this.children;
     return m(
       AccordionSection,
@@ -290,8 +286,8 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
         key: 'dirs',
         summary:
           children === undefined
-            ? 'Directories'
-            : `Directories (${children.length})`,
+            ? 'Subdirectories'
+            : `Subdirectories (${children.length})`,
         defaultOpen: true,
       },
       children === undefined
@@ -303,7 +299,7 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
                 '.pf-dune-graph__ref',
                 m(
                   'span.pf-dune-graph__ref-label',
-                  childLink(controller, child),
+                  childLink(controller, child, path),
                 ),
               ),
             ),
@@ -336,7 +332,7 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
             ? m(
                 '.pf-dune-graph__refs-empty',
                 m(Button, {
-                  label: `List ${Math.min(total, MEMBER_PAGE).toLocaleString()} of ${total.toLocaleString()}`,
+                  label: `Load ${Math.min(total, MEMBER_PAGE).toLocaleString()}\u2026`,
                   icon: 'list',
                   onclick: () => this.loadMembers(attrs),
                 }),
@@ -396,22 +392,34 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
 function childLink(
   controller: DuneGraphController,
   child: DirEntry,
+  parentPath: string,
 ): m.Children {
-  const label = dirPathLabel(child.path);
+  // The same label the Explorer tree gives the row - what this directory adds
+  // to the one above it, which for a compressed run of pass-through
+  // directories is several segments rather than one.
+  const label = dirLabel(child, parentPath);
   if (child.nGenRules === 0) return label;
-  return dirAnchor(controller, child.id, label);
+  return dirAnchor(controller, child.id, label, dirPathLabel(child.path));
 }
 
-// A directory as a link, labelled with its path off the mirror. Falls back to
-// the bare id for a directory the mirror has no path for, which is every id at
-// all before it is built.
-function dirLink(controller: DuneGraphController, dirId: number): m.Children {
-  const path = controller.dirPath(dirId);
-  return dirAnchor(
-    controller,
-    dirId,
-    path === undefined ? `#${dirId}` : dirPathLabel(path),
-  );
+// How many levels separate `dirId` from the ancestor `fileDirId`, or undefined
+// when they are the same directory. Path segments rather than a stored depth:
+// the ancestor's path is always a prefix of this one (the walk is strictly
+// upwards), so the difference in segment counts is the distance.
+function levelsUp(
+  controller: DuneGraphController,
+  dirId: number,
+  path: string,
+  fileDirId: number,
+): number | undefined {
+  if (fileDirId === dirId) return undefined;
+  const filePath = controller.dirPath(fileDirId);
+  if (filePath === undefined) return undefined;
+  return segmentCount(path) - segmentCount(filePath);
+}
+
+function segmentCount(path: string): number {
+  return path === '' ? 0 : path.split('/').length;
 }
 
 // A directory path as the rest of the panel renders one. The top level has no

@@ -213,26 +213,49 @@ describe('DirInfoPanel', () => {
     const {engine} = stubEngine([{match: DETAILS, rows: [detailsRow()]}]);
     const root = await renderPanel(fakeController(), engine);
 
-    expect(line(root, 'dune')?.textContent).toContain('lib/foo/dune');
-    expect(root.textContent).not.toContain('inherited');
+    expect(line(root, 'Dune file')?.textContent).toContain('lib/foo/dune');
+    expect(root.textContent).not.toContain('levels up');
+    expect(root.textContent).not.toContain('level up');
   });
 
   test('falls back to the nearest ancestor that recorded one', async () => {
-    // The walk stopped two levels up, at dir 2. The file is shown, marked as
-    // inherited, and the ancestor it came from is a link of its own - without
-    // which the reader cannot tell whose `dune` file they are looking at.
+    // The walk stopped at dir 2, one level above dir 7. The file is shown, and
+    // how far up it came from is a link - without which the reader cannot tell
+    // whose `dune` file they are looking at. The distance rather than the
+    // ancestor's name, which is this directory's path minus a segment and so
+    // already on screen.
     const {engine} = stubEngine([
       {
         match: DETAILS,
         rows: [detailsRow({dune_file_dir_id: 2, dune_file: 'lib/dune'})],
       },
     ]);
-    const root = await renderPanel(fakeController(), engine);
+    const dirs: number[] = [];
+    const root = await renderPanel(
+      fakeController({goToDir: async (id: number) => void dirs.push(id)}),
+      engine,
+    );
 
-    const duneLine = line(root, 'dune (inherited)');
+    const duneLine = line(root, 'Dune file');
     expect(duneLine?.textContent).toContain('lib/dune');
-    expect(duneLine?.textContent).toContain('_build/default/lib');
-    expect(duneLine?.querySelector('a')).not.toBeNull();
+    expect(duneLine?.textContent).toContain('via');
+    expect(duneLine?.textContent).toContain('1 level up');
+    duneLine?.querySelector('a')?.click();
+    expect(dirs).toEqual([2]);
+  });
+
+  test('pluralises the distance to the ancestor', async () => {
+    // dir 3 (`_build/default/lib/foo/sub`) is three below dir 1
+    // (`_build/default`), so the same wording must not read "1 levels".
+    const {engine} = stubEngine([
+      {
+        match: DETAILS,
+        rows: [detailsRow({dune_file_dir_id: 1, dune_file: 'dune'})],
+      },
+    ]);
+    const root = await renderPanel(fakeController(), engine, 3);
+
+    expect(line(root, 'Dune file')?.textContent).toContain('3 levels up');
   });
 
   test('says so when the finish recorded no dune file at all', async () => {
@@ -244,14 +267,14 @@ describe('DirInfoPanel', () => {
     ]);
     const root = await renderPanel(fakeController(), engine);
 
-    expect(line(root, 'dune')?.textContent).toContain('not recorded');
+    expect(root.textContent).toContain('No dune file');
+    expect(line(root, 'Dune file')).toBeUndefined();
   });
 
-  test('shows the span’s timestamp and duration', async () => {
+  test('shows the span’s duration', async () => {
     const {engine} = stubEngine([{match: DETAILS, rows: [detailsRow()]}]);
     const root = await renderPanel(fakeController(), engine);
 
-    expect(line(root, 'ts')?.textContent).toContain('1234');
     expect(root.querySelector('.pf-dune-graph__status')?.textContent).toContain(
       '12ms',
     );
@@ -274,14 +297,27 @@ describe('DirInfoPanel', () => {
   });
 
   test('a directory dune generated no rules for says that instead', async () => {
+    // It still gets a `dune` file line: the walk starts at the directory and
+    // steps upwards, so a directory with no span of its own can still inherit
+    // an ancestor's file, and that is worth saying.
     const {engine} = stubEngine([
-      {match: DETAILS, rows: [detailsRow({n_gen_rules: 0})]},
+      {
+        match: DETAILS,
+        rows: [
+          detailsRow({
+            n_gen_rules: 0,
+            start_slice_id: null,
+            finish_slice_id: null,
+            dune_file_dir_id: null,
+            dune_file: null,
+          }),
+        ],
+      },
     ]);
     const root = await renderPanel(fakeController(), engine);
 
     expect(root.textContent).toContain('no gen-rules');
-    expect(line(root, 'dune')).toBeUndefined();
-    expect(line(root, 'ts')).toBeUndefined();
+    expect(root.textContent).toContain('No dune file');
   });
 
   test('the parent link selects the parent directory', async () => {
@@ -292,9 +328,14 @@ describe('DirInfoPanel', () => {
       engine,
     );
 
-    const parent = line(root, 'parent');
-    expect(parent?.textContent).toContain('_build/default/lib');
-    parent?.querySelector('a')?.click();
+    // Labelled by the relationship, not the path: this directory's path minus
+    // its last segment is the parent's, so repeating it says nothing.
+    const parent = Array.from(
+      root.querySelectorAll<HTMLElement>('.pf-dune-graph__dir a'),
+    ).find((a) => a.textContent?.includes('Parent'));
+    expect(parent).not.toBeUndefined();
+    expect(parent?.textContent).not.toContain('_build');
+    parent?.click();
     expect(dirs).toEqual([2]);
   });
 
@@ -312,8 +353,12 @@ describe('DirInfoPanel', () => {
       engine,
     );
 
-    const section = sectionWithSummary(root, 'Directories (1)');
-    expect(section?.textContent).toContain('_build/default/lib/foo/sub');
+    // Named relative to the directory being shown, as the Explorer tree names
+    // a row - the full path is the header's and repeating it buries the part
+    // that differs.
+    const section = sectionWithSummary(root, 'Subdirectories (1)');
+    expect(section?.textContent).toContain('sub/');
+    expect(section?.textContent).not.toContain('_build/default');
     section?.querySelector<HTMLElement>('.pf-dune-graph__ref a')?.click();
     expect(dirs).toEqual([3]);
   });
@@ -334,15 +379,15 @@ describe('DirInfoPanel', () => {
     ]);
     const root = await renderPanel(fakeController(), engine);
 
-    const section = sectionWithSummary(root, 'Directories (2)')!;
+    const section = sectionWithSummary(root, 'Subdirectories (2)')!;
     const rows = Array.from(
       section.querySelectorAll('.pf-dune-graph__ref-label'),
     );
     expect(rows.map((el) => el.textContent)).toEqual([
       // The linked row carries the anchor's own icon glyph; the plain one is
       // the label and nothing else.
-      '_build/default/lib/foo/subcall_made',
-      '_build/default/lib/foo/gen',
+      'sub/call_made',
+      'gen/',
     ]);
     expect(rows.map((el) => el.querySelector('a') !== null)).toEqual([
       true,

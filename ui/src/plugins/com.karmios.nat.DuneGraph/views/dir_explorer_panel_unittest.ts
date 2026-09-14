@@ -488,7 +488,7 @@ describe('DirExplorerPanel select affordance', () => {
 
     expect(dirNames(root)).toEqual(['lib/', 'gen/']);
     expect(selectButtons(root).map((b) => b.getAttribute('title'))).toEqual([
-      "Select lib's gen-rules span",
+      'Select lib',
     ]);
   });
 
@@ -500,10 +500,10 @@ describe('DirExplorerPanel select affordance', () => {
     expect(seen).toEqual([4]);
   });
 
-  test('appears beside the narrowing button rather than instead of it', async () => {
-    // The side panel has no narrowing button at all (see the hierarchy mount
-    // above), so the two are independent: this is the chart mount, where both
-    // are offered on the same row and in that order.
+  test('sits beside the name, not among the member actions', async () => {
+    // It acts on the directory, which is what the name names; everything in
+    // the actions box acts on what the directory *holds*. The chart mount,
+    // because that is the one offering a narrowing button to be beside.
     const root = await renderPane({
       controller: fakeController(),
       source: {
@@ -513,19 +513,26 @@ describe('DirExplorerPanel select affordance', () => {
       onFilterToDir: () => {},
     });
 
-    const titles = Array.from(
-      root.querySelectorAll('.pf-dune-tree__group-actions button'),
-    ).map((b) => b.getAttribute('title'));
-    expect(titles.slice(0, 2)).toEqual([
-      "Select lib's gen-rules span",
-      'Narrow everything else to lib and below',
-    ]);
+    expect(
+      Array.from(
+        root.querySelectorAll('.pf-dune-tree__group-actions button'),
+      ).map((b) => b.getAttribute('title')),
+    ).not.toContain('Select lib');
+    const select = root.querySelector(
+      '.pf-dune-tree__group-select button',
+    ) as HTMLElement | null;
+    expect(select?.getAttribute('title')).toEqual('Select lib');
+    // Directly after the name, so it reads as part of it.
+    expect(
+      select?.closest('.pf-dune-tree__group-select')?.previousElementSibling
+        ?.className,
+    ).toContain('pf-dune-explorer__dir-name');
   });
 
   test('draws a row that holds nothing but a span', async () => {
-    // The actions box is skipped entirely when there is nothing to act on, so
-    // a directory with no members of its own would otherwise lose its select
-    // button along with the bulk pair it has no use for.
+    // The select button lives outside the actions box, which is skipped
+    // entirely when there is nothing to act on - so a directory with no
+    // members of its own keeps it.
     const empty = dir({id: 6, path: 'scaffolding', nGenRules: 1, tRules: 1});
     const root = await paneOver([empty], []);
 
