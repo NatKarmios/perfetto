@@ -21,7 +21,8 @@
  * mistake would actually live. Three of them would be invisible in review and
  * expensive in the pane:
  *
- * - `parent_id = NULL` instead of `IS NULL`, which is never true, so the tree
+ * - `parent_dir_id = NULL` instead of `IS NULL`, which is never true, so the
+ *   tree
  *   would simply have no roots and the panel would render "Nothing to show".
  * - a missing `LIMIT` on the member query, which turns expanding one directory
  *   on the monorepo trace into 8,431 rows handed to mithril.
@@ -84,7 +85,7 @@ function stubEngine(rows: ReadonlyArray<Record<string, unknown>>): {
 // One `dune_dir` row, with every column the reader wants.
 function dirRow(over: Record<string, unknown> = {}) {
   return {
-    id: 7,
+    dir_id: 7,
     name: 'lib',
     path: '_build/default/lib',
     depth: 2,
@@ -107,15 +108,15 @@ function has(sql: string, fragment: string): boolean {
 
 describe('rootDirs', () => {
   it('finds the roots with IS NULL, not = NULL', async () => {
-    // `parent_id = NULL` is never true in SQL, so this exact phrasing is the
-    // difference between a tree and an empty panel.
+    // `parent_dir_id = NULL` is never true in SQL, so this exact phrasing is
+    // the difference between a tree and an empty panel.
     const {engine, sql} = stubEngine([]);
     await rootDirs(engine);
     expect(sql).toHaveLength(1);
-    expect(has(sql[0], 'SELECT id FROM dune_dir WHERE parent_id IS NULL')).toBe(
-      true,
-    );
-    expect(sql[0]).not.toContain('parent_id = NULL');
+    expect(
+      has(sql[0], 'SELECT dir_id FROM dune_dir WHERE parent_dir_id IS NULL'),
+    ).toBe(true);
+    expect(sql[0]).not.toContain('parent_dir_id = NULL');
   });
 
   it('orders the roots, and reads dune_dir', async () => {
@@ -123,7 +124,9 @@ describe('rootDirs', () => {
     // top level), so their order is a choice rather than a non-issue.
     const {engine, sql} = stubEngine([]);
     await rootDirs(engine);
-    expect(has(sql[0], 'JOIN dune_dir d ON d.id = chain.id')).toBe(true);
+    expect(has(sql[0], 'JOIN dune_dir d ON d.dir_id = chain.dir_id')).toBe(
+      true,
+    );
     expect(has(sql[0], 'ORDER BY d.path')).toBe(true);
   });
 
@@ -156,13 +159,13 @@ describe('rootDirs', () => {
 
 describe('childDirs', () => {
   it('descends one level, by the indexed column', async () => {
-    // `parent_id` is what the node tier indexes for exactly this query (see
+    // `parent_dir_id` is what the node tier indexes for exactly this query (see
     // sql_graph.ts). Descending by `path LIKE ...` instead would be a scan.
     const {engine, sql} = stubEngine([]);
     await childDirs(engine, 42);
-    expect(has(sql[0], 'SELECT id FROM dune_dir WHERE parent_id = 42')).toBe(
-      true,
-    );
+    expect(
+      has(sql[0], 'SELECT dir_id FROM dune_dir WHERE parent_dir_id = 42'),
+    ).toBe(true);
     expect(has(sql[0], 'ORDER BY d.path')).toBe(true);
   });
 
@@ -190,15 +193,17 @@ describe('pass-through compression', () => {
     expect(
       has(
         sql[0],
-        'AND (SELECT count(*) FROM dune_dir WHERE parent_id = p.id) = 1',
+        'AND (SELECT count(*) FROM dune_dir WHERE parent_dir_id = p.dir_id) = 1',
       ),
     ).toBe(true);
   });
 
-  it('steps to the single child, keyed on parent_id', async () => {
+  it('steps to the single child, keyed on parent_dir_id', async () => {
     const {engine, sql} = stubEngine([]);
     await childDirs(engine, 42);
-    expect(has(sql[0], 'JOIN dune_dir k ON k.parent_id = c.id')).toBe(true);
+    expect(has(sql[0], 'JOIN dune_dir k ON k.parent_dir_id = c.dir_id')).toBe(
+      true,
+    );
   });
 
   it('emits terminals only, by negating the step condition', async () => {
@@ -220,7 +225,7 @@ describe('pass-through compression', () => {
     // going".
     const {engine, sql} = stubEngine([]);
     await rootDirs(engine);
-    expect(has(sql[0], 'WITH RECURSIVE chain(id) AS')).toBe(true);
+    expect(has(sql[0], 'WITH RECURSIVE chain(dir_id) AS')).toBe(true);
     expect(has(sql[0], 'p.n_rules = 0 AND p.n_deps = 0')).toBe(true);
   });
 
@@ -229,7 +234,7 @@ describe('pass-through compression', () => {
     // directory's - which is what makes expanding it fetch the right children
     // and what the panel measures its label against.
     const {engine} = stubEngine([
-      dirRow({id: 9, name: 'lib', path: '_build/default/lib', depth: 2}),
+      dirRow({dir_id: 9, name: 'lib', path: '_build/default/lib', depth: 2}),
     ]);
     const [child] = await childDirs(engine, 1);
     expect([child.id, child.path]).toEqual([9, '_build/default/lib']);
@@ -712,9 +717,9 @@ describe("the filter's global match queries", () => {
     // a path filter into the cheap half.
     const {engine, sql} = stubEngine([]);
     await matchingRuleDirs(engine, filter.path);
-    expect(has(sql[0], "SELECT id FROM dune_dir WHERE path GLOB '*x*'")).toBe(
-      true,
-    );
+    expect(
+      has(sql[0], "SELECT dir_id FROM dune_dir WHERE path GLOB '*x*'"),
+    ).toBe(true);
   });
 
   it('aggregates dep matches per directory rather than returning them', async () => {
@@ -759,18 +764,18 @@ describe("the filter's global match queries", () => {
     const {engine, sql} = stubEngine([]);
     await allDirs(engine);
     expect(sql).toHaveLength(1);
-    expect(has(sql[0], 'FROM dune_dir d ORDER BY d.id')).toBe(true);
+    expect(has(sql[0], 'FROM dune_dir d ORDER BY d.dir_id')).toBe(true);
     expect(sql[0].toUpperCase()).not.toContain('RECURSIVE');
   });
 
-  it('selects parent_id, which the client-side tree is built from', async () => {
-    const {engine} = stubEngine([dirRow({parent_id: 4})]);
+  it('selects parent_dir_id, which the client-side tree is built from', async () => {
+    const {engine} = stubEngine([dirRow({parent_dir_id: 4})]);
     const [dir] = await allDirs(engine);
     expect(dir.parentId).toBe(4);
   });
 
-  it('reads a root parent_id as absent', async () => {
-    const {engine} = stubEngine([dirRow({parent_id: null})]);
+  it('reads a root parent_dir_id as absent', async () => {
+    const {engine} = stubEngine([dirRow({parent_dir_id: null})]);
     const [dir] = await allDirs(engine);
     expect(dir.parentId).toBeUndefined();
   });

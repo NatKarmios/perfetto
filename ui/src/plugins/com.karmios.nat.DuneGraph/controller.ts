@@ -94,7 +94,8 @@ const SLICE_LOOKUP_BATCH = 5_000;
 // What a timeline selection resolved to. Two channels, and a selection is one
 // event, so at most one of them is ever filled: the graph node it names, or -
 // for a `gen-rules` instant, which is a span over a directory rather than a
-// node at all - the `dune_dir.id` it names (see dirForSelection()). Alongside a
+// node at all - the `dune_dir.dir_id` it names (see dirForSelection()).
+// Alongside a
 // node, and only when the node was reached *through* a process slice, that
 // slice's id, which is how `selectedProcessSlice()` can be exact rather than
 // comparing event ids that are only unique per track. All absent means "nothing
@@ -561,7 +562,8 @@ export class DuneGraphController {
   }
 
   /**
-   * The directory the current timeline selection names, as a `dune_dir.id`, if
+   * The directory the current timeline selection names, as a
+   * `dune_dir.dir_id`, if
    * it names one - the second selection channel, and the mirror of
    * nodeForSelection().
    *

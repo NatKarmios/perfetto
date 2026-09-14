@@ -21,7 +21,7 @@
  * these functions generate, which is exactly where a mistake would live.
  *
  * **Every query is an index probe, and nothing here scans or walks a subtree**
- * (`_dune_node(dir_id)` and `_dune_dir(parent_id)`; the subtree numbers are
+ * (`_dune_node(dir_id)` and `_dune_dir(parent_dir_id)`; the subtree numbers are
  * stored on a directory's row as the `t_*` rollups). The one recursion is
  * `compressedDirs`, bounded and linear by construction.
  *
@@ -401,7 +401,7 @@ export interface MemberEntry {
 // Every column a DirEntry needs. Selected off `d`, the compressed row the chain
 // below settles on.
 const DIR_COLUMNS = `
-  d.id, d.parent_id, d.name, d.path, d.depth,
+  d.dir_id, d.parent_dir_id, d.name, d.path, d.depth,
   d.n_rules, d.n_deps, d.n_failed,
   d.t_rules, d.t_deps, d.t_failed,
   d.total_dur_ns
@@ -418,12 +418,13 @@ const DIR_COLUMNS = `
 // the tree - and invalidate every cached level - on every toggle, moving rows
 // under the user for a filter meant only to hide some of them.
 //
-// The child count is a probe of `_dune_dir(parent_id)`, the index the descent
+// The child count is a probe of `_dune_dir(parent_dir_id)`, the index the
+// descent
 // already uses.
 function passThrough(dir: string): string {
   return `
     ${dir}.n_rules = 0 AND ${dir}.n_deps = 0
-    AND (SELECT count(*) FROM dune_dir WHERE parent_id = ${dir}.id) = 1
+    AND (SELECT count(*) FROM dune_dir WHERE parent_dir_id = ${dir}.dir_id) = 1
   `;
 }
 
@@ -439,18 +440,18 @@ function passThrough(dir: string): string {
 // the whole pane rests on.
 function compressedDirs(seeds: string): string {
   return `
-    WITH RECURSIVE chain(id) AS (
-      SELECT id FROM dune_dir WHERE ${seeds}
+    WITH RECURSIVE chain(dir_id) AS (
+      SELECT dir_id FROM dune_dir WHERE ${seeds}
       UNION ALL
-      SELECT k.id
+      SELECT k.dir_id
       FROM chain c
-      JOIN dune_dir p ON p.id = c.id
-      JOIN dune_dir k ON k.parent_id = c.id
+      JOIN dune_dir p ON p.dir_id = c.dir_id
+      JOIN dune_dir k ON k.parent_dir_id = c.dir_id
       WHERE ${passThrough('p')}
     )
     SELECT ${DIR_COLUMNS}
     FROM chain
-    JOIN dune_dir d ON d.id = chain.id
+    JOIN dune_dir d ON d.dir_id = chain.dir_id
     WHERE NOT (${passThrough('d')})
     ORDER BY d.path
   `;
@@ -463,7 +464,7 @@ function compressedDirs(seeds: string): string {
 export async function rootDirs(engine: Engine): Promise<DirEntry[]> {
   // `IS NULL`, not `= NULL`: the latter is never true in SQL and would return
   // an empty tree.
-  return readDirs(engine, compressedDirs('parent_id IS NULL'));
+  return readDirs(engine, compressedDirs('parent_dir_id IS NULL'));
 }
 
 // A child may come back several levels down - `default/lib` rather than
@@ -473,7 +474,7 @@ export async function childDirs(
   engine: Engine,
   id: number,
 ): Promise<DirEntry[]> {
-  return readDirs(engine, compressedDirs(`parent_id = ${id}`));
+  return readDirs(engine, compressedDirs(`parent_dir_id = ${id}`));
 }
 
 // Always bounded. An unbounded version is the pane's one way to hurt itself:
@@ -545,7 +546,7 @@ export async function dirMemberIds(
 export async function allDirs(engine: Engine): Promise<DirEntry[]> {
   return readDirs(
     engine,
-    `SELECT ${DIR_COLUMNS} FROM dune_dir d ORDER BY d.id`,
+    `SELECT ${DIR_COLUMNS} FROM dune_dir d ORDER BY d.dir_id`,
   );
 }
 
@@ -559,7 +560,7 @@ export async function allDirs(engine: Engine): Promise<DirEntry[]> {
  * test rather than a constant.
  */
 export function ruleDirsQuery(filter: PathFilter): string {
-  return `SELECT id FROM dune_dir WHERE path GLOB ${sqlValue(filter.pattern)}`;
+  return `SELECT dir_id FROM dune_dir WHERE path GLOB ${sqlValue(filter.pattern)}`;
 }
 
 /**
@@ -579,8 +580,8 @@ export async function matchingRuleDirs(
 ): Promise<Set<number>> {
   const result = await engine.query(ruleDirsQuery(filter));
   const ids = new Set<number>();
-  const it = result.iter({id: NUM});
-  for (; it.valid(); it.next()) ids.add(it.id);
+  const it = result.iter({dir_id: NUM});
+  for (; it.valid(); it.next()) ids.add(it.dir_id);
   return ids;
 }
 
@@ -639,8 +640,8 @@ async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
   const result = await engine.query(query);
   const dirs: DirEntry[] = [];
   const it = result.iter({
-    id: NUM,
-    parent_id: NUM_NULL,
+    dir_id: NUM,
+    parent_dir_id: NUM_NULL,
     name: STR,
     path: STR,
     depth: NUM,
@@ -654,8 +655,8 @@ async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
   });
   for (; it.valid(); it.next()) {
     dirs.push({
-      id: it.id,
-      parentId: it.parent_id ?? undefined,
+      id: it.dir_id,
+      parentId: it.parent_dir_id ?? undefined,
       name: it.name,
       path: it.path,
       depth: it.depth,

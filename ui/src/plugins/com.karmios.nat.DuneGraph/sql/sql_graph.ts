@@ -598,8 +598,8 @@ const FAILED_OUTCOME_CODES: ReadonlySet<number> = new Set(
 // The columns of RAW_DIR_TABLE, in insert order. Named once because the schema,
 // the INSERT and the view all have to agree on them.
 const DIR_COLUMNS = [
-  'id',
-  'parent_id',
+  'dir_id',
+  'parent_dir_id',
   'name',
   'path',
   'depth',
@@ -659,8 +659,8 @@ interface DirCensus {
 
   // The `gen-rules` directories as parallel arrays, one entry per key read from
   // the timing table: the dict id it is keyed by, against its id in `tree`.
-  // Nothing reads these yet - they are what a table keyed on `dune_dir.id` has
-  // to join a `genrules` timing row back through.
+  // Nothing reads these yet - they are what a table keyed on
+  // `dune_dir.dir_id` has to join a `genrules` timing row back through.
   readonly genRulesStrIds: Int32Array;
   readonly genRulesDirIds: Int32Array;
 }
@@ -821,7 +821,8 @@ async function ruleDurationsByDir(
  * The subtree totals are rolled up here, in one descending pass, rather than by
  * a recursive CTE in the view. A directory's id is always higher than its
  * parent's (see dir_tree.ts), so by the time the pass reaches a row its own
- * subtree has already been summed into it - no recursion, no `parent_id` index,
+ * subtree has already been summed into it - no recursion, no `parent_dir_id`
+index,
  * and no per-query walk behind a view every caller reads.
  */
 function dirRows(census: DirCensus, selfDurNs: readonly bigint[]): RowSource {
@@ -1225,7 +1226,8 @@ export async function buildNodeMirror(
   const rawDirTable = await materializeTable(
     engine,
     RAW_DIR_TABLE,
-    'id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT, path TEXT, ' +
+    'dir_id INTEGER PRIMARY KEY, parent_dir_id INTEGER, name TEXT, ' +
+      'path TEXT, ' +
       'depth INTEGER, n_rules INTEGER, n_deps INTEGER, n_failed INTEGER, ' +
       'n_gen_rules INTEGER, t_rules INTEGER, t_deps INTEGER, ' +
       't_failed INTEGER, t_gen_rules INTEGER, ' +
@@ -1255,9 +1257,9 @@ export async function buildNodeMirror(
   //   members is `WHERE dir_id = ?`, and unindexed that is a scan of every node
   //   in the build - 818k rows on the monorepo trace - once per directory
   //   expanded. Indexed it is a probe returning the handful of rows asked for.
-  // - `_dune_dir(parent_id)` is the same shape for the tree's own edges
-  //   (`WHERE parent_id = ?`, and `IS NULL` for the roots). 19k rows is small
-  //   enough that a scan would be survivable, but it is paid on every single
+  // - `_dune_dir(parent_dir_id)` is the same shape for the tree's own edges
+  //   (`WHERE parent_dir_id = ?`, and `IS NULL` for the roots). 19k rows is
+  //   small enough that a scan would be survivable, but it is paid on every single
   //   expansion, and an index over 19k rows is nothing.
   //
   // Plain indexes on plain tables, so both are dropped with their table.
@@ -1266,8 +1268,8 @@ export async function buildNodeMirror(
       `CREATE INDEX ${RAW_NODE_TABLE}_dir_id ON ${RAW_NODE_TABLE}(dir_id)`,
     );
     await engine.query(
-      `CREATE INDEX ${RAW_DIR_TABLE}_parent_id ` +
-        `ON ${RAW_DIR_TABLE}(parent_id)`,
+      `CREATE INDEX ${RAW_DIR_TABLE}_parent_dir_id ` +
+        `ON ${RAW_DIR_TABLE}(parent_dir_id)`,
     );
     p.rows(graph.nodeCount + dirs.tree.size);
   });

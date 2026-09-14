@@ -40,12 +40,12 @@ import {exploreSelect} from './explore_source';
  * graph, whereas one it exports is a click away in the grid's column menu.
  *
  * Nothing here is an id *reference*, and nothing may become one by accident:
- * `dune_dir`'s `id` / `parent_id` are *directory* ids, from a table that numbers
- * directories, not graph nodes (see {@link ExploreColumn.type}).
+ * `dune_dir`'s `dir_id` / `parent_dir_id` are *directory* ids, from a table
+ * that numbers directories, not graph nodes (see {@link ExploreColumn.type}).
  */
 export const DIR_TREE_COLUMNS: ReadonlyArray<ExploreColumn> = [
-  {name: 'id', type: 'int'},
-  {name: 'parent_id', type: 'int'},
+  {name: 'dir_id', type: 'int'},
+  {name: 'parent_dir_id', type: 'int'},
   {
     name: 'path',
     type: 'string',

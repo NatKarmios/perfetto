@@ -24,7 +24,8 @@
  * ARCHITECTURE.md, "Gotchas"). A node id is self-sufficient, which is what makes this
  * work: resolving one is a range check against the current graph, not a query.
  *
- * A `dune_dir.id` cell (`renderDirCell`) is the same shape and the same rule: a
+ * A `dune_dir.dir_id` cell (`renderDirCell`) is the same shape and the same
+ * rule: a
  * directory chip whose path links to that directory's `gen-rules` span. Its
  * path comes off the mirror, which keeps them in memory precisely so this stays
  * synchronous (see sql_graph.ts's `dirPath`).
@@ -72,11 +73,12 @@ export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
 /**
  * The `dune_dir` id column, and every column name whose value IS one.
  *
- * `dir_id` and nothing else: `dune_dir`'s own key is `id`, far too generic a
- * name to chip on sight (any `SELECT * FROM slice` has one), and `parent_id` is
- * deliberately left plain for the same reason a directory source leaves it so
- * (see explorer/dir_tree_source.ts). A list rather than the bare name because
- * the query page's chip plumbing takes it exactly as it takes
+ * `dune_dir`'s own key is spelled `dir_id`, and its parent link
+ * `parent_dir_id`, precisely so that `SELECT * FROM dune_dir` chips: a bare
+ * `id` / `parent_id` would be far too generic to chip on sight (any
+ * `SELECT * FROM slice` has one). `parent_dir_id` is the directory analogue of
+ * `src` / `dst` on the node side. A list rather than the bare name because the
+ * query page's chip plumbing takes it exactly as it takes
  * {@link DUNE_NODE_ID_COLUMNS} (see query_results.ts).
  *
  * Not offered to the Data Explorer's charts (`explorer/chart_node_column.ts`):
@@ -84,7 +86,10 @@ export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
  * so a chart pointed at `dir_id` would draw nothing.
  */
 export const DUNE_DIR_ID_COLUMN = 'dir_id';
-export const DUNE_DIR_ID_COLUMNS: readonly string[] = [DUNE_DIR_ID_COLUMN];
+export const DUNE_DIR_ID_COLUMNS: readonly string[] = [
+  DUNE_DIR_ID_COLUMN,
+  'parent_dir_id',
+];
 
 /**
  * The type a column of graph-node ids should declare to render as a node chip.

@@ -97,9 +97,10 @@ Results are node-aware wherever a column holds a node: a `node_id`, `src` or
 `dst` cell draws a coloured kind chip, a label linking to that node's slice on
 the timeline, and the ＋/－ toggle. A `dir_id` cell chips too, as a directory:
 its path links to that directory's `gen-rules` span, a no-op for a directory
-dune generated no rules for. (`dune_dir`'s own `id` and `parent_id` stay plain —
-`id` is too common a column name to chip on sight.) There is a tree mode that
-groups the result by path.
+dune generated no rules for. `dune_dir`'s own key columns are spelled `dir_id`
+and `parent_dir_id` precisely so a plain `SELECT * FROM dune_dir` chips both — a
+bare `id` would be far too common a column name to chip on sight. There is a
+tree mode that groups the result by path.
 
 ### Data Explorer
 

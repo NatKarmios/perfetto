@@ -645,10 +645,24 @@ describe('DuneQueryResults.buildSchema', () => {
     expect(schema['dir_id'].cellFormatter?.(2, {} as Row)).toBe('a/b');
   });
 
-  // `dir_id` is the only directory-bearing name: `dune_dir`'s own `id` and
-  // `parent_id` stay plain, the first because any slice-ish result has an `id`
-  // of its own (see node_cell.ts).
-  it('leaves dune_dir’s own id and parent_id plain', () => {
+  // `dune_dir`'s own key columns are spelled `dir_id` / `parent_dir_id`, so
+  // the most obvious query anyone writes chips both of them. `parent_dir_id`
+  // is the directory analogue of `src` / `dst` on the node side.
+  it('chips both key columns of a SELECT * FROM dune_dir', () => {
+    const schema = schemaFor(queryHarness(true), 'dir_id', 'parent_dir_id');
+
+    for (const col of ['dir_id', 'parent_dir_id']) {
+      const cell_ = cell(schema, col, 2);
+      expect(cell_.querySelector('.pf-dune-graph__chip')?.textContent).toBe(
+        'dir',
+      );
+      expect(cell_.textContent).toContain('a/b');
+    }
+  });
+
+  // A bare `id` / `parent_id` stays plain: any slice-ish result has an `id` of
+  // its own, so it is far too generic a name to chip on sight (node_cell.ts).
+  it('leaves a bare id and parent_id plain', () => {
     const schema = schemaFor(queryHarness(true), 'id', 'parent_id');
     expect(schema['id'].cellRenderer).toBeUndefined();
     expect(schema['parent_id'].cellRenderer).toBeUndefined();

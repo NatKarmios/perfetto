@@ -87,7 +87,7 @@ function fakeController(mirrorVersion = 0): FakeController {
 // One `dune_dir` row, with every column `readDirs` wants.
 function dirRow(over: Record<string, unknown>) {
   return {
-    parent_id: undefined,
+    parent_dir_id: undefined,
     name: '',
     path: '',
     depth: 0,
@@ -105,10 +105,25 @@ function dirRow(over: Record<string, unknown>) {
 // `_build` → `_build/default` → {lib, bin}: enough hierarchy for a subtree walk
 // and for a directory that holds none of the query's rows.
 const DIRS = [
-  dirRow({id: 0, name: '_build', path: '_build', depth: 0}),
-  dirRow({id: 1, parent_id: 0, name: 'default', path: '_build/default'}),
-  dirRow({id: 2, parent_id: 1, name: 'lib', path: '_build/default/lib'}),
-  dirRow({id: 3, parent_id: 1, name: 'bin', path: '_build/default/bin'}),
+  dirRow({dir_id: 0, name: '_build', path: '_build', depth: 0}),
+  dirRow({
+    dir_id: 1,
+    parent_dir_id: 0,
+    name: 'default',
+    path: '_build/default',
+  }),
+  dirRow({
+    dir_id: 2,
+    parent_dir_id: 1,
+    name: 'lib',
+    path: '_build/default/lib',
+  }),
+  dirRow({
+    dir_id: 3,
+    parent_dir_id: 1,
+    name: 'bin',
+    path: '_build/default/bin',
+  }),
 ];
 
 // One row of the counts query: a directory, a kind, and how many of the input's
@@ -379,8 +394,9 @@ describe('ChartDirExplorerSource under a member filter', () => {
     expect(
       has(
         counts,
-        "WHERE (n.kind = 'rule' AND (n.dir_id IN (SELECT id FROM dune_dir " +
-          "WHERE path GLOB '*lib*') AND r.outcome IN ('failed-action') " +
+        "WHERE (n.kind = 'rule' AND (n.dir_id IN (SELECT dir_id FROM " +
+          "dune_dir WHERE path GLOB '*lib*') " +
+          "AND r.outcome IN ('failed-action') " +
           'AND n.dur_ns >= 10000000))',
       ),
     ).toBe(true);
@@ -400,7 +416,7 @@ describe('ChartDirExplorerSource under a member filter', () => {
     const {source, sql} = sourceOver();
     await source.matchingCounts('dep', FILTER);
     const counts = sql.find(isCountsQuery)!;
-    expect(has(counts, 'n.dir_id IN (SELECT id FROM dune_dir')).toBe(true);
+    expect(has(counts, 'n.dir_id IN (SELECT dir_id FROM dune_dir')).toBe(true);
   });
 
   test('leaves the unfiltered counts query exactly as it was', async () => {
@@ -522,7 +538,7 @@ describe('ChartDirExplorerSource under a member filter', () => {
     ]);
     expect(
       sql.some((q) =>
-        has(q, "SELECT id FROM dune_dir WHERE path GLOB '*lib*'"),
+        has(q, "SELECT dir_id FROM dune_dir WHERE path GLOB '*lib*'"),
       ),
     ).toBe(true);
   });

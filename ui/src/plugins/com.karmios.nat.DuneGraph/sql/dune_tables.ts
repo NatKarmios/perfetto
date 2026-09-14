@@ -153,7 +153,8 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       },
       {
         name: 'dir_id',
-        description: 'dune_dir.id of the directory this node is filed under.',
+        description:
+          'dune_dir.dir_id of the directory this node is filed under.',
         type: INT,
       },
       {
@@ -396,11 +397,11 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
     description:
       'The build seen as a directory tree: one row per directory, with its ' +
       'parent, its direct membership and its rolled-up duration. Shaped for ' +
-      "a DataGrid's id/parent_id tree.",
+      "a DataGrid's id/parent tree.",
     columns: [
-      {name: 'id', description: 'The directory’s id.', type: INT},
+      {name: 'dir_id', description: 'The directory’s id.', type: INT},
       {
-        name: 'parent_id',
+        name: 'parent_dir_id',
         description: 'Its parent directory; NULL at the root.',
         type: INT,
       },

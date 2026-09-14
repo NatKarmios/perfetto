@@ -403,7 +403,7 @@ describe('sql_graph dir tier', () => {
       'CREATE INDEX _dune_node_dir_id ON _dune_node(dir_id)',
     );
     expect(indexes).toContain(
-      'CREATE INDEX _dune_dir_parent_id ON _dune_dir(parent_id)',
+      'CREATE INDEX _dune_dir_parent_dir_id ON _dune_dir(parent_dir_id)',
     );
   });
 

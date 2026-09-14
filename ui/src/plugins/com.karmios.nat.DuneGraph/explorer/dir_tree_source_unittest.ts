@@ -57,10 +57,10 @@ describe('DIR_TREE_SQL', () => {
 
 describe('DIR_TREE_COLUMNS types', () => {
   it('declares no column as a reference to a graph node', () => {
-    // `dune_dir` numbers *directories*, so its `id` / `parent_id` are directory
-    // ids. Typing either as JOINID(dune_node.node_id) would render it as
-    // whichever unrelated graph node happened to share the number, which is
-    // worse than the plain integer it is. A directory is not a node.
+    // `dune_dir` numbers *directories*, so its `dir_id` / `parent_dir_id` are
+    // directory ids. Typing either as JOINID(dune_node.node_id) would render
+    // it as whichever unrelated graph node happened to share the number, which
+    // is worse than the plain integer it is. A directory is not a node.
     // (node_source_unittest.ts is where a column that *is* one is checked.)
     for (const col of DIR_TREE_COLUMNS) {
       const type = exploreColumnType(col);

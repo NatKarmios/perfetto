@@ -649,8 +649,8 @@ the compiler, `/usr/bin`) live under no rule's `dir` at all; the `gen-rules`
 half because a directory dune generates rules for need not hold anything — only
 17.4k of the monorepo trace's 34.8k `gen-rules` directories are derivable from
 rules and deps, the rest being generated output trees (`.bin`, `.utop`) — so a
-table keyed on `dune_dir.id` would otherwise drop half its rows. They are the
-only rows whose whole subtree can be empty, which is what `n_gen_rules` /
+table keyed on `dune_dir.dir_id` would otherwise drop half its rows. They are
+the only rows whose whole subtree can be empty, which is what `n_gen_rules` /
 `t_gen_rules` exist to find: the explorer's hard filter reads stored rollups
 because it cannot walk a subtree a level at a time. (That 50% is measured off
 the monorepo trace's _pre-interning_ `dir` args. It has not been regenerated
@@ -864,7 +864,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**656 tests across 34 files** as of 2026-09-14.
+**657 tests across 34 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

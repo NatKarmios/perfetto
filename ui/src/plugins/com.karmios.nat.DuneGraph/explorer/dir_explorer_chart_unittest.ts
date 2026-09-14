@@ -161,7 +161,7 @@ type Rows = ReadonlyArray<Record<string, unknown>>;
 // and takes its numbers from those (see dir_chart_source.ts).
 function dirRow(over: Record<string, unknown>) {
   return {
-    parent_id: undefined,
+    parent_dir_id: undefined,
     n_rules: 1,
     n_deps: 0,
     n_failed: 0,
@@ -177,10 +177,10 @@ function dirRow(over: Record<string, unknown>) {
 // root, which is what a set spanning both is not a subtree of. Only `lib` ever
 // holds rows, so it is the only one the pane draws.
 const DIRS = [
-  dirRow({id: 0, name: 'lib', path: 'lib', depth: 0}),
-  dirRow({id: 1, name: 'a', path: 'lib/a', depth: 1, parent_id: 0}),
-  dirRow({id: 2, name: 'b', path: 'lib/a/b', depth: 2, parent_id: 1}),
-  dirRow({id: 3, name: 'bin', path: 'bin', depth: 0}),
+  dirRow({dir_id: 0, name: 'lib', path: 'lib', depth: 0}),
+  dirRow({dir_id: 1, name: 'a', path: 'lib/a', depth: 1, parent_dir_id: 0}),
+  dirRow({dir_id: 2, name: 'b', path: 'lib/a/b', depth: 2, parent_dir_id: 1}),
+  dirRow({dir_id: 3, name: 'bin', path: 'bin', depth: 0}),
 ];
 
 function stubEngine(nodes: Rows): Engine {
