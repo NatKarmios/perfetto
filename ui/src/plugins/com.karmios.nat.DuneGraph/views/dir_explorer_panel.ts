@@ -27,6 +27,7 @@
  */
 
 import m from 'mithril';
+import {Icons} from '../../../base/semantic_icons';
 import {Button} from '../../../widgets/button';
 import {Callout} from '../../../widgets/callout';
 import {EmptyState} from '../../../widgets/empty_state';
@@ -191,6 +192,13 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   private cachedSource?: DirExplorerSource;
   private cachedVersion?: number;
 
+  // The directory the pane has been asked to expand to, and the serial of the
+  // request it came from - see `expandToward`, which works through it a level
+  // per redraw. The serial is what makes asking twice for the same directory
+  // two requests rather than one.
+  private revealTarget?: {readonly id: number; readonly path: string};
+  private revealSerial = 0;
+
   view({attrs}: m.CVnode<DirExplorerPanelAttrs>): m.Children {
     const {source} = attrs;
     if (source !== this.cachedSource || source.version !== this.cachedVersion) {
@@ -198,6 +206,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.cachedVersion = source.version;
       this.reset(attrs);
     }
+    this.takeRevealRequest(attrs);
     return m(
       '.pf-dune-graph.pf-dune-explorer',
       this.renderToolbar(attrs),
@@ -209,6 +218,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.children.clear();
     this.members.clear();
     this.expanded.clear();
+    // Named a directory of the mirror that has been replaced, and every id in
+    // it with it (see `cachedVersion`). The request is not re-served against
+    // the new one: it was a click on a panel showing the old.
+    this.revealTarget = undefined;
     // The tree is rebuilt from the new mirror; what the user typed survives,
     // since it is their input rather than derived state.
     this.tree = undefined;
@@ -641,6 +654,110 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     this.members.clear();
   }
 
+  /**
+   * Picks up an "expand to this directory" request from the controller, which
+   * is how the directory panel reaches this pane - the two are different
+   * side-panel tabs and neither holds the other.
+   *
+   * **ARCHITECTURE.md, "Revealing a directory in the tree", is the design** -
+   * both directions of that route, why the request is a serial, and the two
+   * directories the walk below cannot reach.
+   *
+   * By serial, not by id: the descent below spans several redraws, so the
+   * request cannot be cleared on sight, and the same directory asked for twice
+   * has to restart it rather than read as the request already served.
+   *
+   * The path is taken now and kept: it is the mirror's own answer and it is
+   * synchronous (see controller.ts's `dirPath`), and it is what the walk
+   * matches on, since a compressed row carries the id of the deep directory it
+   * settled on rather than of the one asked for.
+   */
+  private takeRevealRequest(attrs: DirExplorerPanelAttrs): void {
+    const request = attrs.controller.explorerRevealRequest;
+    if (request === undefined || request.serial === this.revealSerial) return;
+    this.revealSerial = request.serial;
+    const path = attrs.controller.dirPath(request.dirId);
+    this.revealTarget =
+      path === undefined ? undefined : {id: request.dirId, path};
+  }
+
+  /**
+   * Expands every row above the directory asked for, one level per call.
+   *
+   * Called from `renderBody` rather than from the request, because getting
+   * there is a descent through rows that mostly are not read yet: a level that
+   * has to be fetched stops the walk, and the redraw the fetch asks for
+   * resumes it. Idempotent, so the renders in between cost nothing.
+   *
+   * Two things it cannot do, both by the pane's own design rather than by
+   * omission: a directory whose subtree holds nothing of the kinds shown has
+   * no row (see `visibleSubtree`), and a pass-through one is swallowed by
+   * compression. Either way the walk stops at the nearest row that does exist
+   * and gives up, rather than expanding the whole tree looking for one that
+   * does not. On merlin that is 5 of the 308 directories with a `gen-rules`
+   * span, and none of them for the first reason.
+   */
+  private expandToward(attrs: DirExplorerPanelAttrs): void {
+    const target = this.revealTarget;
+    if (target === undefined) return;
+    let parent: DirEntry | undefined;
+    for (;;) {
+      const rows = this.levelRows(attrs, parent);
+      if (rows === undefined) return; // being read; resumes on the redraw
+      const next = rowToward(rows, target);
+      if (next === undefined) {
+        this.revealTarget = undefined; // no row leads there
+        return;
+      }
+      // The target's own row is expanded too: it is the one being revealed,
+      // and a row whose members are showing is what says the walk arrived.
+      this.expanded.add(dirKey(next.id));
+      if (next.id === target.id || next.path === target.path) {
+        this.revealTarget = undefined;
+        return;
+      }
+      // Every step is strictly deeper, so this terminates on any source - a
+      // level that contained its own parent would otherwise spin the browser
+      // rather than fail.
+      if (parent !== undefined && next.path.length <= parent.path.length) {
+        this.revealTarget = undefined;
+        return;
+      }
+      parent = next;
+    }
+  }
+
+  /**
+   * The rows drawn at one level - the roots when `dir` is undefined - as
+   * `renderBody` and `renderChildren` draw them, for the walk above to follow.
+   *
+   * `undefined` means "not read yet", which is the walk's cue to stop: the
+   * fetch it starts asks for a redraw, and that redraw resumes it. A level
+   * that *failed* to read reads as empty rather than as pending, so the walk
+   * gives up instead of retrying every frame.
+   */
+  private levelRows(
+    attrs: DirExplorerPanelAttrs,
+    dir?: DirEntry,
+  ): readonly DirEntry[] | undefined {
+    const tree = this.tree;
+    if (tree !== undefined) {
+      // The whole hierarchy is in memory under a filter, so every level is a
+      // lookup and the walk runs to the end in one call.
+      const rows =
+        dir === undefined ? tree.roots() : tree.childRows(dir.id, dir.path);
+      return rows.map((row) => row.dir);
+    }
+    if (dir === undefined) return this.roots;
+    const state = this.children.get(dir.id);
+    if (state === undefined) {
+      this.loadChildren(attrs, dir.id);
+      return undefined;
+    }
+    if (state.error !== undefined) return [];
+    return state.dirs;
+  }
+
   private renderBody(attrs: DirExplorerPanelAttrs): m.Children {
     const {controller} = attrs;
     // `dune_dir` is built as part of the node tier, so there is nothing to show
@@ -691,6 +808,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         ),
       );
     }
+    // After `visible`, so the roots are in and the filtered tree is built:
+    // both are what the walk descends from. Before the rows are drawn, so an
+    // expansion it makes is on screen this frame rather than the next.
+    this.expandToward(attrs);
     return m(
       '.pf-dune-tree',
       visible.map(({dir, from}) => this.renderDir(attrs, dir, from)),
@@ -796,7 +917,8 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   // knows only its member count when drawn. Omitted box and all when there is
   // nothing to act on, since the box is a padded flex container and an empty
   // one shows as a gap. `onFilterToDir` rides in the same box, directory rows
-  // only - a bucket is one kind of one directory.
+  // only - a bucket is one kind of one directory, and so is the select
+  // affordance: a `gen-rules` span is the directory's.
   private renderBulk(
     attrs: DirExplorerPanelAttrs,
     dir: DirEntry,
@@ -804,7 +926,12 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     count: number,
     narrowTo?: (dir: DirEntry) => void,
   ): m.Children {
-    if (count === 0 && narrowTo === undefined) return undefined;
+    // Only where dune generated rules for this directory. Everywhere else
+    // `goToDir` resolves no slice and returns, so the button would be a
+    // control that does nothing on the ~15% of rows that have no span (see
+    // model/dir_explorer.ts's `DirEntry.nGenRules`).
+    const selectable = dir.nGenRules === 1;
+    if (count === 0 && narrowTo === undefined && !selectable) return undefined;
     const where = dirPathLabel(dir.path);
     // Whether *this* row is the one the caller's filter names. By id, since
     // that is what was handed out, and through `rowIdFor` first exactly as the
@@ -823,6 +950,16 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       // keeps the narrowing toggle from also expanding the directory - the
       // header's own `onclick` would otherwise see the same click.
       {onclick: (e: Event) => e.stopPropagation()},
+      // The same navigation the directory chip everywhere else in the plugin
+      // is: select the span, which re-points the selection panel at this
+      // directory (see views/dir_info_panel.ts).
+      selectable &&
+        m(Button, {
+          icon: Icons.UpdateSelection,
+          compact: true,
+          title: `Select ${where}'s gen-rules span`,
+          onclick: () => void attrs.controller.goToDir(dir.id),
+        }),
       // Offered whatever this directory holds *directly*, unlike the bulk pair:
       // narrowing is to the subtree, and a directory of pure scaffolding with
       // 5,000 rows below it is exactly the one worth narrowing to.
@@ -1300,6 +1437,27 @@ export function strippedDepLabel(
  * has to be *re-keyed* when a filter changes which directory a row is keyed on
  * (see {@link remapKeys}), which means parsing them back again.
  */
+/**
+ * Which row of a level leads to a directory: the row that *is* it, else the
+ * deepest row whose path contains it.
+ *
+ * Deepest, because several can: a build's paths mix absolute and relative
+ * ones, so the top level (path `''`) is nominally above every root, and
+ * following it would descend into the wrong subtree and give up there.
+ */
+function rowToward(
+  rows: readonly DirEntry[],
+  target: {readonly id: number; readonly path: string},
+): DirEntry | undefined {
+  let best: DirEntry | undefined;
+  for (const row of rows) {
+    if (row.id === target.id || row.path === target.path) return row;
+    if (!target.path.startsWith(`${row.path}/`) && row.path !== '') continue;
+    if (best === undefined || row.path.length > best.path.length) best = row;
+  }
+  return best;
+}
+
 function dirKey(id: number): string {
   return `dir:${id}`;
 }

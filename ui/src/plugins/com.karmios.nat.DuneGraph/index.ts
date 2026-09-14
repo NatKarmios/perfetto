@@ -157,6 +157,13 @@ export default class implements PerfettoPlugin {
       trace.sidePanel.showTab(SIDE_PANEL_URI),
     );
 
+    // And the other direction: the directory panel's "show in Explorer" brings
+    // that tab forward, for the same reason the URIs are wired here rather
+    // than in the panels - neither tab holds the other.
+    controller.revealExplorerWhenAsked(() =>
+      trace.sidePanel.showTab(EXPLORER_URI),
+    );
+
     // Reveal the graph side panel on load rather than making the user open it.
     trace.sidePanel.showTab(SIDE_PANEL_URI);
 

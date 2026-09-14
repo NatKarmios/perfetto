@@ -100,6 +100,16 @@ const SLICE_LOOKUP_BATCH = 5_000;
 // slice's id, which is how `selectedProcessSlice()` can be exact rather than
 // comparing event ids that are only unique per track. All absent means "nothing
 // of ours".
+/**
+ * A standing "expand the tree to this directory" request, as the Explorer pane
+ * reads it. The serial is the identity: the same directory asked for twice is
+ * two requests, and a pane part-way through one tells them apart by it.
+ */
+export interface ExplorerRevealRequest {
+  readonly dirId: number;
+  readonly serial: number;
+}
+
 interface SelectionResolution {
   readonly node?: NodeId;
   readonly dir?: number;
@@ -222,6 +232,13 @@ export class DuneGraphController {
   private revealPanel?: () => void;
   private revealedNode?: NodeId;
   private revealedDir?: number;
+
+  // Brings the Explorer tab forward, and the standing request for it to expand
+  // to a directory. Set by revealDirInExplorer(); see that method for why the
+  // request is a serial rather than a flag the pane clears.
+  private revealExplorer?: () => void;
+  private explorerReveal?: ExplorerRevealRequest;
+  private explorerRevealSerial = 0;
 
   // Whether rule nodes are hidden from both the graph pane and the timeline
   // track (see visibleNodes()). Lives here (not in GraphPanel) so it survives
@@ -516,6 +533,35 @@ export class DuneGraphController {
   // `sidePanel.showTab` also *opens* a closed side panel.
   revealPanelWhenSelected(reveal: () => void): void {
     this.revealPanel = reveal;
+  }
+
+  // The other half of revealDirInExplorer(): which tab the Explorer pane is,
+  // which is the plugin entry point's to know (see index.ts).
+  revealExplorerWhenAsked(reveal: () => void): void {
+    this.revealExplorer = reveal;
+  }
+
+  /**
+   * Ask the Explorer tab to expand its tree down to a directory, and bring it
+   * forward - the route from the directory panel back into the tree (see
+   * views/dir_info_panel.ts).
+   *
+   * The controller only carries the request: expanding is the pane's own
+   * business, and it takes several redraws, since each level of the tree is a
+   * query. Hence a *serial* rather than something the pane clears when it is
+   * done - a flag consumed on sight would be gone before the descent finished,
+   * and one cleared at the end would make asking for the same directory twice
+   * a no-op the second time.
+   */
+  revealDirInExplorer(dirId: number): void {
+    this.explorerReveal = {dirId, serial: ++this.explorerRevealSerial};
+    this.revealExplorer?.();
+    this.requestRedraw();
+  }
+
+  /** The standing request, for the pane that serves it. */
+  get explorerRevealRequest(): ExplorerRevealRequest | undefined {
+    return this.explorerReveal;
   }
 
   // Fires the reveal callback on a change of what the selection resolved to,

@@ -97,6 +97,7 @@ function dirRow(over: Record<string, unknown> = {}) {
     t_rules: 30,
     t_deps: 40,
     t_failed: 2,
+    n_gen_rules: 1,
     total_dur_ns: 1_500n,
     ...over,
   };
@@ -146,6 +147,7 @@ describe('rootDirs', () => {
       tRules: 30,
       tDeps: 40,
       tFailed: 2,
+      nGenRules: 1,
       totalDurNs: 1_500n,
     });
   });

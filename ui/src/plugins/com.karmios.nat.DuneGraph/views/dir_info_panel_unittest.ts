@@ -120,6 +120,7 @@ function fakeController(over: Partial<DuneGraphController> = {}) {
     graph: {buildRoots: ['_build/default']},
     dirPath: (id: number) => PATHS.get(id),
     goToDir: async () => {},
+    revealDirInExplorer: () => {},
     nodeForNodeId: () => undefined,
     isInGraph: () => false,
     ...over,
@@ -143,8 +144,9 @@ function detailsRow(over: Row = {}): Row {
   };
 }
 
-// One `dune_dir` row as `childDirs` reads it.
-function childRow(id: number, path: string): Row {
+// One `dune_dir` row as `childDirs` reads it. `n_gen_rules` is 1 unless a test
+// says otherwise: it is what decides whether the child is a link at all.
+function childRow(id: number, path: string, nGenRules = 1): Row {
   return {
     dir_id: id,
     parent_dir_id: 7,
@@ -157,6 +159,7 @@ function childRow(id: number, path: string): Row {
     t_rules: 1,
     t_deps: 2,
     t_failed: 0,
+    n_gen_rules: nGenRules,
     total_dur_ns: 0n,
   };
 }
@@ -313,6 +316,57 @@ describe('DirInfoPanel', () => {
     expect(section?.textContent).toContain('_build/default/lib/foo/sub');
     section?.querySelector<HTMLElement>('.pf-dune-graph__ref a')?.click();
     expect(dirs).toEqual([3]);
+  });
+
+  test('a child with no gen-rules span is text rather than a dead link', async () => {
+    // `goToDir` resolves the directory's `gen-rules` slice, so a directory
+    // dune generated no rules for has nothing to go to and its anchor would
+    // do nothing when clicked. 56 of merlin's 364 directories are like that.
+    const {engine} = stubEngine([
+      {match: DETAILS, rows: [detailsRow()]},
+      {
+        match: CHILDREN,
+        rows: [
+          childRow(3, '_build/default/lib/foo/sub'),
+          childRow(4, '_build/default/lib/foo/gen', 0),
+        ],
+      },
+    ]);
+    const root = await renderPanel(fakeController(), engine);
+
+    const section = sectionWithSummary(root, 'Directories (2)')!;
+    const rows = Array.from(
+      section.querySelectorAll('.pf-dune-graph__ref-label'),
+    );
+    expect(rows.map((el) => el.textContent)).toEqual([
+      // The linked row carries the anchor's own icon glyph; the plain one is
+      // the label and nothing else.
+      '_build/default/lib/foo/subcall_made',
+      '_build/default/lib/foo/gen',
+    ]);
+    expect(rows.map((el) => el.querySelector('a') !== null)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  test('offers the way back into the Explorer tree', async () => {
+    // The pane expands to the directory itself, over several redraws; all the
+    // panel does is ask, since neither side-panel tab holds the other.
+    const asked: number[] = [];
+    const {engine} = stubEngine([{match: DETAILS, rows: [detailsRow()]}]);
+    const root = await renderPanel(
+      fakeController({
+        revealDirInExplorer: (id: number) => void asked.push(id),
+      }),
+      engine,
+    );
+
+    const button = Array.from(root.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Show in Explorer'),
+    );
+    button?.click();
+    expect(asked).toEqual([7]);
   });
 
   test('the members list is counted first and read only when asked for', async () => {

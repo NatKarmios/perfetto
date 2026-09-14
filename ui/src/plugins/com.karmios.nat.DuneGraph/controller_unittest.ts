@@ -754,6 +754,34 @@ function frame(controller: DuneGraphController): void {
  * tracks project nodes and a `gen-rules` span is not one, so there is only the
  * plain `goToSlice` route.
  */
+describe('revealDirInExplorer', () => {
+  test('brings the tab forward and leaves a request standing', () => {
+    // The pane cannot be told directly - the two are different side-panel tabs
+    // - and it needs several redraws to descend, so the request stays put
+    // rather than being consumed on sight.
+    const h = makeHarness();
+    let revealed = 0;
+    h.controller.revealExplorerWhenAsked(() => revealed++);
+
+    expect(h.controller.explorerRevealRequest).toBeUndefined();
+    h.controller.revealDirInExplorer(7);
+
+    expect(revealed).toBe(1);
+    expect(h.controller.explorerRevealRequest?.dirId).toBe(7);
+  });
+
+  test('asking twice for the same directory is two requests', () => {
+    // Otherwise the second click does nothing: the pane tells requests apart
+    // by serial, and the user has usually navigated away in between.
+    const h = makeHarness();
+    h.controller.revealDirInExplorer(7);
+    const first = h.controller.explorerRevealRequest!.serial;
+    h.controller.revealDirInExplorer(7);
+
+    expect(h.controller.explorerRevealRequest!.serial).toBeGreaterThan(first);
+  });
+});
+
 describe('goToDir', () => {
   test("selects the directory's gen-rules slice", async () => {
     const h = makeHarness();

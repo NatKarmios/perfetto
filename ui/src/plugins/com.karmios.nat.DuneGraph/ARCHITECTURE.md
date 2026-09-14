@@ -99,7 +99,9 @@ a `gen-rules` span, which belongs to no node — renders in
 `dune` file behind it, its parent and child directories, and its members behind
 a count. The link back is the `dir` line under a node's title, which reads
 `dune_node.dir_id`; both directions go through `controller.goToDir`, so clicking
-either re-points the panel rather than opening a second surface.
+either re-points the panel rather than opening a second surface. The route on
+from there is "Show in Explorer" — see
+[Revealing a directory in the tree](#revealing-a-directory-in-the-tree).
 
 **Explorer** (`views/dir_explorer_panel.ts`) is a second tab rather than a third
 area of the first: a directory tree wants the whole panel height, and it has
@@ -360,6 +362,38 @@ The pane's own path box and Filters menu narrow _this_ card's tree and nothing
 else. Deliberately: a brush persists with the tab and the pane's filter does
 not, so a dashboard reopened after a filter brush came back narrowed by a filter
 nothing on screen was showing.
+
+### Revealing a directory in the tree
+
+Two things cross between the directory panel and this pane, and neither can call
+the other: they are different side-panel tabs, and mithril owns both instances.
+
+Outwards is a plain `controller.goToDir` on a row's select button, which is the
+same navigation every directory chip in the plugin is. It is offered only where
+`n_gen_rules = 1`: `goToDir` resolves the directory's `gen-rules` slice, so on a
+directory dune generated no rules for it is a genuine no-op, and a control that
+does nothing is worse than one that is absent. The panel's child-directory list
+follows the same rule, rendering those children as text — as `nodeLink` already
+does for a ref with no resolved node.
+
+Inwards is `controller.revealDirInExplorer`, which brings the tab forward and
+leaves a request standing for the pane to serve. A _serial_ rather than a flag,
+because serving it takes several redraws — each level of the tree is a query, so
+the pane expands one level per frame and the fetch it starts asks for the frame
+that resumes it. A flag consumed on sight would be gone before the descent
+finished; one cleared at the end would make asking twice for the same directory
+a no-op the second time.
+
+The walk matches rows by _path_, not by id: a compressed row carries the id of
+the deep directory it settled on, so the row leading to a target is the deepest
+one whose path contains it (deepest, because a build's paths mix absolute and
+relative ones and the top level is nominally above every root). Two directories
+it cannot reach, both by this pane's design rather than by omission: one whose
+subtree holds nothing of the kinds shown has no row at all, and a pass-through
+one is swallowed by compression. The walk stops at the nearest row that does
+exist rather than expanding the tree looking for one that does not. On merlin
+that is 5 of the 308 directories with a span, and none of them for the first
+reason.
 
 ### The hard filter is client-side, and the unfiltered tree is not
 
@@ -873,7 +907,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**677 tests across 35 files** as of 2026-09-14.
+**689 tests across 35 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

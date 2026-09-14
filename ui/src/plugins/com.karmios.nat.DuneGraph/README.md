@@ -68,13 +68,21 @@ recorded none, the nearest ancestor directory's, marked as inherited), its
 parent and child directories, and — counted first, listed only when you ask —
 the rules and dependencies filed directly in it. A node's panel carries the link
 the other way, as the `dir` line under its title, so you can walk between the
-node view and the directory view without leaving the tab.
+node view and the directory view without leaving the tab. "Show in Explorer"
+opens the other tab and expands its tree down to the directory.
+
+Only directories dune generated rules for have a span to select, so a child
+directory without one is listed as plain text rather than as a link — the link
+would do nothing. On a mid-sized build that is a minority but not a rare one: 56
+of merlin's 364 directories.
 
 **Explorer** is the same graph seen as _directories_: the build's directory
 hierarchy, descended one level at a time, with each directory's rules and
 dependencies hanging off it. This is the view for when you do not yet know which
 node you are looking for. It has its own path filter and a Filters menu for
-narrowing by outcome, resolution, status or duration.
+narrowing by outcome, resolution, status or duration. A directory row that has a
+`gen-rules` span carries a button that selects it, which is what opens the
+directory panel described above.
 
 ### The timeline
 

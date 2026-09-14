@@ -69,6 +69,7 @@ function dirs(
       tRules: 0,
       tDeps: 0,
       tFailed: 0,
+      nGenRules: 0,
       totalDurNs: 0n,
     };
   });

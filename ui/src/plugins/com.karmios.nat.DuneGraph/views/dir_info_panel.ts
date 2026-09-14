@@ -84,6 +84,7 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
       this.renderDuneFile(controller, dirId),
       this.renderTimestamp(trace),
       this.renderParent(controller),
+      this.renderReveal(controller, dirId),
       m(
         Accordion,
         {multi: true},
@@ -259,6 +260,25 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
     );
   }
 
+  // The way back into the Explorer tab, which is where this directory sits in
+  // the build's tree rather than on its own. The tree expands to it, which
+  // takes a query per level and so is the pane's own job - all this does is
+  // ask. See ARCHITECTURE.md, "Revealing a directory in the tree".
+  private renderReveal(
+    controller: DuneGraphController,
+    dirId: number,
+  ): m.Children {
+    return m(
+      '.pf-dune-graph__dir',
+      m(Button, {
+        label: 'Show in Explorer',
+        icon: 'account_tree',
+        compact: true,
+        onclick: () => controller.revealDirInExplorer(dirId),
+      }),
+    );
+  }
+
   // The child directories, compressed past runs of pass-through directories
   // exactly as the Explorer pane's are - so this lists the directories that
   // hold something rather than the next path segment.
@@ -283,7 +303,7 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
                 '.pf-dune-graph__ref',
                 m(
                   'span.pf-dune-graph__ref-label',
-                  dirAnchor(controller, child.id, dirPathLabel(child.path)),
+                  childLink(controller, child),
                 ),
               ),
             ),
@@ -365,6 +385,21 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
       },
     );
   }
+}
+
+// A child directory, as a link only where there is something to link to.
+// `goToDir` selects the directory's `gen-rules` span, and a directory dune
+// generated no rules for has none - so on such a row the anchor would be a
+// link that does nothing, which is the rule `nodeLink` already follows for a
+// ref with no resolved node (see selection_info_panel.ts). A minority but a
+// real one: 56 of merlin's 364 directories have no span.
+function childLink(
+  controller: DuneGraphController,
+  child: DirEntry,
+): m.Children {
+  const label = dirPathLabel(child.path);
+  if (child.nGenRules === 0) return label;
+  return dirAnchor(controller, child.id, label);
 }
 
 // A directory as a link, labelled with its path off the mirror. Falls back to

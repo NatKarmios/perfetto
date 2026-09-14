@@ -388,6 +388,12 @@ export interface DirEntry {
   readonly tRules: number;
   readonly tDeps: number;
   readonly tFailed: number;
+  // 1 if dune generated rules for this directory, 0 if not - so a boolean in
+  // everything but spelling, kept as the column's own name and type. It is
+  // what says whether there is a `gen-rules` span to select: `goToDir` on a
+  // directory without one resolves no slice and does nothing, so it is also
+  // what decides whether a link to one is offered at all.
+  readonly nGenRules: number;
   // Summed rule spans for the subtree, 0 where nothing in it was timed. The
   // directory's own (`self_dur_ns`) is deliberately not read: a row that can be
   // collapsed should summarise what it contains, and expanding it replaces the
@@ -408,6 +414,7 @@ const DIR_COLUMNS = `
   d.dir_id, d.parent_dir_id, d.name, d.path, d.depth,
   d.n_rules, d.n_deps, d.n_failed,
   d.t_rules, d.t_deps, d.t_failed,
+  d.n_gen_rules,
   d.total_dur_ns
 `;
 
@@ -816,6 +823,7 @@ async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
     t_rules: NUM,
     t_deps: NUM,
     t_failed: NUM,
+    n_gen_rules: NUM,
     total_dur_ns: LONG_NULL,
   });
   for (; it.valid(); it.next()) {
@@ -831,6 +839,7 @@ async function readDirs(engine: Engine, query: string): Promise<DirEntry[]> {
       tRules: it.t_rules,
       tDeps: it.t_deps,
       tFailed: it.t_failed,
+      nGenRules: it.n_gen_rules,
       totalDurNs: it.total_dur_ns ?? 0n,
     });
   }

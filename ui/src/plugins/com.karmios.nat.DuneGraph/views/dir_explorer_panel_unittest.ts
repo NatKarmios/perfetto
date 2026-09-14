@@ -45,13 +45,17 @@ import type {NodeKind} from '../model/graph';
 // (unloaded) graph - which is what makes a member row fall back to its raw
 // value rather than needing a whole `BuildGraph` here. Bulk actions only *hold*
 // the controller until they are clicked, so nothing else is needed.
-function fakeController(): DuneGraphController {
+function fakeController(
+  over: Partial<DuneGraphController> = {},
+): DuneGraphController {
   return {
     mirrorVersion: 1,
     nodeMirrorReady: true,
     busy: false,
     requestRedraw: () => {},
     nodeForNodeId: () => undefined,
+    goToDir: async () => {},
+    ...over,
   } as unknown as DuneGraphController;
 }
 
@@ -65,6 +69,7 @@ function dir(over: Partial<DirEntry> & {id: number; path: string}): DirEntry {
     tRules: 0,
     tDeps: 0,
     tFailed: 0,
+    nGenRules: 0,
     totalDurNs: 0n,
     ...over,
   };
@@ -443,6 +448,212 @@ describe('DirExplorerPanel over a hierarchy source', () => {
 });
 
 /**
+ * The select affordance, which is the only row control that is not always
+ * offered: `controller.goToDir` selects a directory's `gen-rules` span, and a
+ * directory dune generated no rules for has none - so on those rows the button
+ * would be a control that does nothing.
+ */
+describe('DirExplorerPanel select affordance', () => {
+  // Two sibling roots holding the same thing, differing only in whether dune
+  // generated rules for them.
+  const WITH_SPAN = dir({
+    id: 4,
+    path: 'lib',
+    nRules: 2,
+    tRules: 2,
+    nGenRules: 1,
+  });
+  const WITHOUT_SPAN = dir({
+    id: 5,
+    path: 'gen',
+    nRules: 1,
+    tRules: 1,
+    nGenRules: 0,
+  });
+
+  function paneOver(
+    dirs: readonly DirEntry[],
+    seen: number[],
+  ): Promise<HTMLElement> {
+    return renderPane({
+      controller: fakeController({
+        goToDir: async (dirId: number) => void seen.push(dirId),
+      }),
+      source: {...hierarchySource([]), rootDirs: async () => [...dirs]},
+    });
+  }
+
+  test('is offered only for a directory with a gen-rules span', async () => {
+    const root = await paneOver([WITH_SPAN, WITHOUT_SPAN], []);
+
+    expect(dirNames(root)).toEqual(['lib/', 'gen/']);
+    expect(selectButtons(root).map((b) => b.getAttribute('title'))).toEqual([
+      "Select lib's gen-rules span",
+    ]);
+  });
+
+  test('selects the directory it sits on', async () => {
+    const seen: number[] = [];
+    const root = await paneOver([WITH_SPAN, WITHOUT_SPAN], seen);
+
+    selectButtons(root)[0].click();
+    expect(seen).toEqual([4]);
+  });
+
+  test('appears beside the narrowing button rather than instead of it', async () => {
+    // The side panel has no narrowing button at all (see the hierarchy mount
+    // above), so the two are independent: this is the chart mount, where both
+    // are offered on the same row and in that order.
+    const root = await renderPane({
+      controller: fakeController(),
+      source: {
+        ...hierarchySource([]),
+        rootDirs: async () => [WITH_SPAN],
+      },
+      onFilterToDir: () => {},
+    });
+
+    const titles = Array.from(
+      root.querySelectorAll('.pf-dune-tree__group-actions button'),
+    ).map((b) => b.getAttribute('title'));
+    expect(titles.slice(0, 2)).toEqual([
+      "Select lib's gen-rules span",
+      'Narrow everything else to lib and below',
+    ]);
+  });
+
+  test('draws a row that holds nothing but a span', async () => {
+    // The actions box is skipped entirely when there is nothing to act on, so
+    // a directory with no members of its own would otherwise lose its select
+    // button along with the bulk pair it has no use for.
+    const empty = dir({id: 6, path: 'scaffolding', nGenRules: 1, tRules: 1});
+    const root = await paneOver([empty], []);
+
+    expect(selectButtons(root)).toHaveLength(1);
+  });
+});
+
+/**
+ * The reveal route: the directory panel asks the controller to expand this
+ * pane's tree down to a directory (see controller.ts's `revealDirInExplorer`),
+ * and the pane works through it a level per redraw, because each level is a
+ * query.
+ */
+describe('DirExplorerPanel revealing a directory', () => {
+  // Three levels, one child each, so every step of the descent is a fetch.
+  const LEVELS: ReadonlyMap<number, readonly DirEntry[]> = new Map([
+    [-1, [dir({id: 1, path: '_build/default', tRules: 3})]],
+    [1, [dir({id: 2, parentId: 1, path: '_build/default/lib', tRules: 3})]],
+    [
+      2,
+      [
+        dir({
+          id: 3,
+          parentId: 2,
+          path: '_build/default/lib/foo',
+          nRules: 3,
+          tRules: 3,
+          nGenRules: 1,
+        }),
+      ],
+    ],
+    [3, []],
+  ]);
+  const PATHS = new Map(
+    [...LEVELS.values()].flat().map((d) => [d.id, d.path] as const),
+  );
+
+  function revealable(): {
+    attrs: PaneAttrs;
+    reveal: (dirId: number) => void;
+  } {
+    let serial = 0;
+    const controller = {
+      mirrorVersion: 1,
+      nodeMirrorReady: true,
+      busy: false,
+      requestRedraw: () => {},
+      nodeForNodeId: () => undefined,
+      goToDir: async () => {},
+      dirPath: (id: number) => PATHS.get(id),
+      explorerRevealRequest: undefined as
+        {dirId: number; serial: number} | undefined,
+    };
+    const attrs: PaneAttrs = {
+      controller: controller as unknown as DuneGraphController,
+      source: {
+        ...hierarchySource([]),
+        rootDirs: async () => [...LEVELS.get(-1)!],
+        childDirs: async (id: number) => [...(LEVELS.get(id) ?? [])],
+      },
+    };
+    return {
+      attrs,
+      reveal: (dirId: number) => {
+        controller.explorerRevealRequest = {dirId, serial: ++serial};
+      },
+    };
+  }
+
+  test('expands every level above it, a redraw at a time', async () => {
+    const {attrs, reveal} = revealable();
+    const root = await renderPane(attrs);
+    expect(dirNames(root)).toEqual(['_build/default/']);
+
+    reveal(3);
+    // One redraw per level, because each level is a query: the fetch the walk
+    // starts asks for the redraw that resumes it.
+    await rerender(root, attrs);
+    expect(dirNames(root)).toEqual(['_build/default/', 'lib/']);
+    await rerender(root, attrs);
+    expect(dirNames(root)).toEqual(['_build/default/', 'lib/', 'foo/']);
+
+    // And the target itself is left open, which is what says the walk arrived
+    // rather than stopping one short: three open rows, not two.
+    await rerender(root, attrs);
+    expect(root.querySelectorAll('.pf-dune-tree__children')).toHaveLength(3);
+  });
+
+  test('gives up where no row leads there, rather than expanding the tree', async () => {
+    const {attrs, reveal} = revealable();
+    const root = await renderPane(attrs);
+
+    // A directory of some other subtree: the first level holds no row whose
+    // path contains it.
+    reveal(9);
+    await rerender(root, attrs);
+    await rerender(root, attrs);
+    expect(dirNames(root)).toEqual(['_build/default/']);
+  });
+
+  test('ignores a directory the mirror has no path for', async () => {
+    // Every id at all before the mirror is built, and any id of a replaced
+    // one. There is nothing to match rows against, so the request is dropped.
+    const {attrs, reveal} = revealable();
+    const root = await renderPane(attrs);
+
+    reveal(404);
+    await rerender(root, attrs);
+    expect(dirNames(root)).toEqual(['_build/default/']);
+  });
+
+  test('descends in one go while a filter is active', async () => {
+    // The filtered tree is the whole hierarchy in memory, so every level is a
+    // lookup rather than a query and the walk runs to the end in one render.
+    const {attrs, reveal} = revealable();
+    const filtered: PaneAttrs = {...attrs, source: hierarchySource([])};
+    const root = await renderPane(filtered);
+    typeFilter(root, 'lib');
+    await rerender(root, filtered);
+    expect(dirNames(root)).toEqual(['_build/default/']);
+
+    reveal(2);
+    await rerender(root, filtered);
+    expect(dirNames(root)).toEqual(['_build/default/', 'bin/', 'lib/']);
+  });
+});
+
+/**
  * What a source replacement does to the pane, which is not quite what it looks
  * like: the filter is the user's input and survives, so everything derived from
  * it has to be rebuilt rather than merely dropped. Half a rebuild is silent -
@@ -622,6 +833,13 @@ function narrowButtons(root: HTMLElement): HTMLElement[] {
 
 function narrowButton(root: HTMLElement): HTMLElement | undefined {
   return narrowButtons(root)[0];
+}
+
+// The row buttons that select a directory's `gen-rules` span, in row order.
+function selectButtons(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll('button')).filter((b) =>
+    (b.getAttribute('title') ?? '').startsWith('Select '),
+  );
 }
 
 // What the active filter's chip says about its reach, or undefined where there
