@@ -85,7 +85,7 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
   }
 
   private renderAreas(attrs: DuneGraphPanelAttrs): m.Children {
-    const {controller} = attrs;
+    const {controller, trace} = attrs;
     // The load owns the whole tab while it runs, not just before the first one.
     // A build is minutes long and reports itself as a ~30-row list of the
     // tables it is making (see renderStep); that doesn't fit above the other
@@ -102,7 +102,7 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       m(
         '.pf-dune-graph__area.pf-dune-graph__area--info',
         m('.pf-dune-graph__area-title', 'Selection'),
-        m(SelectionInfoPanel, {controller}),
+        m(SelectionInfoPanel, {controller, trace}),
       ),
       m(
         '.pf-dune-graph__area.pf-dune-graph__area--graph',

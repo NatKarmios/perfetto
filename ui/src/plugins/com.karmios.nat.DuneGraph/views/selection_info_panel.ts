@@ -50,9 +50,18 @@ import type {ProcessDetails} from '../sql/process_sql';
 import type {PathTreeItem, PathTreeLeaf} from '../model/path_tree';
 import {buildPathTree} from '../model/path_tree';
 import {PathTreeView} from './path_tree_view';
+import type {Trace} from '../../../public/trace';
+import {dirIdForNode} from '../model/dir_explorer';
+import {dirPathLabel} from '../model/dir_tree';
+import {dirAnchor} from './node_cell';
+import {DirInfoPanel} from './dir_info_panel';
 
 interface SelectionInfoPanelAttrs {
   readonly controller: DuneGraphController;
+  // Only the directory half needs it (see dir_info_panel.ts); it is threaded
+  // through here rather than mounted separately so that one component owns
+  // "what the timeline selection is", whichever channel it landed on.
+  readonly trace: Trace;
 }
 
 // One entry in the dependencies / dependants lists: a referenced node (absent
@@ -75,6 +84,10 @@ interface Ref {
  * Details for the node behind the current timeline selection, or an empty state
  * when the selection is not one of ours. Reads the selection off the controller
  * each render, since selection is poll-based.
+ *
+ * A selection settles on exactly one of the controller's two channels, so this
+ * is a two-way branch: a node renders here, and a directory - a `gen-rules`
+ * span, which belongs to no node - renders in `dir_info_panel.ts`.
  *
  * Three accordion sections, `processes` leading: what the rule actually _ran_
  * is the concrete answer, where `dependants` and `dependencies` are for
@@ -108,17 +121,27 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   // names the rule that pulled it in and nothing else).
   private processesKey?: string;
   private processes?: readonly ProcessDetails[];
+  // The directory the selected node is filed under, for the link out to its
+  // panel. Keyed like the two above; a query rather than a lookup because the
+  // census's per-node directory array is not kept in memory (see
+  // model/dir_explorer.ts's `dirIdForNode`).
+  private dirKey?: string;
+  private dirId?: number;
 
   view({attrs}: m.CVnode<SelectionInfoPanelAttrs>): m.Children {
-    const {controller} = attrs;
+    const {controller, trace} = attrs;
     const selected = controller.nodeForSelection();
     if (selected === undefined) {
       this.collapsed.clear();
       this.expanded.clear();
       this.selectionKey = undefined;
+      const dirId = controller.dirForSelection();
+      if (dirId !== undefined) {
+        return m(DirInfoPanel, {controller, trace, dirId});
+      }
       return m(EmptyState, {
         icon: 'info',
-        title: 'Select a build-dep or exec-rule slice',
+        title: 'Select a build-dep, exec-rule or gen-rules slice',
       });
     }
     const selectionKey = String(selected);
@@ -128,6 +151,7 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       this.selectionKey = selectionKey;
     }
     this.fetchTiming(controller, selected, selectionKey);
+    this.fetchDir(attrs, selected, selectionKey);
     // The one place a node view is materialised: the header and its muted
     // lines below want every scalar the node has, and there is exactly one of
     // them on screen (see graph.ts's GraphNode).
@@ -196,6 +220,27 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     void controller.processesForRule(node.nodeId).then((processes) => {
       if (this.processesKey !== key) return; // selection moved on meanwhile
       this.processes = processes;
+      controller.requestRedraw();
+    });
+  }
+
+  // The same shape again, for `dune_node.dir_id`. Both kinds have one: a
+  // rule's is its `dir`, a dep's the directory its path lives in, interned by
+  // the one census pass that fills the column.
+  private fetchDir(
+    attrs: SelectionInfoPanelAttrs,
+    node: NodeId,
+    selectionKey: string,
+  ): void {
+    const {controller, trace} = attrs;
+    const key = `${selectionKey}|${controller.mirrorVersion}`;
+    if (this.dirKey === key) return;
+    this.dirKey = key;
+    this.dirId = undefined;
+    if (!controller.nodeMirrorReady) return;
+    void dirIdForNode(trace.engine, node).then((dirId) => {
+      if (this.dirKey !== key) return; // selection moved on meanwhile
+      this.dirId = dirId;
       controller.requestRedraw();
     });
   }
@@ -312,22 +357,33 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
     });
   }
 
-  // A rule's context directory (`dune.dir`), as a muted line under the header.
-  // Absent for deps and for rules that didn't record one.
+  // The directory the node is filed under, as a muted line under the header,
+  // linking to that directory's own panel - the reverse of the `dir_id` chip a
+  // query result draws (see node_cell.ts), and the other half of the second
+  // selection channel.
+  //
+  // A rule's directory is on the node (`dune.dir`) and so renders with it; the
+  // *link* needs `dune_node.dir_id`, which is a query, so the line upgrades a
+  // frame later rather than appearing late. A dep carries no `dir` field at
+  // all, so its line waits for that answer.
   private renderDir(
     controller: DuneGraphController,
     node: GraphNode,
   ): m.Children {
-    if (node.kind !== 'rule') return undefined;
-    const dir = node.dir;
+    const dirId = this.dirId;
+    const path = dirId === undefined ? undefined : controller.dirPath(dirId);
+    const dir = path ?? (node.kind === 'rule' ? node.dir : undefined);
     if (dir === undefined) return undefined;
     const {icon, text} = decorateDepPath(dir, controller.graph.buildRoots);
+    // The top level is a directory like any other and is named rather than
+    // rendered as an empty string (see model/dir_tree.ts).
+    const label = dir === '' ? dirPathLabel(dir) : text;
     return m(
       '.pf-dune-graph__dir',
-      {title: dir},
+      {title: dirPathLabel(dir)},
       m('span.pf-dune-graph__dir-label', 'dir'),
-      icon,
-      text,
+      dir !== '' && icon,
+      dirId === undefined ? label : dirAnchor(controller, dirId, label),
     );
   }
 

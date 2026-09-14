@@ -62,6 +62,14 @@ the set of nodes you have collected, drawn as a layered node graph you can pan
 and zoom. Every node in the UI carries a ＋/－ toggle that adds it to or removes
 it from that set.
 
+Select a `gen-rules` slice and the same area shows the **directory** behind it
+instead: the span's timestamp and duration, the `dune` file it read (or, when it
+recorded none, the nearest ancestor directory's, marked as inherited), its
+parent and child directories, and — counted first, listed only when you ask —
+the rules and dependencies filed directly in it. A node's panel carries the link
+the other way, as the `dir` line under its title, so you can walk between the
+node view and the directory view without leaving the tab.
+
 **Explorer** is the same graph seen as _directories_: the build's directory
 hierarchy, descended one level at a time, with each directory's rules and
 dependencies hanging off it. This is the view for when you do not yet know which
@@ -225,6 +233,11 @@ keeps its node links.
   and `.utop`. `n_gen_rules` / `t_gen_rules` is how you tell them apart:
   `t_rules = 0 AND t_deps = 0 AND t_gen_rules > 0` is exactly the
   generated-but-empty set.
+- **A directory link does not scroll the Dune workspace.** A `gen-rules` span is
+  not a graph node, so the four projected tracks do not carry it. Clicking a
+  directory link while that workspace is showing still selects the span — the
+  side panel follows it — but there is no track there to scroll to, so the
+  timeline stays where it is. Switch back to the default workspace to see it.
 - **`dune_node.dir_id` and `orig_id` are not node ids.** `dir_id` indexes
   `dune_dir` and `orig_id` is the trace-side id dune used; both collide with
   unrelated `node_id`s by construction, so joining either to `dune_node.node_id`

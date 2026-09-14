@@ -13,8 +13,9 @@
 // limitations under the License.
 
 /**
- * The directory explorer's data layer: the queries the pane descends `dune_dir`
- * with, the paging rules, and the path filter's syntax.
+ * The directory layer's queries: the ones the explorer pane descends `dune_dir`
+ * with, the paging rules, the path filter's syntax, and the single directory's
+ * worth of detail the selection panel shows ({@link dirDetails}).
  *
  * Split out from dir_explorer_panel.ts because this is the half worth testing -
  * there is no trace processor in a unit test, so what can be checked is the SQL
@@ -22,8 +23,10 @@
  *
  * **Every query is an index probe, and nothing here scans or walks a subtree**
  * (`_dune_node(dir_id)` and `_dune_dir(parent_dir_id)`; the subtree numbers are
- * stored on a directory's row as the `t_*` rollups). The one recursion is
- * `compressedDirs`, bounded and linear by construction.
+ * stored on a directory's row as the `t_*` rollups). There are two recursions,
+ * both bounded and linear by construction: `compressedDirs` descends runs of
+ * pass-through directories, and {@link dirDetailsQuery} walks one chain of
+ * parents upwards.
  *
  * ARCHITECTURE.md, "The path filter's syntax", is the filter's user-facing contract.
  */
@@ -35,6 +38,7 @@ import {
   NUM,
   NUM_NULL,
   STR,
+  STR_NULL,
 } from '../../../trace_processor/query_result';
 import type {
   DepResolutionKind,
@@ -548,6 +552,167 @@ export async function allDirs(engine: Engine): Promise<DirEntry[]> {
     engine,
     `SELECT ${DIR_COLUMNS} FROM dune_dir d ORDER BY d.dir_id`,
   );
+}
+
+/**
+ * One directory's `gen-rules` span, as `dune_gen_rules` records it.
+ *
+ * Only `finishSliceId` is really optional: the pairing keeps any occurrence
+ * that has a start (see lifecycle_sql.ts), so an interrupted build leaves a
+ * row with a start and no finish - and therefore no duration and no `dune`
+ * file either. No trace to hand produces one, which is why the panel that
+ * reads this has to say so rather than render three blanks.
+ */
+export interface GenRulesSpan {
+  readonly startSliceId?: number;
+  readonly finishSliceId?: number;
+  readonly ts?: bigint;
+  readonly durNs?: number;
+  readonly nOccurrences: number;
+}
+
+/**
+ * The `dune` file behind a directory's rules, and the directory whose
+ * `gen-rules` finish recorded it - this one, or the nearest ancestor that has
+ * one.
+ */
+export interface DuneFileRef {
+  readonly dirId: number;
+  readonly path: string;
+}
+
+/**
+ * Everything the selection panel says about one directory, in one query: its
+ * place in the tree, what it directly holds, its `gen-rules` span, and the
+ * `dune` file behind it.
+ *
+ * Its *path* is deliberately absent: the mirror answers that synchronously
+ * (see controller.ts's `dirPath`), so querying for it would only make the
+ * panel's title arrive a frame late.
+ */
+export interface DirDetails {
+  readonly parentId?: number;
+  readonly nRules: number;
+  readonly nDeps: number;
+  readonly genRules?: GenRulesSpan;
+  readonly duneFile?: DuneFileRef;
+}
+
+/**
+ * {@link dirDetails}'s query, exported so a unit test can read it - there is no
+ * trace processor in one, so the generated string is what can be checked.
+ *
+ * The recursive arm is the only part that is not a primary-key probe, and it
+ * walks *upwards*: one row per level from this directory to the first one whose
+ * `gen-rules` finish recorded a `dune` file. It starts at the directory itself,
+ * so "this directory's own" and "the nearest ancestor's" are one answer and the
+ * caller tells them apart by comparing ids. Because the step is gated on the
+ * row so far having none, at most one row in the whole walk has a `dune_file`,
+ * and a directory with no such ancestor produces none - `parent_dir_id IS NULL`
+ * at a root joins to nothing and the recursion stops.
+ *
+ * Staying in build-directory space is what makes this need no path algebra: the
+ * `dune` file a `gen-rules` records is a *source* path (`tests/dune`) while the
+ * directory it ran for is a build one (`_build/default/tests`), and nothing here
+ * has to relate the two.
+ */
+export function dirDetailsQuery(id: number): string {
+  return `
+    WITH RECURSIVE walk(dir_id, parent_dir_id, dune_file) AS (
+      SELECT d.dir_id, d.parent_dir_id, g.dune_file
+      FROM dune_dir d
+      LEFT JOIN dune_gen_rules g ON g.dir_id = d.dir_id
+      WHERE d.dir_id = ${id}
+      UNION ALL
+      SELECT d.dir_id, d.parent_dir_id, g.dune_file
+      FROM walk w
+      JOIN dune_dir d ON d.dir_id = w.parent_dir_id
+      LEFT JOIN dune_gen_rules g ON g.dir_id = d.dir_id
+      WHERE w.dune_file IS NULL
+    )
+    SELECT
+      d.parent_dir_id AS parent_dir_id,
+      d.n_rules AS n_rules,
+      d.n_deps AS n_deps,
+      d.n_gen_rules AS n_gen_rules,
+      g.start_slice_id AS start_slice_id,
+      g.finish_slice_id AS finish_slice_id,
+      g.ts AS ts,
+      g.dur_ns AS dur_ns,
+      g.n_occurrences AS n_occurrences,
+      a.dir_id AS dune_file_dir_id,
+      a.dune_file AS dune_file
+    FROM dune_dir d
+    LEFT JOIN dune_gen_rules g ON g.dir_id = d.dir_id
+    LEFT JOIN (
+      SELECT dir_id, dune_file FROM walk WHERE dune_file IS NOT NULL LIMIT 1
+    ) a ON 1
+    WHERE d.dir_id = ${id}
+  `;
+}
+
+// One directory's row, or undefined for an id `dune_dir` has no row for.
+export async function dirDetails(
+  engine: Engine,
+  id: number,
+): Promise<DirDetails | undefined> {
+  const result = await engine.query(dirDetailsQuery(id));
+  const it = result.iter({
+    parent_dir_id: NUM_NULL,
+    n_rules: NUM,
+    n_deps: NUM,
+    n_gen_rules: NUM,
+    start_slice_id: NUM_NULL,
+    finish_slice_id: NUM_NULL,
+    ts: LONG_NULL,
+    dur_ns: LONG_NULL,
+    n_occurrences: LONG_NULL,
+    dune_file_dir_id: NUM_NULL,
+    dune_file: STR_NULL,
+  });
+  if (!it.valid()) return undefined;
+  return {
+    parentId: it.parent_dir_id ?? undefined,
+    nRules: it.n_rules,
+    nDeps: it.n_deps,
+    // `n_gen_rules` rather than a NULL test on one of the span's own columns:
+    // it is the stored fact that a span exists, and every column of the view
+    // is nullable on its own (see sql_graph.ts's genRulesView).
+    genRules:
+      it.n_gen_rules === 0
+        ? undefined
+        : {
+            startSliceId: it.start_slice_id ?? undefined,
+            finishSliceId: it.finish_slice_id ?? undefined,
+            ts: it.ts ?? undefined,
+            durNs: it.dur_ns === null ? undefined : Number(it.dur_ns),
+            nOccurrences: Number(it.n_occurrences ?? 1n),
+          },
+    duneFile:
+      it.dune_file_dir_id === null || it.dune_file === null
+        ? undefined
+        : {dirId: it.dune_file_dir_id, path: it.dune_file},
+  };
+}
+
+/**
+ * The directory a node is filed under, as a `dune_dir.dir_id` - the link from a
+ * node's details panel back to its directory's.
+ *
+ * A primary-key probe of `dune_node`, and the authoritative answer for both
+ * kinds: a rule's `dir` and a dep's containing directory are interned by the
+ * same census pass that fills this column (see sql_graph.ts's `censusDirs`),
+ * so re-deriving either from a path in the UI would be a second spelling of it.
+ */
+export async function dirIdForNode(
+  engine: Engine,
+  nodeId: number,
+): Promise<number | undefined> {
+  const result = await engine.query(
+    `SELECT dir_id FROM dune_node WHERE node_id = ${nodeId}`,
+  );
+  const it = result.iter({dir_id: NUM_NULL});
+  return it.valid() ? (it.dir_id ?? undefined) : undefined;
 }
 
 /**

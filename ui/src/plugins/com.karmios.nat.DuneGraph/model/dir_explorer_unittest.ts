@@ -36,6 +36,8 @@ import {
   INLINE_MEMBER_LIMIT,
   MEMBER_PAGE,
   childDirs,
+  dirDetails,
+  dirIdForNode,
   dirMemberIds,
   dirMembers,
   rootDirs,
@@ -778,5 +780,138 @@ describe("the filter's global match queries", () => {
     const {engine} = stubEngine([dirRow({parent_dir_id: null})]);
     const [dir] = await allDirs(engine);
     expect(dir.parentId).toBeUndefined();
+  });
+});
+
+// One row of {@link dirDetailsQuery}'s answer, with every column the reader
+// wants. Explicit nulls throughout: the reader distinguishes "no `gen-rules`
+// row" and "no `dune` file anywhere above" from a present one by a NULL test,
+// and a key left off this object would read as `undefined` and defeat it.
+function detailsRow(over: Record<string, unknown> = {}) {
+  return {
+    parent_dir_id: 1,
+    n_rules: 3,
+    n_deps: 4,
+    n_gen_rules: 1,
+    start_slice_id: 8,
+    finish_slice_id: 16,
+    ts: 1234n,
+    dur_ns: 12_000_000n,
+    n_occurrences: 1n,
+    dune_file_dir_id: 7,
+    dune_file: 'tests/dune',
+    ...over,
+  };
+}
+
+describe('dirDetails', () => {
+  test('walks parents upward, stopping at the first recorded dune file', async () => {
+    const {engine, sql} = stubEngine([detailsRow()]);
+    await dirDetails(engine, 7);
+
+    const q = sql[0];
+    // Seeded with the directory itself, so "its own" and "an ancestor's" are
+    // one answer - which is what lets the caller tell them apart by id.
+    expect(q).toContain('WHERE d.dir_id = 7');
+    expect(q).toContain(
+      'WITH RECURSIVE walk(dir_id, parent_dir_id, dune_file)',
+    );
+    // The step climbs `parent_dir_id`, and only while nothing has been found:
+    // without this the walk would run to the root on every directory, and more
+    // than one row could carry a `dune_file`.
+    expect(q).toContain('JOIN dune_dir d ON d.dir_id = w.parent_dir_id');
+    expect(q).toContain('WHERE w.dune_file IS NULL');
+    // The `dune` file is the *span's*, so both arms reach it through
+    // `dune_gen_rules` rather than off `dune_dir`.
+    expect(q).toContain('LEFT JOIN dune_gen_rules g ON g.dir_id = d.dir_id');
+  });
+
+  test('reads the row, the span and the directory the dune file came from', async () => {
+    const {engine} = stubEngine([detailsRow()]);
+
+    expect(await dirDetails(engine, 7)).toEqual({
+      parentId: 1,
+      nRules: 3,
+      nDeps: 4,
+      genRules: {
+        startSliceId: 8,
+        finishSliceId: 16,
+        ts: 1234n,
+        durNs: 12_000_000,
+        nOccurrences: 1,
+      },
+      duneFile: {dirId: 7, path: 'tests/dune'},
+    });
+  });
+
+  test('an ancestor’s dune file comes back under that ancestor’s id', async () => {
+    // The walk found one two levels up; the caller compares `dirId` against the
+    // directory it asked about to know the file is inherited rather than this
+    // directory's own.
+    const {engine} = stubEngine([
+      detailsRow({dune_file_dir_id: 2, dune_file: 'lib/dune'}),
+    ]);
+
+    expect((await dirDetails(engine, 7))?.duneFile).toEqual({
+      dirId: 2,
+      path: 'lib/dune',
+    });
+  });
+
+  test('no ancestor recorded one, so there is no dune file to show', async () => {
+    const {engine} = stubEngine([
+      detailsRow({dune_file_dir_id: null, dune_file: null}),
+    ]);
+
+    expect((await dirDetails(engine, 7))?.duneFile).toBeUndefined();
+  });
+
+  test('an unfinished span keeps its row, with no finish and no duration', async () => {
+    // What an interrupted build leaves behind (see sql_graph.ts): the pairing
+    // keeps any occurrence with a start, so this is a real state rather than a
+    // missing row, and it must not read as "no gen-rules at all".
+    const {engine} = stubEngine([
+      detailsRow({
+        finish_slice_id: null,
+        dur_ns: null,
+        dune_file_dir_id: null,
+        dune_file: null,
+      }),
+    ]);
+
+    expect((await dirDetails(engine, 7))?.genRules).toEqual({
+      startSliceId: 8,
+      finishSliceId: undefined,
+      ts: 1234n,
+      durNs: undefined,
+      nOccurrences: 1,
+    });
+  });
+
+  test('a directory dune generated no rules for has no span', async () => {
+    // `n_gen_rules`, not a NULL test on one of the view's own columns: every
+    // one of those is nullable in its own right.
+    const {engine} = stubEngine([detailsRow({n_gen_rules: 0})]);
+
+    expect((await dirDetails(engine, 7))?.genRules).toBeUndefined();
+  });
+
+  test('an id dune_dir has no row for reads as no directory', async () => {
+    const {engine} = stubEngine([]);
+    expect(await dirDetails(engine, 7)).toBeUndefined();
+  });
+});
+
+describe('dirIdForNode', () => {
+  test('probes dune_node by its primary key', async () => {
+    const {engine, sql} = stubEngine([{dir_id: 7}]);
+
+    expect(await dirIdForNode(engine, 42)).toBe(7);
+    expect(sql[0]).toContain('SELECT dir_id FROM dune_node WHERE node_id = 42');
+  });
+
+  test('a node the mirror has no row for has no directory', async () => {
+    const {engine} = stubEngine([]);
+    expect(await dirIdForNode(engine, 42)).toBeUndefined();
   });
 });

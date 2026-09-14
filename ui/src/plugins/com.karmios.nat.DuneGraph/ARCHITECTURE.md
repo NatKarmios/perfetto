@@ -92,6 +92,15 @@ selection, and `views/graph_panel.ts` for the set of nodes chosen for the graph.
 The selection panel's body is three accordion sections — `processes`, then
 `dependants` and `dependencies` as path-grouped trees.
 
+The selection panel is a two-way branch, because a selection settles on exactly
+one of the controller's two channels: a node renders there, and a _directory_ —
+a `gen-rules` span, which belongs to no node — renders in
+`views/dir_info_panel.ts`. That panel is the directory's path, its span, the
+`dune` file behind it, its parent and child directories, and its members behind
+a count. The link back is the `dir` line under a node's title, which reads
+`dune_node.dir_id`; both directions go through `controller.goToDir`, so clicking
+either re-points the panel rather than opening a second surface.
+
 **Explorer** (`views/dir_explorer_panel.ts`) is a second tab rather than a third
 area of the first: a directory tree wants the whole panel height, and it has
 nothing to do with what is selected. The same pane also renders as a Data
@@ -864,7 +873,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**657 tests across 34 files** as of 2026-09-14.
+**677 tests across 35 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
