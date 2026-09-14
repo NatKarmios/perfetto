@@ -42,6 +42,7 @@ import type {BuildGraph, GraphSource} from './model/graph';
 import {DEPS_SECTION} from './model/graph_blob';
 import {dep, rule, testGraph} from './model/graph_test_helper';
 import {graphTrackUri} from './model/graph_tracks';
+import {timingKindCode} from './sql/lifecycle_sql';
 import type {MirrorProgress} from './sql/sql_graph';
 import {
   EDGE_HARD_LIMIT,
@@ -82,6 +83,9 @@ interface Harness {
   // The current timeline selection, as `trace.selection.selection`. Assignable
   // so a test can move the selection the way a click would.
   selection: unknown;
+  // Every `selectTrackEvent` the controller made, in order - what a navigation
+  // actually landed on.
+  readonly selected: {readonly trackUri: string; readonly eventId: number}[];
   // Extra canned answers, consulted before the defaults: the first entry whose
   // `match` the statement contains supplies its rows. Lets a test say what a
   // lookup found without standing up a trace processor.
@@ -143,6 +147,7 @@ function makeHarness(opts: {readonly blobBytes?: number} = {}): Harness {
     controller: undefined as unknown as DuneGraphController,
     sql,
     selection: {kind: 'empty'},
+    selected: [],
     canned: [],
   };
   const trace = {
@@ -157,7 +162,17 @@ function makeHarness(opts: {readonly blobBytes?: number} = {}): Harness {
       get selection() {
         return harness.selection;
       },
+      // Every slice is on one made-up track, keyed by its own id: enough for a
+      // navigation to be observable without a trace processor behind it.
+      resolveSqlEvents: (_table: string, ids: readonly number[]) =>
+        Promise.resolve(
+          ids.map((id) => ({trackUri: 'some.other.plugin#Track', eventId: id})),
+        ),
+      selectTrackEvent: (trackUri: string, eventId: number) => {
+        harness.selected.push({trackUri, eventId});
+      },
     },
+    currentWorkspace: {getTrackByUri: () => undefined},
     raf: {scheduleFullRedraw: () => {}},
   } as unknown as Trace;
   return Object.assign(harness, {controller: new DuneGraphController(trace)});
@@ -594,5 +609,181 @@ describe('nodeForSelection', () => {
     await settle();
     expect(h.controller.nodeForSelection()).toBe(ruleNode);
     expect(h.controller.selectedProcessSlice()).toBe(42);
+  });
+});
+
+/**
+ * The second selection channel: a directory, rather than a node.
+ *
+ * A `gen-rules` span belongs to a directory and has no `rule_id` / `dep_id`, so
+ * it cannot be a node - see `dirForSelection()`. Both halves of the span carry
+ * the directory's dict id as their timing key, and that id is mapped back to a
+ * `dune_dir.id` through the mirror's `_dune_gen_rules` table.
+ *
+ * The two channels are resolved by one lookup, so the tests that matter are the
+ * ones where they could collide: a `gen-rules` key is a *dict* id and can carry
+ * the same number as a real `rule_id`.
+ */
+describe('dirForSelection', () => {
+  // The rule of the fixture graph and its trace-side `rule_id`, reused here as
+  // a `gen-rules` key precisely because it is a number the graph can resolve.
+  const ruleNode = 0;
+  const ruleId = g.graph.timingKeyOf(ruleNode);
+
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  // A mirror-backed controller with `sliceId` selected on somebody else's
+  // track, answering the lifecycle lookup with a `gen-rules` instant keyed by
+  // `dirStrId`, and the dict-id -> directory map with `dirId`.
+  async function selectingGenRules(
+    sliceId: number,
+    dirStrId: number,
+    dirId?: number,
+  ): Promise<Harness> {
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    await h.controller.buildNodeMirror();
+    h.canned.push({
+      match: 's.track_id = t.id',
+      rows: [
+        {
+          slice_id: sliceId,
+          kind: timingKindCode('genrules'),
+          key: BigInt(dirStrId),
+        },
+      ],
+    });
+    if (dirId !== undefined) {
+      h.canned.push({match: 'FROM _dune_gen_rules', rows: [{v: dirId}]});
+    }
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 'some.other.plugin#Track',
+      eventId: sliceId,
+    };
+    return h;
+  }
+
+  test('a gen-rules instant resolves to its directory', async () => {
+    const h = await selectingGenRules(42, 900, 7);
+    h.controller.dirForSelection();
+    await settle();
+    expect(h.controller.dirForSelection()).toBe(7);
+  });
+
+  test("and the span's other half resolves to the same directory", async () => {
+    // `-start` and `-finish` both carry `dir_path_id`, so which one was clicked
+    // is not something a reader should have to think about.
+    const h = await selectingGenRules(43, 900, 7);
+    h.controller.dirForSelection();
+    await settle();
+    expect(h.controller.dirForSelection()).toBe(7);
+  });
+
+  test('a gen-rules key is never read as a rule id', async () => {
+    // The collision the `kind` check exists for: a directory's dict id and a
+    // `rule_id` are different id spaces, so the same number means both. Read as
+    // a rule it would select whichever rule happened to carry it.
+    const h = await selectingGenRules(42, ruleId, 7);
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBeUndefined();
+    expect(h.controller.dirForSelection()).toBe(7);
+  });
+
+  test('a directory the mirror has no row for resolves to nothing', async () => {
+    const h = await selectingGenRules(42, 900);
+    h.controller.dirForSelection();
+    await settle();
+    expect(h.controller.dirForSelection()).toBeUndefined();
+    expect(h.controller.nodeForSelection()).toBeUndefined();
+  });
+
+  test('an ordinary lifecycle instant resolves to a node and no directory', async () => {
+    // The other side of the same exclusivity: one selection, one channel.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    await h.controller.buildNodeMirror();
+    h.canned.push({
+      match: 's.track_id = t.id',
+      rows: [{slice_id: 42, kind: timingKindCode('rule'), key: BigInt(ruleId)}],
+    });
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 'some.other.plugin#Track',
+      eventId: 42,
+    };
+    h.controller.nodeForSelection();
+    await settle();
+    expect(h.controller.nodeForSelection()).toBe(ruleNode);
+    expect(h.controller.dirForSelection()).toBeUndefined();
+  });
+
+  test('the panel is revealed for a directory, once', async () => {
+    // `revealPanelWhenSelected` follows the resolution rather than the raw
+    // selection, so it fires when the query lands and not again while the same
+    // directory stays selected.
+    const h = await selectingGenRules(42, 900, 7);
+    let reveals = 0;
+    h.controller.revealPanelWhenSelected(() => reveals++);
+    frame(h.controller);
+    await settle();
+    frame(h.controller);
+    expect(reveals).toBe(1);
+    frame(h.controller);
+    expect(reveals).toBe(1);
+  });
+});
+
+/**
+ * The per-frame reveal poll, which is private because nothing outside the
+ * canvas callback has any business running it - see `onFrame` in controller.ts.
+ * A test has to drive it directly: the callback is what a selection change is
+ * observable through, and there is no canvas here to schedule it.
+ */
+function frame(controller: DuneGraphController): void {
+  (
+    controller as unknown as {syncSelectionReveal(): void}
+  ).syncSelectionReveal();
+}
+
+/**
+ * The dir -> slice half of the channel.
+ *
+ * `goToDir` has no Dune-workspace branch to test, unlike `goToNode`: the four
+ * tracks project nodes and a `gen-rules` span is not one, so there is only the
+ * plain `goToSlice` route.
+ */
+describe('goToDir', () => {
+  test("selects the directory's gen-rules slice", async () => {
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    await h.controller.buildNodeMirror();
+    h.canned.push({match: 'FROM dune_gen_rules', rows: [{v: 55}]});
+    await h.controller.goToDir(7);
+    expect(h.selected).toEqual([
+      {trackUri: 'some.other.plugin#Track', eventId: 55},
+    ]);
+  });
+
+  test('a directory with no gen-rules span is a no-op', async () => {
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    await h.controller.buildNodeMirror();
+    await h.controller.goToDir(7);
+    expect(h.selected).toEqual([]);
+  });
+
+  test('and nothing is selected before the mirror is built', async () => {
+    // The table the lookup reads doesn't exist yet, so asking would be an error
+    // rather than a miss.
+    const h = makeHarness();
+    withGraph(h, g.graph);
+    const before = h.sql.length;
+    await h.controller.goToDir(7);
+    expect(h.selected).toEqual([]);
+    expect(h.sql.slice(before).some((q) => q.includes('dune_gen_rules'))).toBe(
+      false,
+    );
   });
 });

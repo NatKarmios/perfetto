@@ -153,7 +153,7 @@ export default class implements PerfettoPlugin {
     // beats four call sites that would drift apart. The Explorer tab keeps its
     // state while hidden (the side panel gates inactive tabs rather than
     // unmounting them), so switching away costs nothing to come back from.
-    controller.revealPanelWhenNodeSelected(() =>
+    controller.revealPanelWhenSelected(() =>
       trace.sidePanel.showTab(SIDE_PANEL_URI),
     );
 

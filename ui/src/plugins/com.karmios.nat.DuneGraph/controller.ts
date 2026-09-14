@@ -31,6 +31,7 @@ import {
   ReverseIndex,
   spanSliceId,
 } from './model/graph';
+import type {LifecycleKey} from './sql/lifecycle_sql';
 import {lifecycleKeysForSliceIds} from './sql/lifecycle_sql';
 import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
 import {RelatedEventsOverlay} from '../../components/related_events/related_events_overlay';
@@ -90,12 +91,17 @@ export const DEFAULT_AUTO_LOAD_ROW_LIMIT = 2_000_000;
 // How many slice ids `nodesForSliceIds` resolves per query.
 const SLICE_LOOKUP_BATCH = 5_000;
 
-// What a timeline selection resolved to: the graph node it names, plus - only
-// when the node was reached *through* a process slice - that slice's id, which
-// is how `selectedProcessSlice()` can be exact rather than comparing event ids
-// that are only unique per track. Both absent means "not a node of ours".
+// What a timeline selection resolved to. Two channels, and a selection is one
+// event, so at most one of them is ever filled: the graph node it names, or -
+// for a `gen-rules` instant, which is a span over a directory rather than a
+// node at all - the `dune_dir.id` it names (see dirForSelection()). Alongside a
+// node, and only when the node was reached *through* a process slice, that
+// slice's id, which is how `selectedProcessSlice()` can be exact rather than
+// comparing event ids that are only unique per track. All absent means "nothing
+// of ours".
 interface SelectionResolution {
   readonly node?: NodeId;
+  readonly dir?: number;
   readonly processSliceId?: number;
 }
 
@@ -202,17 +208,19 @@ export class DuneGraphController {
   // Reverse adjacency (dependants), built lazily and dropped on reload.
   private reverseIndex?: ReverseIndex;
 
-  // The current timeline selection's node, cached against the selection it was
-  // resolved for - see nodeForSelection(), which has to answer synchronously
-  // while the lookup itself is a query. Cleared whenever the graph changes.
-  private selectionNode?: {readonly key: string} & SelectionResolution;
+  // What the current timeline selection resolved to, cached against the
+  // selection it was resolved for - see resolveSelection(), which has to answer
+  // synchronously while the lookup itself is a query. Cleared whenever the
+  // graph changes.
+  private resolvedSelection?: {readonly key: string} & SelectionResolution;
 
-  // Brings the panel that explains a node forward, and the node it was last
-  // called for. Set by the plugin (see revealPanelWhenNodeSelected); polled from
+  // Brings the panel that explains a selection forward, and what it was last
+  // called for. Set by the plugin (see revealPanelWhenSelected); polled from
   // onFrame() rather than pushed from the places that change the selection,
   // since those include the core timeline, which knows nothing about us.
   private revealPanel?: () => void;
   private revealedNode?: NodeId;
+  private revealedDir?: number;
 
   // Whether rule nodes are hidden from both the graph pane and the timeline
   // track (see visibleNodes()). Lives here (not in GraphPanel) so it survives
@@ -498,27 +506,33 @@ export class DuneGraphController {
     return spanSliceId((await this.timingFor(node)).actionTiming);
   }
 
-  // Fires on a *transition* to one of our nodes, so it cannot fight the user
-  // for the side panel, and not when the selection clears or lands on something
-  // else - a panel yanked forward to say "nothing selected" is worse than one
-  // left alone. Polled from onFrame() rather than hooked into the navigation
-  // paths, which include clicking a slice on the timeline and know nothing of
-  // this plugin. Note `sidePanel.showTab` also *opens* a closed side panel.
-  revealPanelWhenNodeSelected(reveal: () => void): void {
+  // Fires on a *transition* to something of ours - a node, or a directory with
+  // a `gen-rules` span - so it cannot fight the user for the side panel, and
+  // not when the selection clears or lands on something else: a panel yanked
+  // forward to say "nothing selected" is worse than one left alone. Polled from
+  // onFrame() rather than hooked into the navigation paths, which include
+  // clicking a slice on the timeline and know nothing of this plugin. Note
+  // `sidePanel.showTab` also *opens* a closed side panel.
+  revealPanelWhenSelected(reveal: () => void): void {
     this.revealPanel = reveal;
   }
 
-  // Fires the reveal callback on a change of selected node. Reads
-  // nodeForSelection() rather than the raw selection so that it follows the
-  // *node*: re-selecting a different slice of the same node is not a change, and
-  // a selection whose node takes a query to resolve fires when the answer lands
-  // rather than not at all.
+  // Fires the reveal callback on a change of what the selection resolved to,
+  // on either channel. Reads the resolution rather than the raw selection so
+  // that it follows the *thing*: re-selecting a different slice of the same
+  // node - or the other half of a directory's `gen-rules` span - is not a
+  // change, and a selection that takes a query to resolve fires when the answer
+  // lands rather than not at all. Compared field by field rather than as one
+  // key, since this runs every frame and both halves are plain numbers.
   private syncSelectionReveal(): void {
     if (this.revealPanel === undefined) return;
-    const node = this.nodeForSelection();
-    if (node === this.revealedNode) return;
+    const resolved = this.resolveSelection();
+    const node = resolved?.node;
+    const dir = resolved?.dir;
+    if (node === this.revealedNode && dir === this.revealedDir) return;
     this.revealedNode = node;
-    if (node !== undefined) this.revealPanel();
+    this.revealedDir = dir;
+    if (node !== undefined || dir !== undefined) this.revealPanel();
   }
 
   // Switch the timeline to the dedicated "Dune graph" workspace. Getting back
@@ -541,24 +555,43 @@ export class DuneGraphController {
     return this.source.description;
   }
 
-  // The node the current timeline selection names, whether that is a real
-  // `build-dep` / `exec-rule` slice or a projected row on one of our own tracks
-  // - the two key their events differently, hence the branch.
+  // The node the current timeline selection names, if it names one.
+  nodeForSelection(): NodeId | undefined {
+    return this.resolveSelection()?.node;
+  }
+
+  /**
+   * The directory the current timeline selection names, as a `dune_dir.id`, if
+   * it names one - the second selection channel, and the mirror of
+   * nodeForSelection().
+   *
+   * A `gen-rules` span is a directory's, not a node's: it has no `rule_id` /
+   * `dep_id` and there is no `'dir'` node kind to give it (see the "Layout"
+   * table in ARCHITECTURE.md for why - `node_id < ruleCount` is inlined into
+   * every generated statement). Either half of the span answers: both instants
+   * carry the directory's dict id, which is the timing key.
+   *
+   * Only ever filled when nodeForSelection() is empty, since the timeline
+   * selection is one event and resolving it settles which channel it is on.
+   */
+  dirForSelection(): number | undefined {
+    return this.resolveSelection()?.dir;
+  }
+
+  // What the current timeline selection resolved to, on either channel -
+  // whether that is a real `build-dep` / `exec-rule` / `gen-rules` slice or a
+  // projected row on one of our own tracks, which key their events differently,
+  // hence the branch.
   //
   // Synchronous, because a mithril view reads it every frame, but a real slice
   // id resolves through SQL: the lookup is kicked off here, cached against the
   // selection it was for, and a redraw requested when it lands. So a *new*
   // selection's answer arrives one redraw later and a stale one is never shown,
-  // only a momentary "no node".
-  //
-  // A *process* slice resolves to the rule that forced it, on our own process
-  // track and on the real `job-<n>` track alike. It carries no `rule_id` /
-  // `dep_id` arg, so the fallback is tried only once the lifecycle lookup
-  // comes back empty.
-  nodeForSelection(): NodeId | undefined {
+  // only a momentary "nothing".
+  private resolveSelection(): SelectionResolution | undefined {
     const selection = this.trace.selection.selection;
     if (selection.kind !== 'track_event') {
-      this.selectionNode = undefined;
+      this.resolvedSelection = undefined;
       return undefined;
     }
     const eventId = selection.eventId;
@@ -568,7 +601,8 @@ export class DuneGraphController {
       // The three node-backed tracks name their node in the row id itself, so
       // they stay a pure range check (a rule's action is filed under the rule);
       // a process row names only a `rule_id`, and only through a query - so it
-      // takes the same resolve-and-cache path a real slice id does.
+      // takes the same resolve-and-cache path a real slice id does. Neither
+      // projects a `gen-rules` span, so neither can resolve to a directory.
       if (kind !== 'process') {
         const node = this.nodeForNodeId(eventId);
         // Recorded even though it took no query: the cache is also what says
@@ -576,22 +610,38 @@ export class DuneGraphController {
         // behind would let a process selection's `processSliceId` outlive it
         // (see selectedProcessSlice()). Guarded on the key because this runs
         // every frame, and a new object per frame is pure garbage.
-        if (this.selectionNode?.key !== key) this.selectionNode = {key, node};
-        return node;
+        if (this.resolvedSelection?.key !== key) {
+          this.resolvedSelection = {key, node};
+        }
+        return this.resolvedSelection;
       }
-      return this.cachedSelectionNode(key, () =>
-        this.resolveProcessSlice(eventId),
-      );
+      return this.cachedSelection(key, () => this.resolveProcessSlice(eventId));
     }
-    return this.cachedSelectionNode(key, async () => {
-      const node = await this.nodeForSliceId(eventId);
-      // A lifecycle instant, which is the overwhelmingly common case for a
-      // slice this plugin knows anything about; only on a miss is it worth
-      // asking whether the slice is a process. Ordering it this way keeps an
-      // ordinary click on an unrelated slice at exactly the cost it has today.
-      if (node !== undefined) return {node};
-      return this.resolveProcessSlice(eventId);
-    });
+    return this.cachedSelection(key, () => this.resolveSliceSelection(eventId));
+  }
+
+  /**
+   * What a real slice id resolves to: a node, a directory, or nothing.
+   *
+   * One lifecycle lookup answers the first two - a `gen-rules` instant's key is
+   * a directory's dict id, every other kind's is a node's - and only on a miss
+   * is it worth asking whether the slice is a process, which carries no
+   * lifecycle arg at all. Ordering it this way keeps an ordinary click on an
+   * unrelated slice at the cost it has always had.
+   */
+  private async resolveSliceSelection(
+    sliceId: number,
+  ): Promise<SelectionResolution> {
+    if (!this.graphStep.ready) return {};
+    const keys = await lifecycleKeysForSliceIds(this.trace.engine, [sliceId]);
+    const lifecycle = keys.get(sliceId);
+    if (lifecycle?.kind === 'genrules') {
+      return {dir: await this.nodeMirror?.dirForGenRulesKey(lifecycle.key)};
+    }
+    const node =
+      lifecycle === undefined ? undefined : this.nodeForLifecycleKey(lifecycle);
+    if (node !== undefined) return {node};
+    return this.resolveProcessSlice(sliceId);
   }
 
   /**
@@ -608,7 +658,7 @@ export class DuneGraphController {
     // Read via nodeForSelection() so the cache is populated on the first frame
     // that asks, whichever of the two the caller happens to read first.
     if (this.nodeForSelection() === undefined) return undefined;
-    return this.selectionNode?.processSliceId;
+    return this.resolvedSelection?.processSliceId;
   }
 
   // The rule a process slice resolves to, as a `SelectionResolution` that
@@ -623,27 +673,27 @@ export class DuneGraphController {
     return node === undefined ? {} : {node, processSliceId: sliceId};
   }
 
-  // The cached node for the current selection, kicking `lookup` off on the
-  // first frame that asks for it - see nodeForSelection()'s doc comment for
-  // why the answer is allowed to arrive a redraw late.
-  private cachedSelectionNode(
+  // The cached resolution for the current selection, kicking `lookup` off on
+  // the first frame that asks for it - see resolveSelection()'s comment for why
+  // the answer is allowed to arrive a redraw late.
+  private cachedSelection(
     key: string,
     lookup: () => Promise<SelectionResolution>,
-  ): NodeId | undefined {
-    if (this.selectionNode?.key === key) return this.selectionNode.node;
+  ): SelectionResolution | undefined {
+    if (this.resolvedSelection?.key === key) return this.resolvedSelection;
     // Recorded before the lookup starts, so a second frame doesn't re-issue it.
-    this.selectionNode = {key};
-    void this.resolveSelectionNode(key, lookup);
+    this.resolvedSelection = {key};
+    void this.awaitSelection(key, lookup);
     return undefined;
   }
 
-  private async resolveSelectionNode(
+  private async awaitSelection(
     key: string,
     lookup: () => Promise<SelectionResolution>,
   ): Promise<void> {
     const resolved = await lookup();
-    if (this.selectionNode?.key !== key) return; // superseded meanwhile
-    this.selectionNode = {key, ...resolved};
+    if (this.resolvedSelection?.key !== key) return; // superseded meanwhile
+    this.resolvedSelection = {key, ...resolved};
     this.changed();
   }
 
@@ -713,17 +763,35 @@ export class DuneGraphController {
         this.trace.engine,
         sliceIds.slice(i, i + SLICE_LOOKUP_BATCH),
       );
-      for (const [sliceId, {kind, key}] of keys) {
-        // 'rule' and 'action' instants both key on `rule_id`, so both resolve
-        // to the rule node; only 'dep' keys on a dict id.
-        const node =
-          kind === 'dep'
-            ? this.graph.nodeForDepId(key)
-            : this.graph.nodeForRuleId(key);
+      for (const [sliceId, lifecycle] of keys) {
+        const node = this.nodeForLifecycleKey(lifecycle);
         if (node !== undefined) nodes.set(sliceId, node);
       }
     }
     return nodes;
+  }
+
+  /**
+   * The graph node a lifecycle instant's key names, or undefined if it names no
+   * node at all.
+   *
+   * The `kind` check is not a formality. 'rule' and 'action' instants both key
+   * on `rule_id`, so both resolve to the rule node, and 'dep' keys on a dep id;
+   * but a 'genrules' / 'dyninc' key is a *dict* id, which shares an id space
+   * with neither - so reading one as a rule id would hand back whatever rule
+   * happened to carry the same number (see dirForSelection() for what those two
+   * actually name).
+   */
+  private nodeForLifecycleKey({kind, key}: LifecycleKey): NodeId | undefined {
+    switch (kind) {
+      case 'dep':
+        return this.graph.nodeForDepId(key);
+      case 'rule':
+      case 'action':
+        return this.graph.nodeForRuleId(key);
+      default:
+        return undefined;
+    }
   }
 
   /**
@@ -841,6 +909,22 @@ export class DuneGraphController {
       return;
     }
     const sliceId = await this.sliceIdOf(node);
+    if (sliceId !== undefined) await this.goToSlice(sliceId);
+  }
+
+  /**
+   * Select a directory's `gen-rules` span and scroll it into view - the dir ->
+   * slice half of the second selection channel, and the mirror of
+   * goToNode().
+   *
+   * No Dune-workspace branch, unlike goToNode(): the four tracks project nodes,
+   * and a `gen-rules` span is not one, so there is nothing of ours to select it
+   * on. It takes the plain goToSlice() route a slice that maps to no node
+   * takes. A directory dune generated no rules for has no span at all, and is a
+   * no-op.
+   */
+  async goToDir(dirId: number): Promise<void> {
+    const sliceId = await this.nodeMirror?.genRulesSliceForDir(dirId);
     if (sliceId !== undefined) await this.goToSlice(sliceId);
   }
 
@@ -1099,7 +1183,7 @@ export class DuneGraphController {
       // The node set changed: drop the derived index and the cached selection
       // so neither can outlive the nodes it refers to.
       this.reverseIndex = undefined;
-      this.selectionNode = undefined;
+      this.resolvedSelection = undefined;
       this.version++;
       this.graphStep.status = 'ready';
     } catch (e) {
@@ -1120,7 +1204,7 @@ export class DuneGraphController {
       this.mirrorVersionValue++;
       // A selection resolved while the mirror was absent cached a "no node"
       // answer (see cachedSelectionNode); the tables it needed exist now.
-      this.selectionNode = undefined;
+      this.resolvedSelection = undefined;
       this.completeStep(this.nodeMirrorStep);
       // The timeline track's dataset is empty until the mirror exists, so it
       // has to be told to re-query now that it does.
@@ -1214,10 +1298,11 @@ export class DuneGraphController {
     // The nodes these refer to are gone.
     this.selection.clear();
     this.reverseIndex = undefined;
-    this.selectionNode = undefined;
-    // A reload renumbers every node, so a remembered id would suppress the
-    // reveal for whichever unrelated node inherits it.
+    this.resolvedSelection = undefined;
+    // A reload renumbers every node and every directory, so a remembered id
+    // would suppress the reveal for whichever unrelated one inherits it.
     this.revealedNode = undefined;
+    this.revealedDir = undefined;
     this.graphStep.reset();
     this.nodeMirrorStep.reset();
     this.edgeMirrorStep.reset();

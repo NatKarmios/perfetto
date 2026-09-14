@@ -67,9 +67,11 @@ Three things this plugin cares about, all of them ordinary trace data:
   build job slot, tagged with a `debug.dune.forced_by` arg naming what pulled it
   into the build.
 
-The `gen-rules` and `dynamic-includes` lifecycle tracks are deliberately
-ignored: their start and finish instants share no join key, so they cannot
-become nodes.
+The `gen-rules` and `dynamic-includes` tracks are paired like the others but are
+not nodes: their key is a path's dict id, not a rule's or a dep's, so nothing in
+the graph answers to them. `gen-rules` is published per directory as
+`dune_gen_rules` instead — which is why a directory is a second thing a timeline
+selection can name, alongside a node (`controller.ts`'s `dirForSelection`).
 
 What the plugin adds is the join between those three — the structure says _what
 depends on what_, the instants say _when each thing happened_, and the process
@@ -862,7 +864,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**633 tests across 34 files** as of 2026-09-14.
+**642 tests across 34 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

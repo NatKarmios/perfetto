@@ -34,7 +34,7 @@
 
 import {sqliteString} from '../../../base/string_utils';
 import type {Engine} from '../../../trace_processor/engine';
-import {LONG_NULL, NUM} from '../../../trace_processor/query_result';
+import {LONG_NULL, NUM, NUM_NULL} from '../../../trace_processor/query_result';
 import {DirTree, parentDir} from '../model/dir_tree';
 import type {BuildGraph, NodeId, NodeTiming} from '../model/graph';
 import {
@@ -293,6 +293,18 @@ export interface SqlNodeMirror extends AsyncDisposable {
   // (see lifecycle_sql.ts). One query per call, so this is for the handful of
   // nodes a panel is actually showing, not for a sweep.
   timingFor(id: NodeId): Promise<NodeTiming>;
+
+  // The slice a directory's `gen-rules` span should select: the span's start,
+  // or its finish if an interrupted build left only that - the same rule a
+  // node's own span follows (see `spanSliceId`). Undefined for a directory
+  // dune generated no rules for.
+  genRulesSliceForDir(dirId: number): Promise<number | undefined>;
+
+  // The inverse, keyed by what a `gen-rules` instant actually carries: the
+  // directory's dict id, which is the timing key for both halves of the span
+  // (see lifecycle_sql.ts's KEY_EXPR). How a `gen-rules` selection resolves
+  // back to a directory (see controller.ts's dirForSelection()).
+  dirForGenRulesKey(dirStrId: number): Promise<number | undefined>;
 }
 
 /**
@@ -1389,6 +1401,26 @@ export async function buildNodeMirror(
       return processes.processesForRuleId(graph.timingKeyOf(id));
     },
 
+    async genRulesSliceForDir(dirId: number): Promise<number | undefined> {
+      return firstNumber(
+        engine,
+        `SELECT coalesce(start_slice_id, finish_slice_id) AS v
+         FROM ${GEN_RULES_VIEW} WHERE dir_id = ${Math.trunc(dirId)}`,
+      );
+    },
+
+    // A scan of _dune_gen_rules, not a probe: its only index is the
+    // `dir_id` primary key, and the other direction is one selection click over
+    // a two-integer table (~35k rows at monorepo scale). An index to save that
+    // would be paid on every load to speed up something nothing does in a loop.
+    async dirForGenRulesKey(dirStrId: number): Promise<number | undefined> {
+      return firstNumber(
+        engine,
+        `SELECT dir_id AS v FROM ${RAW_GEN_RULES_TABLE}
+         WHERE dir_str_id = ${Math.trunc(dirStrId)}`,
+      );
+    },
+
     async timingFor(id: NodeId): Promise<NodeTiming> {
       if (!graph.has(id)) return {};
       const isRule = graph.isRule(id);
@@ -1417,6 +1449,17 @@ export async function buildNodeMirror(
       await processes[Symbol.asyncDispose]();
     },
   };
+}
+
+// The first row's `v` column as a number, or undefined if the query matched
+// nothing. Both `gen-rules` lookups above are single-row probes of that shape.
+async function firstNumber(
+  engine: Engine,
+  query: string,
+): Promise<number | undefined> {
+  const result = await engine.query(query);
+  if (result.numRows() === 0) return undefined;
+  return result.firstRow({v: NUM_NULL}).v ?? undefined;
 }
 
 // ---------------------------------------------------------------------------

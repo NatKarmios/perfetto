@@ -94,8 +94,9 @@ const SEQ_TABLE = '_dune_seq';
 const PAIR_TABLE = '_dune_pair';
 
 // A lifecycle instant's join key, as read back off a slice id (see
-// {@link lifecycleKeysForSliceIds}).
-interface LifecycleKey {
+// {@link lifecycleKeysForSliceIds}). Exported because the controller branches
+// on `kind` to decide what the key names - a node, or a directory.
+export interface LifecycleKey {
   readonly kind: TimingKind;
   readonly key: number;
 }

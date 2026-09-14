@@ -1049,7 +1049,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   //
   // Clicking the link moves the timeline selection, and the controller - not
   // this pane - is what brings the main panel forward, so every route to a
-  // node behaves the same (see `revealPanelWhenNodeSelected`).
+  // node behaves the same (see `revealPanelWhenSelected`).
   private renderMember(
     attrs: DirExplorerPanelAttrs,
     entry: MemberEntry,
