@@ -55,9 +55,11 @@ by `index.ts`.
 
 Three things this plugin cares about, all of them ordinary trace data:
 
-- **Lifecycle instants** on the `exec-rule`, `build-dep` and `exec-rule-action`
-  tracks. Each carries a `-start` / `-finish` pair, or a single collapsed
-  `-resolved`, tagged with a `rule_id` or `dep_id` arg. These are the _timing_.
+- **Lifecycle instants** on the `exec-rule`, `build-dep`, `exec-rule-action`,
+  `gen-rules` and `dynamic-includes` tracks. Each carries a `-start` / `-finish`
+  pair, or a single collapsed `-resolved`, tagged with the arg that joins its
+  two halves: `rule_id`, `dep_id`, or - on the last two tracks - a dict id
+  (`dir_path_id`, `dune_file_path_id`). These are the _timing_.
 - **The graph blob**: instants on a `dune-graph` track whose `data` arg holds
   chunks of a five-section text format describing the build graph's _structure_.
   See [The blob format](#the-blob-format).
@@ -826,7 +828,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**622 tests across 33 files** as of 2026-09-11.
+**625 tests across 34 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

@@ -35,14 +35,20 @@ import {measure} from '../perf';
 
 // Which timing a row describes. `rule`/`dep` are the node's own span (keyed by
 // `rule_id` / `dep_id`); `action` is a rule's `exec-rule-action` span, keyed by
-// the same `rule_id`.
-type TimingKind = 'rule' | 'dep' | 'action';
+// the same `rule_id`. `genrules`/`dyninc` are not nodes at all - they are keyed
+// by a dict id (a directory, a `dune` file), which is why the `kind`
+// discriminator matters: a `genrules` key and a dep's `orig_id` share an id
+// space.
+type TimingKind = 'rule' | 'dep' | 'action' | 'genrules' | 'dyninc';
 
-// The lifecycle track each kind's instants live on.
+// The lifecycle track each kind's instants live on. Append-only: see
+// {@link KIND_CODES}.
 const TRACK_BY_KIND: ReadonlyMap<TimingKind, string> = new Map([
   ['rule', 'exec-rule'],
   ['dep', 'build-dep'],
   ['action', 'exec-rule-action'],
+  ['genrules', 'gen-rules'],
+  ['dyninc', 'dynamic-includes'],
 ]);
 
 // The integer code each kind is stored under in {@link TIMING_TABLE}: the
@@ -133,11 +139,14 @@ function trackList(): string {
 }
 
 // The join key of a lifecycle instant: `rule_id` on the rule/action tracks,
-// `dep_id` on the dep track - only ever one of the two is set, so they collapse
-// into a single column.
+// `dep_id` on the dep track, and a dict id on the other two - `dir_path_id` for
+// `gen-rules`, `dune_file_path_id` for `dynamic-includes`. A given instant
+// carries exactly one of the four, so they collapse into a single column.
 const KEY_EXPR = `coalesce(
   extract_arg(s.arg_set_id, 'debug.dune.rule_id'),
-  extract_arg(s.arg_set_id, 'debug.dune.dep_id'))`;
+  extract_arg(s.arg_set_id, 'debug.dune.dep_id'),
+  extract_arg(s.arg_set_id, 'debug.dune.dir_path_id'),
+  extract_arg(s.arg_set_id, 'debug.dune.dune_file_path_id'))`;
 
 /**
  * Builds {@link TIMING_TABLE} from the trace's lifecycle instants and returns a
