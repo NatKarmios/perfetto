@@ -1,0 +1,308 @@
+# Fork-only infrastructure. This workflow does NOT exist upstream and must not
+# be sent to google/perfetto: it deploys *this* fork's DuneGraph-enabled UI to
+# dune-perfetto.karmios.com and publishes prebuilt binaries for colleagues.
+#
+# Upstream's CI (analyze.yml and friends) is unusable here: it runs on
+# self-hosted runners with ambient gcloud credentials. Everything below runs on
+# GitHub-hosted runners and caches through actions/cache instead.
+#
+# Outputs, all attached to the rolling `dune-latest` prerelease:
+#   linux-amd64.zip  linux-arm64.zip  mac-amd64.zip  mac-arm64.zip
+#   perfetto-ui.zip
+# plus the same UI build deployed to GitHub Pages.
+#
+# The zip contents and layout mirror a subset of an upstream release. See
+# tools/release/package-github-release-artifacts (_ARTIFACTS) for the binary
+# list this tracks, and infra/luci/recipes/perfetto.py for the GN args.
+
+name: Dune deploy
+
+on:
+  push:
+    branches:
+      - dune-graph-trace
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight deploy; there is no point publishing a
+# stale build behind a fresh one.
+concurrency:
+  group: dune-deploy
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  # ccache_env.sh (reused via .github/actions/setup-ccache) requires this.
+  PERFETTO_CACHE_DIR: /tmp/cache
+  PYTHONUNBUFFERED: 1
+  ROLLING_TAG: dune-latest
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Builds the UI once and produces two things from it: the GitHub Pages
+  # artifact and perfetto-ui.zip for self-hosting.
+  # ---------------------------------------------------------------------------
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cache/ccache
+          key: ccache-ui-${{ github.sha }}
+          restore-keys: ccache-ui-
+
+      - uses: ./.github/actions/setup-ccache
+
+      # setup-ccache asks for 8G. All jobs here share one 10G repo-wide
+      # actions/cache budget, so cap it. Later GITHUB_ENV lines win.
+      - name: Cap ccache size
+        run: echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+
+      # --ui pulls emsdk (~1.5G), nodejs, pnpm and the host clang. Deliberately
+      # not cached: re-downloading from the public GCS bucket costs a couple of
+      # minutes, whereas caching it would eat most of the shared cache budget.
+      - name: Install build deps
+        run: tools/install-build-deps --ui
+
+      # Compiles the four emcc wasm modules and bundles the frontend. This is
+      # the slow part of the job, and what the ccache above is for.
+      - name: Build UI
+        run: ui/build --out out/ui
+
+      - name: Print ccache stats
+        run: ccache --show-stats
+
+      # perfetto-ui.zip is flat (no top-level directory), matching
+      # tools/release/package-ui-github-release-artifact.
+      - name: Package perfetto-ui.zip
+        run: |
+          (cd out/ui/ui/dist && zip -9qr "$GITHUB_WORKSPACE/perfetto-ui.zip" .)
+          ls -lh perfetto-ui.zip
+
+      - name: Upload perfetto-ui.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip-perfetto-ui
+          path: perfetto-ui.zip
+          retention-days: 7
+
+      # The custom domain serves the UI from '/', which is what lets the
+      # service worker register (see docs/visualization/embedding-the-ui.md).
+      # Without it the UI still works, just without offline caching.
+      - name: Add Pages metadata
+        run: |
+          echo 'dune-perfetto.karmios.com' > out/ui/ui/dist/CNAME
+          touch out/ui/ui/dist/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out/ui/ui/dist
+
+  # ---------------------------------------------------------------------------
+  # One job per host OS, each cross-compiling both CPU targets for that OS.
+  # Sharing a job across the two targets halves the buildtools downloads and
+  # keeps both targets on one ccache. Windows is omitted: it cannot be
+  # cross-compiled and has no upstream precedent on GitHub-hosted runners.
+  # ---------------------------------------------------------------------------
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target_os: linux
+            # Debian sysroots for the linux-arm64 cross build.
+            deps_flags: --linux-arm
+          - runner: macos-latest
+            target_os: mac
+            deps_flags: ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ccache
+        run: |
+          if [ "${{ matrix.target_os }}" = "mac" ]; then
+            brew install ccache
+          else
+            sudo apt-get update
+            sudo apt-get install -y ccache
+          fi
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cache/ccache
+          key: ccache-${{ matrix.target_os }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.target_os }}-
+
+      - uses: ./.github/actions/setup-ccache
+
+      - name: Cap ccache size
+        run: echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+
+      - name: Install build deps
+        run: tools/install-build-deps ${{ matrix.deps_flags }}
+
+      # GN already emits stripped binaries into out/<dir>/stripped as a link
+      # side effect on Linux and mac (gn/standalone/toolchain/BUILD.gn), so
+      # there is nothing to strip by hand.
+      #
+      # Each target's out dir is deleted once zipped: unstripped monolithic
+      # binaries run ~190MB each and the runners have limited disk.
+      - name: Build and package
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+        run: |
+          set -euo pipefail
+
+          # Mirrors GnArgs() in infra/luci/recipes/perfetto.py.
+          base_args='is_clang=true monolithic_binaries=true is_debug=false'
+          base_args="$base_args enable_perfetto_etm_importer=false"
+          base_args="$base_args cc_wrapper=\"ccache\""
+
+          # Mirrors _ARTIFACTS in
+          # tools/release/package-github-release-artifacts, minus the
+          # platforms we do not ship.
+          targets='trace_processor_shell traceconv tracebox perfetto traced traced_probes'
+          files='trace_processor_shell traceconv tracebox perfetto traced traced_probes'
+          if [ "$TARGET_OS" = "linux" ]; then
+            # GN target name vs output filename differ for the shared library.
+            targets="$targets heapprofd_glibc_preload"
+            files="$files libheapprofd_glibc_preload.so"
+          fi
+
+          for cpu in x64 arm64; do
+            # GN calls it x64; the release artifacts call it amd64.
+            arch=$([ "$cpu" = "x64" ] && echo amd64 || echo "$cpu")
+            platform="${TARGET_OS}-${arch}"
+            echo "::group::Build $platform"
+
+            tools/gn gen "out/$platform" \
+              --args="$base_args target_os=\"$TARGET_OS\" target_cpu=\"$cpu\""
+            # shellcheck disable=SC2086  # $targets must word-split.
+            tools/ninja -C "out/$platform" $targets
+
+            # Each zip has a single top-level <platform>/ directory, matching
+            # `zip -9r <platform>.zip <platform>` upstream.
+            mkdir -p "stage/$platform"
+            # shellcheck disable=SC2086  # $files must word-split.
+            for f in $files; do
+              cp "out/$platform/stripped/$f" "stage/$platform/$f"
+            done
+            (cd stage && zip -9qr "../$platform.zip" "$platform")
+
+            rm -rf "out/$platform" "stage/$platform"
+            echo "::endgroup::"
+          done
+
+          ls -lh ./*.zip
+
+      - name: Print ccache stats
+        run: ccache --show-stats
+
+      - name: Upload zips
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip-${{ matrix.target_os }}
+          path: '*.zip'
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publishes the Pages artifact built by the `ui` job.
+  # ---------------------------------------------------------------------------
+  deploy-pages:
+    needs: ui
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ---------------------------------------------------------------------------
+  # Replaces the rolling `dune-latest` prerelease with the current build, so
+  # the download URLs stay stable across pushes.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [ui, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      # contents: write to move the rolling tag and upload assets;
+      # actions: read for download-artifact, since permissions default to
+      # none at the top of this workflow.
+      contents: write
+      actions: read
+    timeout-minutes: 15
+    steps:
+      - name: Download zips
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zip-*
+          merge-multiple: true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ls -lh ./*.zip
+
+          # Delete-and-recreate moves the tag to this commit and keeps the step
+          # idempotent. It does reset asset download counts, which is fine for
+          # a rolling build.
+          gh release delete "$ROLLING_TAG" --repo "$REPO" --yes --cleanup-tag \
+            || echo "No existing $ROLLING_TAG release to remove."
+
+          # Heredoc, not an inline string: YAML strips this block's
+          # indentation, so the notes body lands at column 0 rather than
+          # becoming an indented markdown code block.
+          cat > /tmp/notes.md <<NOTES
+          Perfetto with the DuneGraph plugin, built from \`dune-graph-trace\` at ${SHA}.
+
+          The UI for this build is deployed at <https://dune-perfetto.karmios.com>.
+
+          | Asset | Contents |
+          | --- | --- |
+          | \`linux-amd64.zip\` | Linux x86-64 binaries |
+          | \`linux-arm64.zip\` | Linux arm64 binaries |
+          | \`mac-amd64.zip\` | macOS x86-64 binaries |
+          | \`mac-arm64.zip\` | macOS Apple Silicon binaries |
+          | \`perfetto-ui.zip\` | The UI build, for self-hosting on any static file server |
+
+          Each platform zip unpacks into a single directory containing
+          \`trace_processor_shell\`, \`traceconv\`, \`tracebox\`, \`perfetto\`,
+          \`traced\` and \`traced_probes\` (plus
+          \`libheapprofd_glibc_preload.so\` on Linux). Binaries are stripped and
+          statically linked.
+          NOTES
+
+          gh release create "$ROLLING_TAG" \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --prerelease \
+            --title "Dune build (rolling)" \
+            --notes-file /tmp/notes.md \
+            ./*.zip
