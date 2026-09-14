@@ -157,3 +157,16 @@ export class DirTree {
     return id;
   }
 }
+
+/**
+ * How the one directory with no path is shown. The top level is a directory
+ * like any other (see this file's header) but a blank cell reads as a bug, so
+ * every surface labels it. Display only - the mirror stores the directory dune
+ * actually named.
+ */
+export const TOP_LEVEL_LABEL = '(top level)';
+
+/** A directory's {@link DirRow.path} as it should be shown to a reader. */
+export function dirPathLabel(path: string): string {
+  return path === '' ? TOP_LEVEL_LABEL : path;
+}

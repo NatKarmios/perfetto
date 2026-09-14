@@ -43,9 +43,11 @@ import {
   DUNE_NODE_ID_COLUMN,
   DUNE_NODE_JOINID,
   DUNE_NODE_TABLE,
+  dirCellLabel,
   nodeCellLabel,
   nodeForCellValue,
   registerNodeColumnRenderer,
+  renderDirCell,
   renderNodeCell,
   renderNodeCellActions,
 } from './node_cell';
@@ -72,20 +74,32 @@ const health = testGraph([
   rule('7', {outcome: 'failed-action'}),
 ]);
 
-// Everything node_cell.ts touches on the controller. `goToNode` is recorded
-// rather than performed: it is a query in the real controller, and the point of
-// the anchor is that clicking it asks for that node.
+// The directory paths the fake mirror knows, by id. Id 0 is the top level -
+// `dune_dir` always numbers it first, and its path is the empty string (see
+// model/dir_tree.ts), which is the case a blank cell would silently look right
+// for.
+const DIR_PATHS = ['', 'a', 'a/b'];
+
+// Everything node_cell.ts touches on the controller. `goToNode` / `goToDir` are
+// recorded rather than performed: each is a query in the real controller, and
+// the point of the anchor is that clicking it asks for that node or directory.
 interface FakeController {
   readonly controller: DuneGraphController;
   readonly inGraph: Set<NodeId>;
   readonly visited: NodeId[];
+  readonly visitedDirs: number[];
 }
 
 function fakeController(graph: BuildGraph = g.graph): FakeController {
   const inGraph = new Set<NodeId>();
   const visited: NodeId[] = [];
+  const visitedDirs: number[] = [];
   const controller = {
     graph,
+    dirPath: (id: number) => DIR_PATHS[id],
+    goToDir: async (id: number) => {
+      visitedDirs.push(id);
+    },
     nodeForNodeId: (id: number) => (graph.has(id) ? id : undefined),
     isInGraph: (node: NodeId) => inGraph.has(node),
     addToGraph: (nodes: Iterable<NodeId>) => {
@@ -98,7 +112,7 @@ function fakeController(graph: BuildGraph = g.graph): FakeController {
       visited.push(node);
     },
   } as unknown as DuneGraphController;
-  return {controller, inGraph, visited};
+  return {controller, inGraph, visited, visitedDirs};
 }
 
 // A trace stub that is nothing but its trash, which is all a registration
@@ -229,6 +243,75 @@ describe('health markers', () => {
     expect(muted('failed.ml')).toBe(false);
     expect(muted('cancelled.ml')).toBe(true);
     expect(muted('unfinished.ml')).toBe(true);
+  });
+});
+
+describe('renderDirCell', () => {
+  test("shows a directory's chip, path and link", () => {
+    const {controller, visitedDirs} = fakeController();
+    const root = render(renderDirCell(controller, 2));
+
+    const chip = root.querySelector('.pf-dune-graph__chip');
+    expect(chip?.textContent).toBe('dir');
+    expect(chip?.classList.contains('pf-dune-graph__chip--dir')).toBe(true);
+    expect(root.textContent).toContain('a/b');
+
+    const anchor = root.querySelector('a');
+    expect(anchor).not.toBeNull();
+    anchor?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+    expect(visitedDirs).toEqual([2]);
+  });
+
+  test('labels the top level rather than drawing a blank link', () => {
+    const {controller, visitedDirs} = fakeController();
+    const root = render(renderDirCell(controller, 0));
+    expect(root.querySelector('a')?.textContent).toContain('(top level)');
+    root
+      .querySelector('a')
+      ?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+    expect(visitedDirs).toEqual([0]);
+  });
+
+  test('takes a bigint cell too', () => {
+    const {controller} = fakeController();
+    expect(render(renderDirCell(controller, BigInt(1))).textContent).toContain(
+      'a',
+    );
+  });
+
+  test('falls back to the raw value for an id of no directory', () => {
+    const {controller} = fakeController();
+    const root = render(renderDirCell(controller, UNKNOWN_ID));
+    expect(root.textContent).toBe(String(UNKNOWN_ID));
+    expect(root.querySelector('.pf-dune-graph__chip')).toBeNull();
+  });
+
+  test('renders NULL as an empty cell', () => {
+    const {controller} = fakeController();
+    expect(render(renderDirCell(controller, null)).textContent).toBe('');
+  });
+
+  // A directory is not a graph node, so the cell deliberately carries no
+  // membership toggle - the one place it differs from the node cell.
+  test('carries no add/remove button', () => {
+    const {controller} = fakeController();
+    expect(render(renderDirCell(controller, 2)).querySelector('button')).toBe(
+      null,
+    );
+  });
+});
+
+describe('dirCellLabel', () => {
+  test("exports a directory's path, the top level labelled", () => {
+    const {controller} = fakeController();
+    expect(dirCellLabel(controller, 2)).toBe('a/b');
+    expect(dirCellLabel(controller, 0)).toBe('(top level)');
+  });
+
+  test('falls back to the raw value, NULL included', () => {
+    const {controller} = fakeController();
+    expect(dirCellLabel(controller, UNKNOWN_ID)).toBe(String(UNKNOWN_ID));
+    expect(dirCellLabel(controller, null)).toBe('null');
   });
 });
 

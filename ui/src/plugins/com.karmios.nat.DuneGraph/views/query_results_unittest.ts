@@ -18,6 +18,9 @@ import {defer} from '../../../base/deferred';
 import type {Result} from '../../../base/result';
 import type {Trace} from '../../../public/trace';
 import type {Engine} from '../../../trace_processor/engine';
+import type {QueryResponse} from '../../../components/query_table/queries';
+import type {ColumnDef} from '../../../components/widgets/datagrid/datagrid_schema';
+import {isCellRenderResult} from '../../../components/widgets/datagrid/datagrid_schema';
 import type {
   QueryResult,
   Row,
@@ -379,11 +382,18 @@ interface QueryHarness {
   readonly results: DuneQueryResults;
   readonly queries: Deferred<Result<QueryResult>>[];
   readonly sliceLookups: Deferred<Map<number, NodeId>>[];
+  readonly visitedDirs: number[];
 }
 
-function queryHarness(): QueryHarness {
+// The directory paths the fake mirror knows, by id - 0 being the top level (see
+// model/dir_tree.ts). `resolveNodes` is off by default so the tests that only
+// care about the pane's *states* see no chips at all; the chip tests turn it on.
+const DIR_PATHS = ['', 'a', 'a/b'];
+
+function queryHarness(resolveNodes = false): QueryHarness {
   const queries: Deferred<Result<QueryResult>>[] = [];
   const sliceLookups: Deferred<Map<number, NodeId>>[] = [];
+  const visitedDirs: number[] = [];
   const trace = {
     engine: {
       tryQuery: () => {
@@ -403,14 +413,21 @@ function queryHarness(): QueryHarness {
       sliceLookups.push(d);
       return d;
     },
-    nodeForNodeId: () => undefined,
+    nodeForNodeId: (id: number) =>
+      resolveNodes && graph.has(id) ? id : undefined,
+    dirPath: (id: number) => DIR_PATHS[id],
+    isInGraph: () => false,
     goToNode: async () => {},
+    goToDir: async (id: number) => {
+      visitedDirs.push(id);
+    },
     goToSlice: async () => {},
   } as unknown as DuneGraphController;
   return {
     results: new DuneQueryResults(trace, controller),
     queries,
     sliceLookups,
+    visitedDirs,
   };
 }
 
@@ -563,5 +580,77 @@ describe('DuneQueryResults.runQuery', () => {
     expect(text).not.toContain('no such column: 111');
     expect(text).toContain('select 222');
     expect(text).toContain('Returned 1 rows');
+  });
+});
+
+/**
+ * Which renderer each result column gets - the routing `buildSchema` does, and
+ * the only thing that says a `dir_id` column reaches the directory cell rather
+ * than the node one. Driven through `buildSchema` rather than through the
+ * rendered pane, because the DataGrid virtualises its rows against a measured
+ * height and jsdom measures zero (see `buildSchema`'s comment).
+ */
+describe('DuneQueryResults.buildSchema', () => {
+  // The schema a result with these columns gets.
+  function schemaFor(
+    h: QueryHarness,
+    ...columns: string[]
+  ): Record<string, ColumnDef> {
+    return h.results.buildSchema({columns} as unknown as QueryResponse);
+  }
+
+  // What a column's renderer draws for `value`. The node and directory cells
+  // never return the rich alignment-carrying form, though the type allows it.
+  function cell(
+    schema: Record<string, ColumnDef>,
+    col: string,
+    value: SqlValue,
+  ): HTMLElement {
+    const drawn = schema[col].cellRenderer?.(value, {} as Row);
+    return render(isCellRenderResult(drawn) ? drawn.content : drawn);
+  }
+
+  it('chips a node_id and a dir_id in the same result, each as its own kind', () => {
+    const schema = schemaFor(queryHarness(true), 'node_id', 'dir_id');
+
+    const node = cell(schema, 'node_id', g.id('a/b/dep1.ml'));
+    expect(node.querySelector('.pf-dune-graph__chip')?.textContent).toBe('dep');
+    expect(node.textContent).toContain('a/b/dep1.ml');
+
+    const dir = cell(schema, 'dir_id', 2);
+    expect(dir.querySelector('.pf-dune-graph__chip')?.textContent).toBe('dir');
+    expect(dir.textContent).toContain('a/b');
+  });
+
+  it("links a dir_id cell to that directory's gen-rules span", () => {
+    const h = queryHarness(true);
+    clickLink(cell(schemaFor(h, 'dir_id'), 'dir_id', 2));
+    expect(h.visitedDirs).toEqual([2]);
+  });
+
+  it('labels the top-level directory rather than drawing a blank cell', () => {
+    const schema = schemaFor(queryHarness(true), 'dir_id');
+    expect(cell(schema, 'dir_id', 0).textContent).toContain('(top level)');
+  });
+
+  it('leaves a dir_id no directory owns as its raw value', () => {
+    const schema = schemaFor(queryHarness(true), 'dir_id');
+    const root = cell(schema, 'dir_id', 99);
+    expect(root.querySelector('.pf-dune-graph__chip')).toBeNull();
+    expect(root.textContent).toBe('99');
+  });
+
+  it('exports a dir_id as its path rather than its raw id', () => {
+    const schema = schemaFor(queryHarness(true), 'dir_id');
+    expect(schema['dir_id'].cellFormatter?.(2, {} as Row)).toBe('a/b');
+  });
+
+  // `dir_id` is the only directory-bearing name: `dune_dir`'s own `id` and
+  // `parent_id` stay plain, the first because any slice-ish result has an `id`
+  // of its own (see node_cell.ts).
+  it('leaves dune_dir’s own id and parent_id plain', () => {
+    const schema = schemaFor(queryHarness(true), 'id', 'parent_id');
+    expect(schema['id'].cellRenderer).toBeUndefined();
+    expect(schema['parent_id'].cellRenderer).toBeUndefined();
   });
 });

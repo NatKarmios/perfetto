@@ -864,7 +864,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**642 tests across 34 files** as of 2026-09-14.
+**656 tests across 34 files** as of 2026-09-14.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

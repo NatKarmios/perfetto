@@ -23,6 +23,11 @@
  * nothing else** - in particular not a sibling column of the same row (see
  * ARCHITECTURE.md, "Gotchas"). A node id is self-sufficient, which is what makes this
  * work: resolving one is a range check against the current graph, not a query.
+ *
+ * A `dune_dir.id` cell (`renderDirCell`) is the same shape and the same rule: a
+ * directory chip whose path links to that directory's `gen-rules` span. Its
+ * path comes off the mirror, which keeps them in memory precisely so this stays
+ * synchronous (see sql_graph.ts's `dirPath`).
  */
 
 import m from 'mithril';
@@ -34,6 +39,7 @@ import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
 import type {SqlValue} from '../../../trace_processor/query_result';
 import {Anchor} from '../../../widgets/anchor';
 import type {DuneGraphController} from '../controller';
+import {dirPathLabel} from '../model/dir_tree';
 import type {NodeId} from '../model/graph';
 import {decorateNode, kindChip} from './node_display';
 import {nodeToggleButton} from './node_tree_actions';
@@ -62,6 +68,23 @@ export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
   'src',
   'dst',
 ];
+
+/**
+ * The `dune_dir` id column, and every column name whose value IS one.
+ *
+ * `dir_id` and nothing else: `dune_dir`'s own key is `id`, far too generic a
+ * name to chip on sight (any `SELECT * FROM slice` has one), and `parent_id` is
+ * deliberately left plain for the same reason a directory source leaves it so
+ * (see explorer/dir_tree_source.ts). A list rather than the bare name because
+ * the query page's chip plumbing takes it exactly as it takes
+ * {@link DUNE_NODE_ID_COLUMNS} (see query_results.ts).
+ *
+ * Not offered to the Data Explorer's charts (`explorer/chart_node_column.ts`):
+ * both of those map each row onto a *graph node*, and a directory is not one,
+ * so a chart pointed at `dir_id` would draw nothing.
+ */
+export const DUNE_DIR_ID_COLUMN = 'dir_id';
+export const DUNE_DIR_ID_COLUMNS: readonly string[] = [DUNE_DIR_ID_COLUMN];
 
 /**
  * The type a column of graph-node ids should declare to render as a node chip.
@@ -217,6 +240,81 @@ export function renderNodeCellActions(
   const node = nodeForCellValue(controller, value);
   if (node === undefined) return undefined;
   return nodeToggleButton(controller, node);
+}
+
+/**
+ * A directory's path as a link that selects its `gen-rules` span - the
+ * directory counterpart of {@link nodeAnchor}, over the second selection
+ * channel (see controller.ts's goToDir).
+ *
+ * The tooltip says what the link *tries* to do, because a directory dune
+ * generated no rules for has no span to select and the click is then a no-op.
+ * Every directory reached from a `dir_id` cell has a row in `dune_dir`; only
+ * some of them have a span.
+ */
+export function dirAnchor(
+  controller: DuneGraphController,
+  dirId: number,
+  label: string,
+): m.Children {
+  return m(
+    Anchor,
+    {
+      icon: Icons.UpdateSelection,
+      title: "Go to this directory's gen-rules span on the timeline",
+      onclick: () => void controller.goToDir(dirId),
+    },
+    label,
+  );
+}
+
+/**
+ * The directory a cell value names, as its path, or undefined when it names
+ * none - a non-numeric (or NULL) cell, an id no directory has, or any id at all
+ * before the SQL mirror is built (which is what holds the paths - see
+ * `controller.dirPath`).
+ */
+export function dirPathForCellValue(
+  controller: DuneGraphController,
+  value: SqlValue,
+): string | undefined {
+  if (typeof value !== 'number' && typeof value !== 'bigint') {
+    return undefined;
+  }
+  return controller.dirPath(Number(value));
+}
+
+/**
+ * A directory-id cell as a chip, falling back to the raw value exactly as
+ * {@link renderNodeCell} does.
+ *
+ * No ＋/－ action beside it, unlike the node cell: a directory is not a graph
+ * node, so there is nothing to add to the graph.
+ */
+export function renderDirCell(
+  controller: DuneGraphController,
+  value: SqlValue,
+): m.Children {
+  const path = dirPathForCellValue(controller, value);
+  if (path === undefined) return value === null ? '' : String(value);
+  return m(
+    'span.pf-dune-graph__node-cell',
+    m('span.pf-dune-graph__chip.pf-dune-graph__chip--dir', 'dir'),
+    dirAnchor(controller, Number(value), dirPathLabel(path)),
+  );
+}
+
+/**
+ * A directory-id cell as plain text - its path, so an export says what the grid
+ * showed. Falls back to the raw value, NULL included, as
+ * {@link nodeCellLabel} does.
+ */
+export function dirCellLabel(
+  controller: DuneGraphController,
+  value: SqlValue,
+): string {
+  const path = dirPathForCellValue(controller, value);
+  return path === undefined ? String(value) : dirPathLabel(path);
 }
 
 /**

@@ -26,15 +26,13 @@
  * (dir_explorer_chart.ts), which is a view of a query's rows.
  */
 
+import {TOP_LEVEL_LABEL} from '../model/dir_tree';
 import type {ExploreColumn, ExploreSource} from './explore_source';
 import {exploreSelect} from './explore_source';
 
-// The one directory row with no path: `dune_dir` files anything dune reports at
-// the top level under the empty prefix, and an empty tree cell reads as a bug.
-// Coalesced here, at the display layer, rather than in the mirror - `dune_dir`
-// stores the directory dune actually named. (The monorepo trace happens to have
-// no such row; small traces do.)
-const TOP_LEVEL_LABEL = '(top level)';
+// The one directory row with no path is coalesced here, at the display layer,
+// rather than in the mirror - `dune_dir` stores the directory dune actually
+// named. (The monorepo trace happens to have no such row; small traces do.)
 
 /**
  * Every column the source selects, in order. All of them are kept and exported:

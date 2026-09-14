@@ -305,6 +305,15 @@ export interface SqlNodeMirror extends AsyncDisposable {
   // (see lifecycle_sql.ts's KEY_EXPR). How a `gen-rules` selection resolves
   // back to a directory (see controller.ts's dirForSelection()).
   dirForGenRulesKey(dirStrId: number): Promise<number | undefined>;
+
+  // A directory's path, synchronously. Undefined for an id outside the
+  // directory space; `''` is the top level, which is a directory like any
+  // other rather than a missing one (see model/dir_tree.ts).
+  //
+  // The one lookup here that is not a query. A DataGrid cell renderer is
+  // synchronous, so labelling a `dir_id` cell the way a `node_id` cell is
+  // labelled needs the paths in memory (see views/node_cell.ts).
+  dirPath(dirId: number): string | undefined;
 }
 
 /**
@@ -1124,6 +1133,14 @@ export async function buildNodeMirror(
     p.rows(census.tree.size);
     return census;
   });
+  // The census's `DirTree` goes out of scope with this function; its paths do
+  // not, because `dirPath` needs them for the lifetime of the mirror. Lifted
+  // out as bare strings rather than by keeping the tree: that drops the intern
+  // Map and the `DirRow` objects, leaving one string per directory. That is 364
+  // of them on merlin's trace - ~37 KiB of path text, counted by replaying this
+  // census over that trace's blob - and ~19k on the monorepo's, against a graph
+  // of 818k nodes.
+  const dirPaths = dirs.tree.rows.map((row) => row.path);
 
   // The raw/plain tables (chunked inserts; pre-dropped for idempotent reload).
   // `node_id` / `id` are declared INTEGER PRIMARY KEY, i.e. they *are* the
@@ -1419,6 +1436,10 @@ export async function buildNodeMirror(
         `SELECT dir_id AS v FROM ${RAW_GEN_RULES_TABLE}
          WHERE dir_str_id = ${Math.trunc(dirStrId)}`,
       );
+    },
+
+    dirPath(dirId: number): string | undefined {
+      return dirPaths[dirId];
     },
 
     async timingFor(id: NodeId): Promise<NodeTiming> {

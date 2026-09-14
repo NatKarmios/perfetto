@@ -45,10 +45,13 @@ import {StackAuto} from '../../../widgets/stack';
 import type {DuneGraphController} from '../controller';
 import type {BuildGraph, NodeId} from '../model/graph';
 import {
+  DUNE_DIR_ID_COLUMNS,
   DUNE_NODE_ID_COLUMN,
   DUNE_NODE_ID_COLUMNS,
+  dirCellLabel,
   nodeAnchor,
   nodeCellLabel,
+  renderDirCell,
   renderNodeCell,
   renderNodeCellActions,
   sliceAnchor,
@@ -76,6 +79,11 @@ const NODE_COL = DUNE_NODE_ID_COLUMN;
 const SRC_COL = 'src';
 const DST_COL = 'dst';
 const CHIP_COLS = DUNE_NODE_ID_COLUMNS;
+
+// The directory-bearing columns, which chip too - as a directory rather than a
+// node (see node_cell.ts). A separate list because a directory is not a node:
+// no ＋/－ toggle, no part in the bulk actions, and nothing hidden behind it.
+const DIR_COLS = DUNE_DIR_ID_COLUMNS;
 
 // A node's primary lifecycle slice (`dune_node.slice_id`), rendered as a plain
 // slice link. Node-bearing too, but only indirectly: it's timing data rather
@@ -855,7 +863,10 @@ export class DuneQueryResults {
     ];
   }
 
-  private buildSchema(response: QueryResponse): ColumnSchema {
+  // Not private: its unit test drives it directly. A DataGrid virtualises its
+  // rows on a measured height, and jsdom measures everything as zero, so a test
+  // that rendered the pane would assert on a grid with no cells in it.
+  buildSchema(response: QueryResponse): ColumnSchema {
     const chipCols = new Set(this.chipCols(response));
     const schema: ColumnSchema = {};
     for (const col of response.columns) {
@@ -864,9 +875,11 @@ export class DuneQueryResults {
           ? this.sliceLinkDef(col)
           : chipCols.has(col)
             ? this.chipDef(col)
-            : DURATION_COLS.has(col)
-              ? this.durationDef(col)
-              : {title: col};
+            : DIR_COLS.includes(col)
+              ? this.dirChipDef(col)
+              : DURATION_COLS.has(col)
+                ? this.durationDef(col)
+                : {title: col};
     }
     return schema;
   }
@@ -892,6 +905,17 @@ export class DuneQueryResults {
       cellRenderer: (value) => renderNodeCell(this.controller, value),
       cellFormatter: (value) => nodeCellLabel(this.controller, value),
       actions: (value) => renderNodeCellActions(this.controller, value),
+    };
+  }
+
+  // A `dir_id` column: the directory as a chip + its path, linking to that
+  // directory's `gen-rules` span (see node_cell.ts). No `actions`: a directory
+  // is not a graph node, so there is nothing to add or remove.
+  private dirChipDef(col: string): ColumnDef {
+    return {
+      title: col,
+      cellRenderer: (value) => renderDirCell(this.controller, value),
+      cellFormatter: (value) => dirCellLabel(this.controller, value),
     };
   }
 

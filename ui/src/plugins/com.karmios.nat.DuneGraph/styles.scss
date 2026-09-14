@@ -623,6 +623,15 @@
       color: var(--pf-color-text-on-warning);
     }
 
+    // A directory (see node_cell.ts's renderDirCell). Neutral on purpose: it
+    // borrows neither node hue, because a directory is not a node.
+    &--dir {
+      background: var(--pf-color-background-secondary);
+      color: var(--pf-color-text-muted);
+      border: 1px solid var(--pf-color-border);
+      padding: 0 5px;
+    }
+
     // Cancelled/unfinished: the kind hue has to stay - it's the only thing
     // saying "dep" vs "rule" - so the chip is dimmed rather than recoloured,
     // matching the muted marker beside it.

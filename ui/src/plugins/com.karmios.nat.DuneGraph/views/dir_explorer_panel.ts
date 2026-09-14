@@ -61,19 +61,11 @@ import {
   RULE_OUTCOMES,
 } from '../model/graph';
 import type {NodeKind} from '../model/graph';
+import {TOP_LEVEL_LABEL, dirPathLabel} from '../model/dir_tree';
 import {plural} from '../model/graph';
 import {formatDurNs} from './node_display';
 import {renderNodeCell, renderNodeCellActions} from './node_cell';
 import {bulkNodeActions} from './node_tree_actions';
-
-/**
- * How a directory with no path renders. `dune_dir` files anything dune reported
- * at the top level under the empty prefix (see dir_tree.ts), and a blank row
- * reads as a bug. Same label the Data Explorer hand-off uses for the same row -
- * kept in step by eye rather than shared, since that one has to be inlined into
- * generated SQL (see dir_tree_source.ts).
- */
-const TOP_LEVEL_LABEL = '(top level)';
 
 /**
  * The "at least this long" thresholds offered, in nanoseconds.
@@ -813,7 +805,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
     narrowTo?: (dir: DirEntry) => void,
   ): m.Children {
     if (count === 0 && narrowTo === undefined) return undefined;
-    const where = dir.path === '' ? TOP_LEVEL_LABEL : dir.path;
+    const where = dirPathLabel(dir.path);
     // Whether *this* row is the one the caller's filter names. By id, since
     // that is what was handed out, and through `rowIdFor` first exactly as the
     // expansion set goes through `remapKeys`: compression re-decides which

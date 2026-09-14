@@ -819,6 +819,14 @@ export class DuneGraphController {
     return this.graph.has(nodeId) ? nodeId : undefined;
   }
 
+  // The path of a `dune_dir` id, or undefined for an id the mirror doesn't
+  // know - which includes every id before the mirror is built. Synchronous, so
+  // a DataGrid cell can label a `dir_id` (see views/node_cell.ts); the mirror
+  // keeps the paths in memory for exactly that (see sql_graph.ts's dirPath).
+  dirPath(dirId: number): string | undefined {
+    return this.nodeMirror?.dirPath(dirId);
+  }
+
   // Whether the cheap SQL tier (`dune_node` and the per-kind detail tables) is
   // queryable right now. Anything that puts those table names into SQL has to
   // check first - they simply don't exist until the mirror is built (see
