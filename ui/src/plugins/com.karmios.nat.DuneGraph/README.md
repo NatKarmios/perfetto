@@ -66,10 +66,10 @@ Select a `gen-rules` slice and the same area shows the **directory** behind it
 instead: how long the span took, the `dune` file it read (or, when it recorded
 none, the nearest ancestor directory's, with how many levels up that was as a
 link to it), its parent and subdirectories, and — counted first, listed only
-when you ask — the rules and dependencies filed directly in it. A node's panel carries the link
-the other way, as the `dir` line under its title, so you can walk between the
-node view and the directory view without leaving the tab. "Show in Explorer"
-opens the other tab and expands its tree down to the directory.
+when you ask — the rules and dependencies filed directly in it. A node's panel
+carries the link the other way, as the `dir` line under its title, so you can
+walk between the node view and the directory view without leaving the tab. "Show
+in Explorer" opens the other tab and expands its tree down to the directory.
 
 Only directories dune generated rules for have a span to select, so a child
 directory without one is listed as plain text rather than as a link — the link

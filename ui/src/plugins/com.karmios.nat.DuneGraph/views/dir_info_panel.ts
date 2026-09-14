@@ -201,7 +201,12 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
     path: string,
   ): m.Children {
     const details = this.details;
-    if (details === undefined) return undefined;
+    // Nothing at all for a directory dune never generated rules for. The walk
+    // starts at the directory and steps upwards, so such a directory can still
+    // inherit an ancestor's file - but it is a path *prefix* rather than
+    // somewhere dune read anything, and saying what it would have inherited
+    // reads as a claim about it.
+    if (details?.genRules === undefined) return undefined;
     const file = details.duneFile;
     if (file === undefined) {
       return m(

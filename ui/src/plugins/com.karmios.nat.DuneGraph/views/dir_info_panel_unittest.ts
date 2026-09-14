@@ -297,9 +297,10 @@ describe('DirInfoPanel', () => {
   });
 
   test('a directory dune generated no rules for says that instead', async () => {
-    // It still gets a `dune` file line: the walk starts at the directory and
-    // steps upwards, so a directory with no span of its own can still inherit
-    // an ancestor's file, and that is worth saying.
+    // And gets no `dune` file line at all - not even the ancestor's, which the
+    // walk does return. A directory with no span is a path prefix rather than
+    // somewhere dune read anything, so naming a file against it would read as
+    // a claim about it.
     const {engine} = stubEngine([
       {
         match: DETAILS,
@@ -308,8 +309,8 @@ describe('DirInfoPanel', () => {
             n_gen_rules: 0,
             start_slice_id: null,
             finish_slice_id: null,
-            dune_file_dir_id: null,
-            dune_file: null,
+            dune_file_dir_id: 2,
+            dune_file: 'lib/dune',
           }),
         ],
       },
@@ -317,7 +318,9 @@ describe('DirInfoPanel', () => {
     const root = await renderPanel(fakeController(), engine);
 
     expect(root.textContent).toContain('no gen-rules');
-    expect(root.textContent).toContain('No dune file');
+    expect(root.textContent).not.toContain('Dune file');
+    expect(root.textContent).not.toContain('No dune file');
+    expect(root.textContent).not.toContain('lib/dune');
   });
 
   test('the parent link selects the parent directory', async () => {

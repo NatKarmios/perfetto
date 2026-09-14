@@ -716,16 +716,16 @@ hanging off `node_id`, and for the same reason: `dune_dir` is one row per path
 _prefix_ and a `gen-rules` is a span present on only some of them. Its only
 stored part is `_dune_gen_rules(dir_id, dir_str_id)`, two integers mapping the
 dict id the timing row is keyed by to the directory the census interned it as;
-everything else — the slices, the duration, the `dune` file —
-comes from `_dune_timing` and a per-row `extract_arg` on the finish slice, which
-is ~35k rows at monorepo scale and cheap enough not to materialise until a phase
-timing says otherwise. `dune_dyn_includes` is the same view with no map table at
-all: a `dynamic-includes` span is keyed by a `dune` file's dict id, which is
-already what a query wants. Both join the timing table with an explicit `kind`
-term, because a `genrules` key and a dep's `orig_id` are dict ids in one space.
-Both slice joins are `LEFT`, so an interrupted build's unmatched `-start`
-(dune's `flush_unmatched`) keeps its row with a NULL finish; no trace to hand
-produces one, so that is held by a unit test rather than by data.
+everything else — the slices, the duration, the `dune` file — comes from
+`_dune_timing` and a per-row `extract_arg` on the finish slice, which is ~35k
+rows at monorepo scale and cheap enough not to materialise until a phase timing
+says otherwise. `dune_dyn_includes` is the same view with no map table at all: a
+`dynamic-includes` span is keyed by a `dune` file's dict id, which is already
+what a query wants. Both join the timing table with an explicit `kind` term,
+because a `genrules` key and a dep's `orig_id` are dict ids in one space. Both
+slice joins are `LEFT`, so an interrupted build's unmatched `-start` (dune's
+`flush_unmatched`) keeps its row with a NULL finish; no trace to hand produces
+one, so that is held by a unit test rather than by data.
 
 ### Timing — `sql/lifecycle_sql.ts`
 
