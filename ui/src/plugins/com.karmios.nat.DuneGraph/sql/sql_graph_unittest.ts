@@ -33,6 +33,7 @@ import type {Engine} from '../../../trace_processor/engine';
 import type {BuildGraph} from '../model/graph';
 import {dep, depSet, rule, testGraph} from '../model/graph_test_helper';
 import {PerfRun} from '../perf';
+import {timingKindCode} from './lifecycle_sql';
 import type {MirrorPhase} from './sql_graph';
 import {
   EDGE_MIRROR_PHASES,
@@ -425,6 +426,84 @@ describe('sql_graph dir tier', () => {
       (q) => q === 'DROP TABLE IF EXISTS _dune_rule_dir',
     );
     expect(drops).toHaveLength(2);
+  });
+});
+
+describe('sql_graph gen-rules views', () => {
+  const fixture = () =>
+    testGraph([
+      rule('1', {dir: '_build/default/lib'}),
+      dep('_build/default/lib/x.cmi'),
+    ]);
+
+  // The generated `CREATE PERFETTO VIEW` for a public view, by SQL name.
+  const view = async (name: string, keys: readonly number[] = []) => {
+    const sql = await capture(fixture().graph, keys);
+    const stmt = sql.find((q) => q.includes(`CREATE PERFETTO VIEW ${name}(`));
+    expect(stmt, `no CREATE for ${name}`).toBeDefined();
+    return stmt!;
+  };
+
+  it('maps each gen-rules key to the directory the census interned it as', async () => {
+    const g = fixture();
+    const key = g.graph.traceIdOf(g.id('_build/default/lib/x.cmi'));
+    const sql = await capture(g.graph, [key]);
+    const dirId = new Map(rowsOf(sql, '_dune_dir').map((r) => [r[3], r[0]]));
+    // Ints only, one row per key: `(dir_id, dir_str_id)`, the dict id the
+    // timing row is keyed by against the `dune_dir` row for the same path.
+    expect(rowsOf(sql, '_dune_gen_rules')).toEqual([
+      [dirId.get("'_build/default/lib/x.cmi'"), String(key)],
+    ]);
+  });
+
+  it('joins the timing table on the gen-rules kind, never on the key alone', async () => {
+    // A `genrules` key and a dep's `orig_id` are both dict ids in one space,
+    // so dropping the `kind` term would match unrelated deps.
+    const stmt = await view('dune_gen_rules');
+    expect(stmt).toContain(
+      `ON t.kind = ${timingKindCode('genrules')} AND t.key = g.dir_str_id`,
+    );
+  });
+
+  it('keeps a gen-rules span whose finish never arrived', async () => {
+    // LEFT, not JOIN, on both slices: an interrupted build flushes an
+    // unmatched `-start`, whose row must survive with a NULL finish and a NULL
+    // `dune_file`. No trace to hand exercises it, which is why it is asserted
+    // here.
+    const stmt = await view('dune_gen_rules');
+    expect(stmt).toContain('LEFT JOIN slice ss ON ss.id = t.start_slice_id');
+    expect(stmt).toContain('LEFT JOIN slice fs ON fs.id = t.finish_slice_id');
+    // And the slice ids come off those joins, so they are real JOINIDs rather
+    // than the timing table's plain integers.
+    expect(stmt).toContain('ss.id AS start_slice_id');
+    expect(stmt).toContain('fs.id AS finish_slice_id');
+  });
+
+  it('reads dynamic-includes straight off the timing table', async () => {
+    // No map table: the key is the `dune` file's dict id, which is already
+    // what a query wants.
+    const stmt = await view('dune_dyn_includes');
+    expect(stmt).toContain('t.key AS dune_file_str_id');
+    expect(stmt).toContain(`WHERE t.kind = ${timingKindCode('dyninc')}`);
+    expect(stmt).not.toContain('_dune_gen_rules');
+  });
+
+  it('drops both views before the tables they read', async () => {
+    const sql: string[] = [];
+    const engine = stubEngine(sql);
+    const mirror = await buildNodeMirror(engine, fixture().graph);
+    sql.length = 0;
+    await mirror[Symbol.asyncDispose]();
+    const at = (q: string) => sql.indexOf(q);
+    for (const v of ['dune_gen_rules', 'dune_dyn_includes']) {
+      expect(at(`DROP VIEW IF EXISTS ${v}`)).toBeGreaterThanOrEqual(0);
+      expect(at(`DROP VIEW IF EXISTS ${v}`)).toBeLessThan(
+        at('DROP TABLE IF EXISTS dune_string'),
+      );
+      expect(at(`DROP VIEW IF EXISTS ${v}`)).toBeLessThan(
+        at('DROP TABLE IF EXISTS _dune_timing'),
+      );
+    }
   });
 });
 

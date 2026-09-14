@@ -96,6 +96,8 @@ const INLINE_VIEWS = [
   'EDGE_TABLE',
   'EDGE_BLOCKED_VIEW',
   'PROCESS_VIEW',
+  'GEN_RULES_VIEW',
+  'DYN_INCLUDES_VIEW',
 ];
 
 function documentedColumns(sqlName: string): string[] {

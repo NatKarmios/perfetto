@@ -162,6 +162,8 @@ short:
 | `dune_dep`          | Per-dep detail: `path`, `resolution`, `status`, `resolved_rule_node_id`, `is_source`.                  |
 | `dune_rule_target`  | A rule's output targets, one row per target.                                                           |
 | `dune_dir`          | The directory hierarchy, with per-directory and whole-subtree rollups and duration sums.               |
+| `dune_gen_rules`    | One row per directory dune generated rules for: the span's ts and duration, and the `dune` file.       |
+| `dune_dyn_includes` | One row per `dynamic-includes` span: a `dune` file dune had to generate before it could read it.       |
 | `dune_edge`         | Directed edges, "source depends on dest", tagged `static` / `dynamic` / `resolved` / `expanded`.       |
 | `dune_edge_blocked` | `dune_edge` plus `blocked_ns`: how much of `src`'s span `dst` accounts for.                            |
 | `dune_process`      | One row per spawned process: its slice, `ts`/`dur`, and the rule that forced it.                       |

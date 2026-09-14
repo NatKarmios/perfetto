@@ -459,6 +459,99 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
     ],
   },
   {
+    name: 'dune_gen_rules',
+    description:
+      'One row per directory dune generated rules for, with the span that ' +
+      'did it. Joins to dune_dir `USING (dir_id)`; every directory with ' +
+      '`n_gen_rules = 1` has exactly one row here.',
+    columns: [
+      {
+        name: 'dir_id',
+        description: 'The directory, as a dune_dir id.',
+        type: INT,
+      },
+      {
+        name: 'start_slice_id',
+        description: "The `gen-rules-start` instant's slice.",
+        type: SLICE_ID,
+      },
+      {
+        name: 'finish_slice_id',
+        description:
+          'The matching `gen-rules-finish`, or NULL if the build ended ' +
+          'before it arrived.',
+        type: SLICE_ID,
+      },
+      {name: 'ts', description: 'When rule generation started.', type: TS},
+      {
+        name: 'dur_ns',
+        description:
+          'How long it took, in nanoseconds. NULL for a span that never ' +
+          'finished.',
+        type: DUR,
+      },
+      {
+        name: 'dune_file',
+        description:
+          'The `dune` file the rules came from, as a source path, when the ' +
+          'finish recorded one. NULL otherwise - most directories have none.',
+        type: STR,
+      },
+      {
+        name: 'n_occurrences',
+        description:
+          'How many times the directory had rules generated. 1 on every ' +
+          'trace measured; more would mean a watch-mode rebuild.',
+        type: INT,
+      },
+    ],
+  },
+  {
+    name: 'dune_dyn_includes',
+    description:
+      'One row per `dynamic-includes` span: dune expanding a `dune` file ' +
+      "whose contents it had to generate first. Keyed by the file's " +
+      'interned id rather than a directory, since that is what the span ' +
+      'names.',
+    columns: [
+      {
+        name: 'dune_file_str_id',
+        description: "The `dune` file's id in dune_string.",
+        type: INT,
+      },
+      {
+        name: 'start_slice_id',
+        description: "The `dynamic-includes-start` instant's slice.",
+        type: SLICE_ID,
+      },
+      {
+        name: 'finish_slice_id',
+        description:
+          'The matching `dynamic-includes-finish`, or NULL if the build ' +
+          'ended before it arrived.',
+        type: SLICE_ID,
+      },
+      {name: 'ts', description: 'When the expansion started.', type: TS},
+      {
+        name: 'dur_ns',
+        description:
+          'How long it took, in nanoseconds. NULL for a span that never ' +
+          'finished.',
+        type: DUR,
+      },
+      {
+        name: 'dune_file',
+        description: 'That file as a source path, e.g. `use/dune`.',
+        type: STR,
+      },
+      {
+        name: 'n_occurrences',
+        description: 'How many times the file was expanded.',
+        type: INT,
+      },
+    ],
+  },
+  {
     name: 'dune_string',
     description:
       "The mirror's intern table - every path and directory the build " +

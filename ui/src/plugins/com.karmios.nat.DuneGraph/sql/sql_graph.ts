@@ -104,6 +104,14 @@ const NODE_ORIG_ID_INDEX = '_dune_node_orig_id';
 const DIR_TABLE = 'dune_dir';
 const RAW_DIR_TABLE = '_dune_dir';
 const RULE_DIR_TABLE = '_dune_rule_dir';
+// The `gen-rules` and `dynamic-includes` spans, as views over the timing table.
+// `gen-rules` is keyed by a directory's dict id, so it needs a map from that id
+// to the `dune_dir` row the census interned it as; `dynamic-includes` is keyed
+// by a `dune` file's dict id, which is already the thing a query wants, so it
+// needs no table of its own.
+const GEN_RULES_VIEW = 'dune_gen_rules';
+const RAW_GEN_RULES_TABLE = '_dune_gen_rules';
+const DYN_INCLUDES_VIEW = 'dune_dyn_includes';
 // A node's span as a half-open interval, and the macro intersecting two of
 // them across an edge.
 const SPAN_VIEW = '_dune_span';
@@ -209,6 +217,7 @@ export const NODE_MIRROR_PHASES: readonly MirrorPhase[] = [
   {id: `sql: insert ${RULE_DIR_TABLE}`, label: 'Rule directories'},
   {id: `sql: sum ${DIR_TABLE} durations`, label: 'Directory durations'},
   {id: `sql: insert ${RAW_DIR_TABLE}`, label: 'Directories'},
+  {id: `sql: insert ${RAW_GEN_RULES_TABLE}`, label: 'Gen-rules directories'},
   {id: `sql: index ${DIR_TABLE} descent`, label: 'Directory index'},
   {id: `sql: index ${NODE_TABLE} rule ids`, label: 'Rule id index'},
   {id: 'sql: create node views', label: 'Views'},
@@ -842,6 +851,94 @@ function dirView(): string {
   `;
 }
 
+// RAW_GEN_RULES_TABLE's rows: the dict id a `gen-rules` timing row is keyed by
+// against the `dune_dir` id the census interned that path as. Ints only, and
+// the same shape as RULE_DIR_TABLE - but kept for the tier's lifetime rather
+// than dropped after one aggregate, because the view below joins through it on
+// every query.
+function genRulesRows(census: DirCensus): RowSource {
+  return {
+    count: census.genRulesStrIds.length,
+    *rows(): Iterable<string> {
+      for (let i = 0; i < census.genRulesStrIds.length; i++) {
+        yield `(${census.genRulesDirIds[i]}, ${census.genRulesStrIds[i]})`;
+      }
+    },
+  };
+}
+
+// One row per directory dune generated rules for, with the span's timing and
+// the `dune` file behind it. A sibling of `dune_dir` rather than columns on it:
+// `dune_dir` is one row per path *prefix*, and a `gen-rules` is a span present
+// on only some of them, so this joins `USING (dir_id)` the way `dune_rule` and
+// `dune_dep` hang off `node_id`.
+//
+// The `kind` term is not optional. A `genrules` key and a dep's `orig_id` are
+// both dict ids in one space, so an unfiltered join would match whatever dep
+// shared the number (see lifecycle_sql.ts's TimingKind).
+//
+// Both slice joins are LEFT, and stay LEFT even though no trace to hand
+// exercises it: an interrupted build flushes an unmatched `-start`
+// (`trace_perfetto.ml`'s `flush_unmatched`), whose row has a NULL
+// `finish_slice_id` and must survive with a NULL `dune_file` rather than
+// vanish. The slice ids are sourced as `ss.id` / `fs.id` off those joins rather
+// than read straight off the timing table, which is what makes them real
+// `JOINID(slice.id)`s.
+//
+// `dune_file` is resolved with a per-row `extract_arg` (~35k rows at monorepo
+// scale) rather than materialized into the table above. Deliberate: it keeps
+// the map table two integers wide. If a phase timing ever shows it, fill a
+// `dune_file_str_id` column from an `INSERT ... SELECT` instead.
+function genRulesView(): string {
+  return `
+      CREATE PERFETTO VIEW ${GEN_RULES_VIEW}(
+        dir_id LONG,
+        start_slice_id JOINID(slice.id),
+        finish_slice_id JOINID(slice.id),
+        ts LONG,
+        dur_ns LONG,
+        dune_file STRING,
+        n_occurrences LONG
+      ) AS
+      SELECT g.dir_id AS dir_id, ss.id AS start_slice_id,
+        fs.id AS finish_slice_id, ss.ts AS ts, t.dur_ns AS dur_ns,
+        fstr.str AS dune_file, t.occurrence_count AS n_occurrences
+      FROM ${RAW_GEN_RULES_TABLE} g
+      JOIN ${TIMING_TABLE} t
+        ON t.kind = ${timingKindCode('genrules')} AND t.key = g.dir_str_id
+      LEFT JOIN slice ss ON ss.id = t.start_slice_id
+      LEFT JOIN slice fs ON fs.id = t.finish_slice_id
+      LEFT JOIN ${STRING_TABLE} fstr
+        ON fstr.id = extract_arg(fs.arg_set_id, 'debug.dune.dune_file_path_id')
+  `;
+}
+
+// The same for `dynamic-includes`, which needs no map table at all: its timing
+// key is the `dune` file's dict id, which is already what a query wants, so the
+// view is the timing table filtered to that kind with the path joined on. The
+// slice joins are LEFT for the same interrupted-build reason as above.
+function dynIncludesView(): string {
+  return `
+      CREATE PERFETTO VIEW ${DYN_INCLUDES_VIEW}(
+        dune_file_str_id LONG,
+        start_slice_id JOINID(slice.id),
+        finish_slice_id JOINID(slice.id),
+        ts LONG,
+        dur_ns LONG,
+        dune_file STRING,
+        n_occurrences LONG
+      ) AS
+      SELECT t.key AS dune_file_str_id, ss.id AS start_slice_id,
+        fs.id AS finish_slice_id, ss.ts AS ts, t.dur_ns AS dur_ns,
+        fstr.str AS dune_file, t.occurrence_count AS n_occurrences
+      FROM ${TIMING_TABLE} t
+      LEFT JOIN slice ss ON ss.id = t.start_slice_id
+      LEFT JOIN slice fs ON fs.id = t.finish_slice_id
+      LEFT JOIN ${STRING_TABLE} fstr ON fstr.id = t.key
+      WHERE t.kind = ${timingKindCode('dyninc')}
+  `;
+}
+
 // The typed view over `_dune_process`. `slice_id` is sourced as `s.id` from the
 // join rather than as the stored integer, so it carries a real
 // `SliceTable::Id`; `ts` / `dur_ns` come off the same row, making the join one
@@ -977,6 +1074,8 @@ export async function buildNodeMirror(
       RULE_TABLE,
       DEP_TABLE,
       DIR_TABLE,
+      GEN_RULES_VIEW,
+      DYN_INCLUDES_VIEW,
       PROCESS_VIEW,
       SPAN_VIEW,
     ]) {
@@ -1104,6 +1203,18 @@ export async function buildNodeMirror(
       'self_dur_ns INTEGER, total_dur_ns INTEGER',
     DIR_COLUMNS,
     dirRows(dirs, selfDurNs),
+    opts,
+  );
+
+  // The dict id -> directory map {@link genRulesView} joins through. Empty on a
+  // trace whose emitter predates the interned `dir_path_id`, in which case no
+  // `gen-rules` span produced a timing key at all.
+  const genRulesTable = await materializeTable(
+    engine,
+    RAW_GEN_RULES_TABLE,
+    'dir_id INTEGER PRIMARY KEY, dir_str_id INTEGER',
+    ['dir_id', 'dir_str_id'],
+    genRulesRows(dirs),
     opts,
   );
 
@@ -1246,6 +1357,8 @@ export async function buildNodeMirror(
       LEFT JOIN ${STRING_TABLE} ps ON ps.id = n.orig_id
     `);
     await engine.query(dirView());
+    await engine.query(genRulesView());
+    await engine.query(dynIncludesView());
     await engine.query(processView(space));
     // The span view and the macro over it: cheap to define, and defining the
     // macro here rather than with the edge tier keeps it usable over any
@@ -1296,7 +1409,8 @@ export async function buildNodeMirror(
       await rawDepTable[Symbol.asyncDispose]();
       await ruleTargetTable[Symbol.asyncDispose]();
       await rawDirTable[Symbol.asyncDispose]();
-      // After the views, all three of which resolve strings through it.
+      await genRulesTable[Symbol.asyncDispose]();
+      // After the views, which resolve strings through it.
       await stringTable[Symbol.asyncDispose]();
       // Last: the views above join it.
       await lifecycle[Symbol.asyncDispose]();
