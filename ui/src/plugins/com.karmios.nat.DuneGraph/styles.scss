@@ -587,6 +587,14 @@
     pointer-events: none;
   }
 
+  // Zero-size anchor a right-clicked dot's menu is positioned against,
+  // placed (left/top) inline from JS exactly as the hover label is.
+  &__menu-anchor {
+    position: absolute;
+    width: 0;
+    height: 0;
+  }
+
   &__status {
     display: flex;
     align-items: center;

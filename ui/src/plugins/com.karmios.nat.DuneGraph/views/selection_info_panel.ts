@@ -18,7 +18,7 @@ import {Anchor} from '../../../widgets/anchor';
 import {Button} from '../../../widgets/button';
 import {Icon} from '../../../widgets/icon';
 import {EmptyState} from '../../../widgets/empty_state';
-import {MenuItem, PopupMenu} from '../../../widgets/menu';
+import {PopupMenu} from '../../../widgets/menu';
 import {Accordion, AccordionSection} from '../../../widgets/accordion';
 import type {DuneGraphController} from '../controller';
 import type {
@@ -42,6 +42,7 @@ import {
   outcomeLabel,
 } from './node_display';
 import {
+  addToGraphMenuItems,
   groupBulkActions,
   nodesInGroup,
   nodeToggleButton,
@@ -294,12 +295,8 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
   }
 
   // Dropdown to add the node - or one of its relations - to the graph
-  // selection. "Parents"/"ancestors" are nodes that directly/transitively
-  // depend on this one; "children"/"descendants" are nodes it directly/
-  // transitively depends on; "forcers" is the chain of nodes that transitively
-  // forced this one into the build. Every option adds the current node itself
-  // alongside the relation, so the added nodes stay connected to something
-  // already visible.
+  // selection. The items are `addToGraphMenuItems` (node_tree_actions.ts),
+  // shared with the graph pane's right-click menu on a dot.
   private renderAddMenu(
     controller: DuneGraphController,
     node: NodeId,
@@ -313,48 +310,8 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           rightIcon: Icons.ContextMenu,
         }),
       },
-      this.addMenuItem(controller, node, 'This node', 'add', () => []),
-      this.addMenuItem(controller, node, 'Parents', 'arrow_upward', () =>
-        controller.parentsOf(node),
-      ),
-      this.addMenuItem(controller, node, 'Children', 'arrow_downward', () =>
-        controller.childrenOf(node),
-      ),
-      this.addMenuItem(
-        controller,
-        node,
-        'Ancestors',
-        'keyboard_double_arrow_up',
-        () => controller.ancestorsOf(node),
-      ),
-      this.addMenuItem(
-        controller,
-        node,
-        'Descendants',
-        'keyboard_double_arrow_down',
-        () => controller.descendantsOf(node),
-      ),
-      this.addMenuItem(controller, node, 'Forcers', 'priority_high', () =>
-        controller.forcersOf(node),
-      ),
+      addToGraphMenuItems(controller, node),
     );
-  }
-
-  // One "Add to graph" menu item: adds `node` plus whatever `related` returns.
-  // `related` is only called on click, since some relations (e.g. descendants
-  // of a hot node) can be expensive to walk.
-  private addMenuItem(
-    controller: DuneGraphController,
-    node: NodeId,
-    label: string,
-    icon: string,
-    related: () => readonly NodeId[],
-  ): m.Children {
-    return m(MenuItem, {
-      label,
-      icon,
-      onclick: () => controller.addToGraph([node, ...related()]),
-    });
   }
 
   // The directory the node is filed under, as a muted line under the header,

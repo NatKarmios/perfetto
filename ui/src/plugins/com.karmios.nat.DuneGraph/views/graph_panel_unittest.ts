@@ -21,7 +21,8 @@
  * set draws *its* nodes, that "Timeline" and "Clear" are gone in the injected
  * mode (they act on the selection), and that "Hide rules" still works in both,
  * including the relayout the injected mode needs since the set's own version
- * knows nothing about it.
+ * knows nothing about it. A dot's right-click menu is on the same seam, and for
+ * the same reason.
  */
 
 import m from 'mithril';
@@ -57,6 +58,8 @@ function fakeController(over: {readonly selection?: readonly NodeId[]} = {}) {
     visited: [] as NodeId[],
     timelines: 0,
     cleared: 0,
+    added: [] as NodeId[][],
+    removed: [] as NodeId[][],
   };
   const controller = {
     graph: g.graph,
@@ -88,6 +91,15 @@ function fakeController(over: {readonly selection?: readonly NodeId[]} = {}) {
     clearGraph: () => {
       state.cleared++;
     },
+    addToGraph: (nodes: Iterable<NodeId>) => state.added.push([...nodes]),
+    removeFromGraph: (nodes: Iterable<NodeId>) =>
+      state.removed.push([...nodes]),
+    isInGraph: (node: NodeId) => state.selection.includes(node),
+    parentsOf: () => [],
+    childrenOf: () => [],
+    ancestorsOf: () => [],
+    descendantsOf: () => [],
+    forcersOf: () => [],
   };
   return {controller: controller as unknown as DuneGraphController, state};
 }
@@ -96,6 +108,9 @@ let root: HTMLElement;
 
 beforeEach(() => {
   root = document.createElement('div');
+  // The dot menu is a Popup, which renders through Portal into document.body -
+  // outside `root` entirely - so the body has to be cleared between tests too.
+  document.body.replaceChildren();
 });
 
 function render(attrs: {
@@ -379,6 +394,157 @@ describe('the graph pane between a pan and a click', () => {
     pan(el);
     releaseClick(el);
     clickDot();
+
+    expect(state.visited).toEqual([g.id('a')]);
+  });
+});
+
+/**
+ * The right-click menu on a dot, which is the add-to-graph menu the selection
+ * panel's button offers (one shared item list, see node_tree_actions.ts) plus a
+ * "Remove from graph" the pane appends for a node already in the graph.
+ *
+ * Its items are pinned in `node_tree_actions_unittest.ts`, where they are plain
+ * vnodes; what is worth pinning here is the wiring - that a right-click opens
+ * it over the dot and *only* in the selection mode, that an item reaches the
+ * controller, and that none of it disturbs the click that navigates.
+ */
+describe('the graph pane on a right-clicked dot', () => {
+  // jsdom has no `getScreenCTM` and no `DOMPoint`, so the pane's layout->screen
+  // mapping (dotScreenPos) cannot run without them. The identity transform is
+  // enough: the menu only needs *a* position, and where exactly it lands is
+  // popper's business, not this file's.
+  function stubGeometry(): void {
+    const el = root.querySelector('svg') as SVGSVGElement & {
+      getScreenCTM: () => DOMMatrix;
+    };
+    el.getScreenCTM = () => ({a: 1, b: 0, c: 0, d: 1, e: 0, f: 0}) as DOMMatrix;
+    (globalThis as unknown as {DOMPoint: unknown}).DOMPoint = class {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+      ) {}
+      matrixTransform(mx: DOMMatrix) {
+        return {
+          x: this.x * mx.a + this.y * mx.c + mx.e,
+          y: this.x * mx.b + this.y * mx.d + mx.f,
+        };
+      }
+    };
+  }
+
+  function rightClickDot(): MouseEvent {
+    const e = new MouseEvent('contextmenu', {bubbles: true, cancelable: true});
+    root.querySelector('circle')!.dispatchEvent(e);
+    return e;
+  }
+
+  // The menu is a Popup, so it is in a Portal under document.body, not `root`.
+  function menuItems(): string[] {
+    return Array.from(document.body.querySelectorAll('.pf-menu-item')).map(
+      label,
+    );
+  }
+
+  test('opens the shared add menu over the dot, plus Remove', () => {
+    const {controller} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    stubGeometry();
+    const e = rightClickDot();
+    // No auto-redraw for an `m.render` root, so the frame the handler asked for
+    // is drawn by hand.
+    render({controller});
+
+    expect(e.defaultPrevented).toBe(true);
+    expect(menuItems()).toEqual([
+      'This node',
+      'Parents',
+      'Children',
+      'Ancestors',
+      'Descendants',
+      'Forcers',
+      'Remove from graph',
+    ]);
+  });
+
+  test('reaches the controller when an item is clicked', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    stubGeometry();
+    rightClickDot();
+    render({controller});
+    const item = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => label(b) === 'This node',
+    );
+    (item as HTMLElement).click();
+
+    expect(state.added).toEqual([[g.id('a')]]);
+  });
+
+  test('removes a node already in the graph', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    stubGeometry();
+    rightClickDot();
+    render({controller});
+    const item = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => label(b) === 'Remove from graph',
+    );
+    (item as HTMLElement).click();
+
+    expect(state.removed).toEqual([[g.id('a')]]);
+  });
+
+  test('offers no Remove for a node that is not in the graph', () => {
+    // Removal is gated on membership, separately from the pane's own
+    // side-panel-only gate. Today the two coincide - the pane draws the
+    // selection, so every dot in it is in the graph - which is why this asks
+    // the controller to say otherwise rather than arranging it through the
+    // pane. The add items are unaffected.
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    (controller as unknown as {isInGraph: () => boolean}).isInGraph = () =>
+      false;
+    render({controller});
+    stubGeometry();
+    rightClickDot();
+    render({controller});
+
+    expect(menuItems()).toEqual([
+      'This node',
+      'Parents',
+      'Children',
+      'Ancestors',
+      'Descendants',
+      'Forcers',
+    ]);
+    expect(state.removed).toEqual([]);
+  });
+
+  test('has no menu at all in the injected mode', () => {
+    // The nodes it would add are not the ones that card is drawing - the same
+    // reason "Timeline" and "Clear" are absent there.
+    const {controller} = fakeController({selection: [g.id('a')]});
+    render({controller, nodes: injected([g.id('a')])});
+    stubGeometry();
+    const e = rightClickDot();
+    render({controller, nodes: injected([g.id('a')])});
+
+    expect(e.defaultPrevented).toBe(false);
+    expect(menuItems()).toEqual([]);
+  });
+
+  test('does not navigate, and leaves the next click that does', () => {
+    const {controller, state} = fakeController({selection: [g.id('a')]});
+    render({controller});
+    stubGeometry();
+    rightClickDot();
+    render({controller});
+    expect(state.visited).toEqual([]);
+
+    // A contextmenu produces no click of its own, so the drag/click seam never
+    // saw the gesture and an ordinary left-click still navigates.
+    const dot = root.querySelector('circle')!;
+    dot.dispatchEvent(new MouseEvent('click', {bubbles: true}));
 
     expect(state.visited).toEqual([g.id('a')]);
   });

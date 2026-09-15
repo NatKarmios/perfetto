@@ -18,10 +18,13 @@ import {clamp} from '../../../base/math_utils';
 import {SimpleResizeObserver} from '../../../base/resize_observer';
 import {Button} from '../../../widgets/button';
 import {EmptyState} from '../../../widgets/empty_state';
+import {MenuDivider, MenuItem, PopupMenu} from '../../../widgets/menu';
+import {PopupPosition} from '../../../widgets/popup';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
 import {inducedEdges, plural} from '../model/graph';
 import {decorateNode} from './node_display';
+import {addToGraphMenuItems} from './node_tree_actions';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
 
@@ -135,6 +138,9 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   // to place the label in screen space.
   private hovered?: NodeId;
   private svgEl?: SVGSVGElement;
+  // The right-clicked node whose add-to-graph menu is open, if any. Cleared by
+  // the menu's own dismissal (see renderNodeMenu).
+  private menuNode?: NodeId;
 
   onremove(): void {
     this.resizeObs?.[Symbol.dispose]();
@@ -171,7 +177,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
               icon: 'visibility_off',
               title: 'All nodes hidden',
             })
-          : [this.renderSvg(controller), this.renderHoverLabel(controller)],
+          : [
+              this.renderSvg(attrs),
+              this.renderHoverLabel(controller),
+              this.renderNodeMenu(controller),
+            ],
       ),
     );
   }
@@ -224,7 +234,8 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     );
   }
 
-  private renderSvg(controller: DuneGraphController): m.Children {
+  private renderSvg(attrs: GraphPanelAttrs): m.Children {
+    const {controller} = attrs;
     const selected = controller.nodeForSelection();
     // The viewBox is derived from the pane's live pixel size every render, so
     // it always has exactly the element's aspect ratio - `meet` then degenerates
@@ -264,16 +275,17 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       ),
       m(
         'g.pf-dune-graph__nodes',
-        this.layout.nodes.map((n) => this.nodeDot(controller, n, selected)),
+        this.layout.nodes.map((n) => this.nodeDot(attrs, n, selected)),
       ),
     );
   }
 
   private nodeDot(
-    controller: DuneGraphController,
+    attrs: GraphPanelAttrs,
     ln: LayoutNode,
     selected: NodeId | undefined,
   ): m.Children {
+    const {controller} = attrs;
     const {node} = ln;
     return m('circle', {
       key: node,
@@ -290,6 +302,17 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       onmouseleave: () => {
         if (this.hovered === node) this.hovered = undefined;
       },
+      // Right-click opens the add-to-graph menu. Side panel only, for the same
+      // reason "Timeline" and "Clear" are (see renderToolbar): the nodes it
+      // would add are not the ones an injected set is drawing. A contextmenu
+      // produces no click, so the drag/click seam is untouched, and
+      // onPointerDown already ignores non-left buttons.
+      ...(attrs.nodes === undefined && {
+        oncontextmenu: (e: MouseEvent) => {
+          e.preventDefault();
+          this.menuNode = node;
+        },
+      }),
     });
   }
 
@@ -448,6 +471,52 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
       {style: `left: ${pos.x}px; top: ${pos.y}px`},
       icon,
       text,
+    );
+  }
+
+  // The add-to-graph menu for a right-clicked dot, hung off a zero-size anchor
+  // placed over the dot itself rather than the cursor - within DOT_RADIUS of it
+  // by construction, since the click had to land on the dot, and it costs no
+  // positioning code (popper does flip and overflow) and no stored cursor
+  // coordinates. Two consequences fall out of looking the node up in the live
+  // layout every render: the menu tracks its dot if the view pans under it, and
+  // it disappears by itself if the node leaves the layout.
+  private renderNodeMenu(controller: DuneGraphController): m.Children {
+    const node = this.menuNode;
+    if (node === undefined) return undefined;
+    const ln = this.layout.nodes.find((n) => n.node === node);
+    if (ln === undefined) return undefined;
+    const pos = this.dotScreenPos(ln);
+    if (pos === undefined) return undefined;
+    return m(
+      PopupMenu,
+      {
+        trigger: m('.pf-dune-graph__menu-anchor', {
+          style: `left: ${pos.x}px; top: ${pos.y}px`,
+        }),
+        // Controlled: the right-click opens it, and every way Popup closes
+        // (Escape, outside mousedown, an item's own click) arrives here.
+        isOpen: true,
+        onChange: (open: boolean) => {
+          if (!open) this.menuNode = undefined;
+        },
+        position: PopupPosition.BottomStart,
+        showArrow: false,
+      },
+      addToGraphMenuItems(controller, node),
+      // The one item the selection panel's button does not offer, so the
+      // shared list stays add-only and the pane appends this itself. The
+      // membership check is belt and braces today - the pane draws the
+      // selection, so every dot it can right-click is in the graph - but it is
+      // what keeps the item honest if that ever stops being true.
+      controller.isInGraph(node) && [
+        m(MenuDivider),
+        m(MenuItem, {
+          label: 'Remove from graph',
+          icon: 'remove',
+          onclick: () => controller.removeFromGraph([node]),
+        }),
+      ],
     );
   }
 

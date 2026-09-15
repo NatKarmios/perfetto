@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import type m from 'mithril';
+import {describe, expect, it} from 'vitest';
+import type {MenuItemAttrs} from '../../../widgets/menu';
+import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
-import {nodesInGroup} from './node_tree_actions';
+import {addToGraphMenuItems, nodesInGroup} from './node_tree_actions';
 import type {
   PathTreeGroup,
   PathTreeLeaf,
@@ -60,5 +64,80 @@ describe('nodesInGroup', () => {
   it('returns [] for a group with no resolvable nodes', () => {
     const tree = group('root', 'root', [leaf('x'), leaf('y')]);
     expect(nodesInGroup(tree)).toEqual([]);
+  });
+});
+
+/**
+ * Everything `addToGraphMenuItems` touches, recording both what it added and
+ * which relation walks were asked for - the latter is what the laziness test
+ * below is about. Each relation answers with one distinct node so the
+ * assertions can tell them apart.
+ */
+function fakeController() {
+  const added: NodeId[][] = [];
+  const asked: string[] = [];
+  const relation = (name: string, answer: NodeId) => () => {
+    asked.push(name);
+    return [answer];
+  };
+  const controller = {
+    addToGraph: (nodes: Iterable<NodeId>) => added.push([...nodes]),
+    parentsOf: relation('parents', 10),
+    childrenOf: relation('children', 20),
+    ancestorsOf: relation('ancestors', 30),
+    descendantsOf: relation('descendants', 40),
+    forcersOf: relation('forcers', 50),
+  };
+  return {
+    controller: controller as unknown as DuneGraphController,
+    added,
+    asked,
+  };
+}
+
+const NODE: NodeId = 1;
+
+function items(controller: DuneGraphController) {
+  return addToGraphMenuItems(controller, NODE) as m.Vnode<MenuItemAttrs>[];
+}
+
+function click(controller: DuneGraphController, label: string): void {
+  const item = items(controller).find((i) => i.attrs.label === label);
+  expect(item, `no "${label}" item`).toBeDefined();
+  (item!.attrs.onclick as () => void)();
+}
+
+describe('addToGraphMenuItems', () => {
+  it('offers the six relations, in order', () => {
+    const {controller} = fakeController();
+    expect(items(controller).map((i) => i.attrs.label)).toEqual([
+      'This node',
+      'Parents',
+      'Children',
+      'Ancestors',
+      'Descendants',
+      'Forcers',
+    ]);
+  });
+
+  it('adds the node itself alongside the relation', () => {
+    // Every item does, so the added nodes stay connected to something visible.
+    const {controller, added} = fakeController();
+    click(controller, 'This node');
+    click(controller, 'Parents');
+    click(controller, 'Descendants');
+
+    expect(added).toEqual([[NODE], [NODE, 10], [NODE, 40]]);
+  });
+
+  it('does not walk a relation until its item is clicked', () => {
+    // The documented laziness: some walks (descendants of a hot node) are
+    // expensive, so building the menu must not perform any of them.
+    const {controller, asked} = fakeController();
+    items(controller);
+    expect(asked).toEqual([]);
+
+    click(controller, 'Forcers');
+    expect(asked).toEqual(['forcers']);
   });
 });

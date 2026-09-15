@@ -14,6 +14,7 @@
 
 import m from 'mithril';
 import {Button} from '../../../widgets/button';
+import {MenuItem} from '../../../widgets/menu';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
 import type {PathTreeGroup, PathTreeRow} from '../model/path_tree';
@@ -22,10 +23,13 @@ import type {PathTreeGroup, PathTreeRow} from '../model/path_tree';
  * Graph-membership interactivity shared by both `PathTreeView` trees - the
  * current-selection panel's Dependants/Dependencies lists
  * (`selection_info_panel.ts`) and the query tab's results tree
- * (`query_results.ts`). Unlike `node_display.ts` / `path_tree.ts` /
+ * (`query_results.ts`) - plus the item list shared by the two add-to-graph
+ * menus (the selection panel's button and the graph pane's dot menu, in
+ * `graph_panel.ts`). Unlike `node_display.ts` / `path_tree.ts` /
  * `path_tree_view.ts`, this depends on `DuneGraphController` and the `Button`
- * widget, since it's specifically the add/remove wiring glued onto a tree
- * leaf/group rather than generic display or tree structure.
+ * and `MenuItem` widgets, since it's specifically the add/remove wiring glued
+ * onto a tree leaf/group or a menu rather than generic display or tree
+ * structure.
  */
 
 // The ＋/－ toggle for a single node: adds or removes it, reflecting current
@@ -44,6 +48,51 @@ export function nodeToggleButton(
         ? controller.removeFromGraph([node])
         : controller.addToGraph([node]),
   });
+}
+
+/**
+ * The items of the add-to-graph menu, shared by the two menus that offer them:
+ * the selection panel's "Add to graph" button and the right-click menu on a
+ * graph pane dot.
+ *
+ * "Parents"/"ancestors" are nodes that directly/transitively depend on this
+ * one; "children"/"descendants" are nodes it directly/transitively depends on;
+ * "forcers" is the chain of nodes that transitively forced this one into the
+ * build. Every option adds the current node itself alongside the relation, so
+ * the added nodes stay connected to something already visible.
+ *
+ * Add-only: the pane's menu appends its own "Remove from graph", which the
+ * panel's button does not offer.
+ */
+export function addToGraphMenuItems(
+  controller: DuneGraphController,
+  node: NodeId,
+): m.Children[] {
+  // One item: adds `node` plus whatever `related` returns. `related` is only
+  // called on click, since some relations (e.g. descendants of a hot node) can
+  // be expensive to walk.
+  const item = (
+    label: string,
+    icon: string,
+    related: () => readonly NodeId[],
+  ) =>
+    m(MenuItem, {
+      label,
+      icon,
+      onclick: () => controller.addToGraph([node, ...related()]),
+    });
+  return [
+    item('This node', 'add', () => []),
+    item('Parents', 'arrow_upward', () => controller.parentsOf(node)),
+    item('Children', 'arrow_downward', () => controller.childrenOf(node)),
+    item('Ancestors', 'keyboard_double_arrow_up', () =>
+      controller.ancestorsOf(node),
+    ),
+    item('Descendants', 'keyboard_double_arrow_down', () =>
+      controller.descendantsOf(node),
+    ),
+    item('Forcers', 'priority_high', () => controller.forcersOf(node)),
+  ];
 }
 
 // Every distinct node nested under a tree group, generic over any leaf payload

@@ -92,6 +92,12 @@ selection, and `views/graph_panel.ts` for the set of nodes chosen for the graph.
 The selection panel's body is three accordion sections — `processes`, then
 `dependants` and `dependencies` as path-grouped trees.
 
+The pane's dots carry the same add-to-graph menu on right-click, from the one
+item list both use (`addToGraphMenuItems` in `views/node_tree_actions.ts`, with
+"Remove from graph" appended by the pane alone). It is side-panel-only for the
+same reason "Timeline" and "Clear" are: it acts on the graph _selection_, which
+is not what the pane is drawing when a node set is handed to it.
+
 The selection panel is a two-way branch, because a selection settles on exactly
 one of the controller's two channels: a node renders there, and a _directory_ —
 a `gen-rules` span, which belongs to no node — renders in
@@ -907,7 +913,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**694 tests across 36 files** as of 2026-09-15.
+**703 tests across 36 files** as of 2026-09-15.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
