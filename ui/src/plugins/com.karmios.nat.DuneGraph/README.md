@@ -132,9 +132,9 @@ Two **chart types** to drop onto a query or a dashboard:
 Both read their primary column as _the column holding a `dune_node.node_id`_,
 and both offer to switch to the right column if you have picked another one.
 
-The side panel also offers `dune_dir` and `dune_node` as **data sources** to
-append to the graph you are building in the Data Explorer. Those buttons appear
-only while the Data Explorer is the open page.
+The side panel also offers `dune_dir`, `dune_node` and `dune_process` as **data
+sources** to append to the graph you are building in the Data Explorer. Those
+buttons appear only while the Data Explorer is the open page.
 
 ## Loading the graph
 

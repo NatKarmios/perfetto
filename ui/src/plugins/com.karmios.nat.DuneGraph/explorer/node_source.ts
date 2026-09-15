@@ -33,7 +33,7 @@ import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
  * as a link that selects the slice on the timeline - so declaring the type is
  * all it takes to get that.
  */
-const SLICE_JOINID: PerfettoSqlType = {
+export const SLICE_JOINID: PerfettoSqlType = {
   kind: 'joinid',
   source: {table: 'slice', column: 'id'},
 };

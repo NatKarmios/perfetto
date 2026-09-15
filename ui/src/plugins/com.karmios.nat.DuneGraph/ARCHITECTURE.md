@@ -145,13 +145,13 @@ path.
 
 ### Data Explorer — `explorer/`
 
-Four separate offers into `dev.perfetto.DataExplorer`:
+Five separate offers into `dev.perfetto.DataExplorer`:
 
-- Two **sources** the side panel can append to the graph you are working in:
-  `dune_dir` (`explorer/dir_tree_source.ts`) and `dune_node`
-  (`explorer/node_source.ts`). This is the only place DuneGraph reaches into
-  another plugin, and it goes through that plugin's public `getActiveGraphJson`
-  / `setActiveGraphJson`.
+- Three **sources** the side panel can append to the graph you are working in:
+  `dune_dir` (`explorer/dir_tree_source.ts`), `dune_node`
+  (`explorer/node_source.ts`) and `dune_process` (`explorer/process_source.ts`).
+  This is the only place DuneGraph reaches into another plugin, and it goes
+  through that plugin's public `getActiveGraphJson` / `setActiveGraphJson`.
 - Two **chart types**, registered per trace: `dune-dir-tree`
   (`explorer/dir_explorer_chart.ts`) draws a query's rows as the part of the
   directory tree they landed in, and `dune-node-graph`
@@ -162,7 +162,7 @@ Four separate offers into `dev.perfetto.DataExplorer`:
   `explorer/chart_node_column.ts` — the two cards say the same thing in those
   states, so they say it in one place.
 
-Both **sources** become a two-node chain wrapped in a group named after them:
+Each source becomes a two-node chain wrapped in a group named after it:
 `sql_source (SELECT … FROM <table>) -> modify_columns`. The `modify_columns`
 node looks redundant — the source alone is the obvious graph — but it is what
 makes the chain usable on a dashboard, for a reason invisible from the dashboard
@@ -907,7 +907,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**690 tests across 35 files** as of 2026-09-14.
+**694 tests across 36 files** as of 2026-09-15.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

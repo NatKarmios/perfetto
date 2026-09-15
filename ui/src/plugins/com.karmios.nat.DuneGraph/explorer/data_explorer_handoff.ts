@@ -19,8 +19,8 @@
  * These are the panel's buttons, which only exist while the Data Explorer is
  * the open page (see panel.ts).
  *
- * The JSON they hand over lives in explore_source.ts and its two sources
- * (dir_tree_source.ts, node_source.ts).
+ * The JSON they hand over lives in explore_source.ts and its three sources
+ * (dir_tree_source.ts, node_source.ts, process_source.ts).
  *
  * This is the only place DuneGraph reaches into another plugin. It goes through
  * the Data Explorer's public `getActiveGraphJson` / `setActiveGraphJson` (the
@@ -38,14 +38,17 @@ import {DIR_TREE_SOURCE} from './dir_tree_source';
 import type {ExploreSource} from './explore_source';
 import {appendExploreSourceToGraph} from './explore_source';
 import {NODE_SOURCE} from './node_source';
+import {PROCESS_SOURCE} from './process_source';
 
 /**
  * The sources the panel offers to add to the current graph, in button order.
- * Both read the node tier of the mirror, so both are gated the same way.
+ * All three read the node tier of the mirror, so all three are gated the same
+ * way.
  */
 export const APPENDABLE_SOURCES: ReadonlyArray<ExploreSource> = [
   DIR_TREE_SOURCE,
   NODE_SOURCE,
+  PROCESS_SOURCE,
 ];
 
 // Adds `source` to the active graph as one named group, leaving everything

@@ -14,9 +14,9 @@
 
 /**
  * One of the mirror's tables, offered to the Data Explorer as a data source -
- * the mechanism shared by dir_tree_source.ts's directories and
- * node_source.ts's nodes. What varies between them is a table name, a column
- * list and a name; the *shape* of the hand-off is here.
+ * the mechanism shared by dir_tree_source.ts's directories, node_source.ts's
+ * nodes and process_source.ts's processes. What varies between them is a table
+ * name, a column list and a name; the *shape* of the hand-off is here.
  *
  * **ARCHITECTURE.md, "The surfaces, in code", explains the shape**: why each source
  * becomes a `sql_source -> modify_columns` chain in a group, and why nothing is
