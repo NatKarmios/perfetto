@@ -37,8 +37,17 @@ import type {GraphEdge, NodeId} from '../model/graph';
 export const NODE_WIDTH = 16;
 export const NODE_HEIGHT = 16;
 const GAP = 20;
-// Centre-to-centre distance between two items sharing a rank.
-const CELL = NODE_WIDTH + GAP;
+/**
+ * The slot a dummy occupies. A dummy is not drawn - it is one waypoint of a
+ * rank-skipping edge - so it needs room for a line to pass, not room for a dot,
+ * and dagre gives them zero width for the same reason.
+ *
+ * This is load-bearing for how wide the picture gets: a graph with hundreds of
+ * long edges puts a dummy in every rank each one crosses, and charging each of
+ * them a whole node cell was what made the pane far wider than the nodes in it
+ * needed. See ARCHITECTURE.md, "Drawing the node graph".
+ */
+const DUMMY_WIDTH = 0;
 // Down/up iterations, for the ordering sweep and again for the x refinement.
 // Four is dagre's number and the point where both stop paying for themselves.
 const SWEEPS = 4;
@@ -200,7 +209,7 @@ export function layoutGraph(
   for (const row of order) {
     for (const item of row) {
       minX = Math.min(minX, item.x);
-      maxX = Math.max(maxX, item.x);
+      maxX = Math.max(maxX, item.x + itemWidth(item));
     }
   }
   const rowY = (r: number) => r * (NODE_HEIGHT + GAP);
@@ -235,7 +244,7 @@ export function layoutGraph(
         : {
             ...base,
             bends: chain.map((item) => ({
-              x: item.x - minX + NODE_WIDTH / 2,
+              x: item.x - minX + itemWidth(item) / 2,
               y: rowY(item.rank) + NODE_HEIGHT / 2,
             })),
           },
@@ -245,7 +254,7 @@ export function layoutGraph(
   return {
     nodes: layoutNodes,
     edges: layoutEdges,
-    width: maxX - minX + NODE_WIDTH,
+    width: maxX - minX,
     height: rankCount * (NODE_HEIGHT + GAP) - GAP,
   };
 }
@@ -382,16 +391,33 @@ function inversions(seq: readonly number[], size: number): number {
   return total;
 }
 
-// Slot placement: item i of a rank sits i cells along, and each rank is centred
-// in the widest one. This is the whole of the pre-refinement layout, and the
+// The slot an item takes: a node's dot, or almost nothing for a dummy.
+function itemWidth(item: Item): number {
+  return item.node === undefined ? DUMMY_WIDTH : NODE_WIDTH;
+}
+
+// The least distance between two neighbours' left edges - half a gap either
+// side of the boundary, so a narrow dummy crowds nothing.
+function separation(left: Item): number {
+  return itemWidth(left) + GAP;
+}
+
+// Total span of a rank laid out left to right with a gap between neighbours.
+function rowSpan(row: readonly Item[]): number {
+  return row.reduce((w, item, i) => w + itemWidth(item) + (i > 0 ? GAP : 0), 0);
+}
+
+// Slot placement: items sit side by side in rank order, each rank centred in
+// the widest one. This is the whole of the pre-refinement layout, and the
 // starting point (and fallback) for what follows.
 function placeSlots(order: readonly Item[][]): void {
-  const rowWidth = (count: number) =>
-    count * NODE_WIDTH + Math.max(0, count - 1) * GAP;
-  const totalWidth = Math.max(...order.map((row) => rowWidth(row.length)));
+  const totalWidth = Math.max(...order.map(rowSpan));
   for (const row of order) {
-    const xStart = (totalWidth - rowWidth(row.length)) / 2;
-    row.forEach((item, i) => (item.x = xStart + i * CELL));
+    let x = (totalWidth - rowSpan(row)) / 2;
+    for (const item of row) {
+      item.x = x;
+      x += itemWidth(item) + GAP;
+    }
   }
 }
 
@@ -436,7 +462,7 @@ function alignRank(row: readonly Item[], useUp: boolean): void {
   let x = want[0];
   row[0].x = x;
   for (let i = 1; i < row.length; i++) {
-    x = Math.max(want[i], x + CELL);
+    x = Math.max(want[i], x + separation(row[i - 1]));
     row[i].x = x;
   }
   // Packing can only push right, which would drift the rank away from what it

@@ -206,6 +206,28 @@ describe('layoutGraph ordering', () => {
     }
   });
 
+  it('gives a dummy far less room than a node', () => {
+    // a -> b -> c plus a -> c, so rank 1 holds b and one dummy carrying the
+    // skipping edge. The dummy is a waypoint, not a dot: it needs room for a
+    // line to pass, so the rank must come out narrower than two nodes would.
+    const layout = layoutGraph([a, b, c], [edge(a, b), edge(b, c), edge(a, c)]);
+    // The same shape with a second real node in b's rank, to compare against:
+    // a -> b, a -> d, b -> c, d -> c.
+    const nodesInstead = layoutGraph(
+      [a, b, d, c],
+      [edge(a, b), edge(a, d), edge(b, c), edge(d, c)],
+    );
+
+    expect(layout.width).toBeLessThan(nodesInstead.width);
+    // ...and the edge is still routed clear of b rather than under it.
+    const skipping = layout.edges.find(
+      (e) => e.source.node === a && e.dest.node === c,
+    );
+    const bends = skipping?.bends ?? [];
+    expect(bends).toHaveLength(1);
+    expect(bends[0].x).not.toBe(xOf(layout, b) + NODE_WIDTH / 2);
+  });
+
   it('is deterministic', () => {
     // The heuristic is order-sensitive by design - which is what makes the
     // chart's `ORDER BY node_id` worth having - so what has to hold is that the

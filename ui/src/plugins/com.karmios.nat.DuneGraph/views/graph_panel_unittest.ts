@@ -233,6 +233,24 @@ describe('the graph pane over the graph selection', () => {
     expect(edgeSegments()).toEqual([1, 1, 1, 3]);
   });
 
+  test('rounds the corners of a bent edge, and only a bent one', () => {
+    // A hard vertex reads as two edges meeting; the corners are arcs so a long
+    // edge stays one line the eye can follow. Same selection as above: one
+    // bent edge, three straight ones.
+    const {controller} = fakeController({
+      selection: [g.id('r3'), g.id('b'), g.id('r2'), g.id('c')],
+    });
+    render({controller});
+
+    const ds = Array.from(root.querySelectorAll('.pf-dune-graph__edge')).map(
+      (e) => e.getAttribute('d') ?? '',
+    );
+    // One arc per bend on the bent edge, none on the straight ones.
+    expect(ds.map((d) => (d.match(/Q/g) ?? []).length).sort()).toEqual([
+      0, 0, 0, 2,
+    ]);
+  });
+
   test('offers the four toolbar actions it always did', () => {
     const {controller} = fakeController({selection: [g.id('a')]});
     render({controller});

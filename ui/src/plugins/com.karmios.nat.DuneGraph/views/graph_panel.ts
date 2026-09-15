@@ -564,12 +564,12 @@ function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
     dotCentre(e.dest),
   ];
   const last = points.length - 1;
-  const start = towards(points[0], points[1], DOT_RADIUS);
-  const end = towards(points[last], points[last - 1], DOT_RADIUS + ARROW_GAP);
-  const via = points
-    .slice(1, last)
-    .map((p) => `L${p.x},${p.y}`)
-    .join('');
+  points[0] = towards(points[0], points[1], DOT_RADIUS);
+  points[last] = towards(
+    points[last],
+    points[last - 1],
+    DOT_RADIUS + ARROW_GAP,
+  );
   const active =
     hovered !== undefined &&
     (e.source.node === hovered || e.dest.node === hovered);
@@ -579,13 +579,47 @@ function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
       e.forced && 'pf-dune-graph__edge--forced',
       active && 'pf-dune-graph__edge--active',
     ),
-    'd': `M${start.x},${start.y}${via}L${end.x},${end.y}`,
+    'd': edgePath(points),
     'marker-end': e.forced ? 'url(#dune-arrow-forced)' : 'url(#dune-arrow)',
   });
 }
 
 function dotCentre(ln: LayoutNode): Point {
   return {x: ln.x + ln.width / 2, y: ln.y + ln.height / 2};
+}
+
+// How far back from a bend the corner arc starts. Small enough that the edge
+// still visibly turns at the rank it turns at, big enough that the eye follows
+// the curve round instead of losing the line at a hard vertex.
+const CORNER_RADIUS = 7;
+
+/**
+ * The `d` of an edge: a straight segment when there are no bends, and otherwise
+ * a polyline whose corners are arcs rather than hard vertices.
+ *
+ * The rounding is the whole point. A rank-skipping edge turns once per rank it
+ * crosses, and at a sharp vertex two segments meeting at an angle read as two
+ * separate edges that happen to touch - which is what made a long edge hard to
+ * follow even once it had been routed clear of the dots. Cutting each corner
+ * back and curving through the vertex keeps it one continuous line.
+ */
+function edgePath(points: readonly Point[]): string {
+  let d = `M${points[0].x},${points[0].y}`;
+  for (let i = 1; i + 1 < points.length; i++) {
+    const [prev, corner, next] = [points[i - 1], points[i], points[i + 1]];
+    // Never cut back more than halfway to a neighbour, or consecutive corners
+    // on a short segment would overrun each other.
+    const into = towards(corner, prev, cornerCut(corner, prev));
+    const outOf = towards(corner, next, cornerCut(corner, next));
+    d += `L${into.x},${into.y}Q${corner.x},${corner.y} ${outOf.x},${outOf.y}`;
+  }
+  const end = points[points.length - 1];
+  return `${d}L${end.x},${end.y}`;
+}
+
+function cornerCut(from: Point, to: Point): number {
+  const half = Math.hypot(to.x - from.x, to.y - from.y) / 2;
+  return Math.min(CORNER_RADIUS, half);
 }
 
 // The point `dist` layout units from `from` along the line towards `to`.

@@ -138,18 +138,35 @@ and returns boxes in an abstract space that the SVG `viewBox` maps. Four passes:
    _anti-correlated_ with the structure: the chart's `ORDER BY node_id`, where a
    node id is itself the kind partition, and the side panel's click order. There
    is no transpose pass (the adjacent-swap polish that usually follows the
-   median rule); it is the expensive half at the dense end, and the next thing
-   to add if the picture still needs more.
-3. **X.** Slot index times a cell, each rank centred in the widest, then four
-   down/up barycentre passes under the same keep-the-best rule, scored on
-   weighted horizontal edge displacement. A segment touching a dummy is weighted
-   up, so a long edge outbids the real nodes competing for its column and comes
-   out vertical.
+   median rule): it was ported from dagre and measured at a 2.2% crossing
+   reduction for +85% layout time, so it is not worth its cost here — see "Why
+   this is hand-rolled and not dagre" below.
+3. **X.** Items packed left to right with a gap between neighbours, each rank
+   centred in the widest, then four down/up barycentre passes under the same
+   keep-the-best rule, scored on weighted horizontal edge displacement. A
+   segment touching a dummy is weighted up, so a long edge outbids the real
+   nodes competing for its column and comes out vertical.
+
+   **A dummy's slot is `DUMMY_WIDTH = 0`, not a node cell**, and that one
+   constant is most of how wide the picture gets. A dummy is never drawn — it is
+   a waypoint for a line to pass through, not a dot — so charging it a whole
+   node cell inflated every rank that any long edge crossed. On a 400-node
+   sparse graph (1,151 edges, 702 of them bent) giving dummies zero width took
+   the content from 1,240 layout units wide to 792, and total horizontal edge
+   travel from 246k to 160k, with the crossing count unchanged. Dagre does the
+   same thing for the same reason.
+
 4. **Bends.** Each dummy's final centre becomes a waypoint on
-   `LayoutEdge.bends`, and the pane draws that edge as a `<path>` polyline
-   through them rather than a straight segment. Without it a long edge passes
-   _under_ the dots of every rank it crosses — the edge group is painted before
-   the node group — and reads as ending at an unrelated node.
+   `LayoutEdge.bends`, and the pane draws that edge as a `<path>` through them
+   rather than a straight segment. Without it a long edge passes _under_ the
+   dots of every rank it crosses — the edge group is painted before the node
+   group — and reads as ending at an unrelated node.
+
+   The corners are **arcs, not vertices** (`CORNER_RADIUS` in `graph_panel.ts`):
+   each corner is cut back along both segments and curved through the bend. At a
+   hard vertex two segments meeting at an angle read as two separate edges that
+   happen to touch, which is what made a long edge hard to follow even once it
+   was routed clear of the dots.
 
 `LayoutNode` stays `{node, x, y, width, height}` throughout, because the pane
 resolves a dot's hover label and its right-click menu by looking the node up in
@@ -167,6 +184,24 @@ pair holding tens of thousands of edges would feel. Neither ceiling has a
 browser measurement behind it — they are set where the cost stops being bounded
 by the node cap itself, and what they buy is "no worse than before this existed"
 rather than a hang.
+
+**Why this is hand-rolled and not dagre.** `@dagrejs/dagre` was tried and
+measured (native node, 2026-09-15) before being dropped. Its cost lands well
+inside this pane's own 400-node cap: 761 ms on the 400-node sparse graph above,
+2.9 s on 100 nodes with 2,500 edges, 25 s on a 60-rank complete DAG, and over 90
+s — killed, not completed — on 400 nodes with 40k span-1 edges, which is exactly
+the shape 200 rules over 200 shared deps produces. It is not the ranker:
+`longest-path` gives 75.7 s and `tight-tree` 79.2 s against network-simplex's
+77.6 s on the same graph, so the cost is in the order and position phases, which
+dagre exposes no way to bound. Two of its algorithms were then ported by hand
+and both measured as losses here, so neither is in the code: its `transpose`
+pass moved crossings 5,613 → 5,487 (−2.2%) for +85% layout time and changed
+nothing at all on a mesh, and Brandes-Köpf positioning drew 702 of 702 long
+edges dead straight but at ten times the content width (1,240 → 12,148), which
+is the wrong trade in a pane you pan. Brandes-Köpf _is_ a win where long edges
+are few — 2/5 to 4/5 straight at identical width on a 30-node chain — so a
+width-gated version is the upgrade path if straightness ever matters more than
+width.
 
 ### Timeline — `views/graph_track.ts`, `views/arrows.ts`
 
@@ -1007,7 +1042,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**716 tests across 36 files** as of 2026-09-15.
+**718 tests across 36 files** as of 2026-09-15.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
