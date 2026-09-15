@@ -56,6 +56,7 @@ import type {ProcessDetails, SqlProcessSlices} from './process_sql';
 import {
   PROCESS_INDEX_PHASE,
   PROCESS_TABLE,
+  PROG_ARG,
   buildProcessSlices,
 } from './process_sql';
 
@@ -989,12 +990,22 @@ function processView(space: NodeSpace): string {
         ts LONG,
         dur_ns LONG,
         rule_id LONG,
-        node_id LONG
+        node_id LONG,
+        prog STRING
       ) AS
       -- nullif: perfetto's -1 for a slice that never finished, normalised to
       -- NULL so this reads like every other duration in the mirror.
+      --
+      -- prog is read per row rather than stored on _dune_process, the same
+      -- call dune_gen_rules makes for its dune file: a keyed probe of an arg
+      -- set the join has already located costs ~230 ms over all 266,614
+      -- process rows of the monorepo trace (native tools/trace_processor) and
+      -- nothing at all on a filtered query, against a load-time and memory
+      -- cost for a stored column. Its arguments are a sibling view away; see
+      -- dune_process_arg in process_sql.ts.
       SELECT s.id AS slice_id, s.ts AS ts, nullif(s.dur, -1) AS dur_ns,
-        p.rule_id AS rule_id, n.node_id AS node_id
+        p.rule_id AS rule_id, n.node_id AS node_id,
+        extract_arg(s.arg_set_id, '${PROG_ARG}') AS prog
       FROM ${PROCESS_TABLE} p
       JOIN slice s ON s.id = p.slice_id
       LEFT JOIN ${RAW_NODE_TABLE} n
@@ -1068,11 +1079,11 @@ function blockedMacro(): string {
 
 /**
  * Builds the node tier of the mirror (`dune_string` / `dune_node` / `dune_rule`
- * / `dune_dep` / `dune_rule_target` / `dune_dir` / `dune_process`, plus the
- * timing table they
- * join) from `graph` and returns a handle that answers per-node timing and drops everything
- * it made when disposed. Rebuilding is idempotent: any pre-existing tables of
- * the same name are dropped first.
+ * / `dune_dep` / `dune_rule_target` / `dune_dir` / `dune_process` /
+ * `dune_process_arg`, plus the timing table they join) from `graph` and
+ * returns a handle that answers per-node timing and drops everything it made
+ * when disposed. Rebuilding is idempotent: any pre-existing tables of the same
+ * name are dropped first.
  *
  * The edges live in a separate, far more expensive tier - see
  * {@link buildEdgeMirror}.

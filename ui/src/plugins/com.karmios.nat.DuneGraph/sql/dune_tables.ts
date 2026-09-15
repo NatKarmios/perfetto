@@ -390,6 +390,41 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
           'That rule as a dune_node, or NULL if the graph has no such rule.',
         type: INT,
       },
+      {
+        name: 'prog',
+        description:
+          'The program that ran, as a full path. Join dune_process_arg for ' +
+          'its arguments.',
+        type: STR,
+      },
+    ],
+  },
+  {
+    name: 'dune_process_arg',
+    description:
+      "One row per element of a process's argv, so a single argument can be " +
+      "matched exactly - `WHERE arg = '-O3'` rather than a GLOB that also " +
+      'matches inside paths. The arguments exclude the program itself, so ' +
+      '`idx = 0` is the first real argument; `dune_process.prog` is the ' +
+      'program. To reassemble a command line, `LEFT JOIN` it (a process with ' +
+      'no arguments at all has no rows here) and concatenate: `SELECT ' +
+      "p.slice_id, p.prog, group_concat(a.arg, ' ' ORDER BY a.idx) AS args " +
+      'FROM dune_process p LEFT JOIN dune_process_arg a USING (slice_id) ' +
+      'GROUP BY p.slice_id`.',
+    columns: [
+      {
+        name: 'slice_id',
+        description:
+          "The process's slice on the timeline - join dune_process on it.",
+        type: INT,
+      },
+      {
+        name: 'idx',
+        description:
+          "The argument's 0-based position in argv, the program excluded.",
+        type: INT,
+      },
+      {name: 'arg', description: 'The argument itself.', type: STR},
     ],
   },
   {

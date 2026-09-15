@@ -188,7 +188,8 @@ short:
 | `dune_dyn_includes` | One row per `dynamic-includes` span: a `dune` file dune had to generate before it could read it.       |
 | `dune_edge`         | Directed edges, "source depends on dest", tagged `static` / `dynamic` / `resolved` / `expanded`.       |
 | `dune_edge_blocked` | `dune_edge` plus `blocked_ns`: how much of `src`'s span `dst` accounts for.                            |
-| `dune_process`      | One row per spawned process: its slice, `ts`/`dur`, and the rule that forced it.                       |
+| `dune_process`      | One row per spawned process: its slice, `ts`/`dur`, the rule that forced it, and the program it ran.   |
+| `dune_process_arg`  | One row per argv element of a process: `slice_id`, `idx`, `arg`. The program itself is not among them. |
 | `dune_string`       | The intern table — every path the graph mentions. `WHERE str GLOB '*.cmi'` is a fast way in.           |
 
 Plus eight relation functions, forward and reverse, bounded and unbounded,

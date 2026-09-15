@@ -52,6 +52,7 @@ export const PROCESS_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'rule_id', type: 'int'},
   {name: 'ts', type: 'timestamp'},
   {name: 'dur', type: 'duration', expr: 'dur_ns'},
+  {name: 'prog', type: 'string'},
 ];
 
 /**

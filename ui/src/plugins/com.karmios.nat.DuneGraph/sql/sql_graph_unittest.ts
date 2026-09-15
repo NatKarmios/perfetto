@@ -515,8 +515,11 @@ describe('sql_graph process view', () => {
 
   const processView = async () => {
     const sql = await capture(graph());
+    // The open paren matters: `dune_process_arg` is created by the same tier
+    // (process_sql.ts) and its statement comes first, so a bare prefix here
+    // silently tests the wrong view.
     const stmt = sql.find((q) =>
-      q.includes('CREATE PERFETTO VIEW dune_process'),
+      q.includes('CREATE PERFETTO VIEW dune_process('),
     );
     expect(stmt).toBeDefined();
     return stmt!;
@@ -574,6 +577,17 @@ describe('sql_graph process view', () => {
     const stmt = await processView();
     expect(stmt).toContain('nullif(s.dur, -1) AS dur_ns');
     expect(stmt).not.toContain('s.dur AS dur_ns');
+  });
+
+  it('publishes the program as a column, read per row', async () => {
+    // `extract_arg` rather than a column stored on `_dune_process`: a keyed
+    // probe of an arg set the join has already located, ~230 ms over all
+    // 266,614 process rows of the monorepo trace (native
+    // tools/trace_processor). The arguments are a sibling view away
+    // (`dune_process_arg`, process_sql.ts), not more columns here.
+    const stmt = await processView();
+    expect(stmt).toContain('prog STRING');
+    expect(stmt).toContain("extract_arg(s.arg_set_id, 'debug.prog') AS prog");
   });
 
   it('drops the view with the tier', async () => {

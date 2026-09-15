@@ -439,11 +439,11 @@ heap under every other plugin), so `onTraceLoad` registers surfaces and returns.
 The work splits into three steps, cheapest first, each separately reported in
 the panel and separately re-runnable:
 
-| Step                | Does            | Produces                                                                                            |
-| ------------------- | --------------- | --------------------------------------------------------------------------------------------------- |
-| `loadGraph()`       | parses the blob | the in-memory `BuildGraph`                                                                          |
-| `buildNodeMirror()` | node tier       | `dune_node`, `dune_rule`, `dune_dep`, `dune_rule_target`, `dune_string`, `dune_dir`, `dune_process` |
-| `buildEdgeMirror()` | edge tier       | `dune_edge`, `dune_edge_blocked`, the factored storage, the relation functions                      |
+| Step                | Does            | Produces                                                                                                                |
+| ------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `loadGraph()`       | parses the blob | the in-memory `BuildGraph`                                                                                              |
+| `buildNodeMirror()` | node tier       | `dune_node`, `dune_rule`, `dune_dep`, `dune_rule_target`, `dune_string`, `dune_dir`, `dune_process`, `dune_process_arg` |
+| `buildEdgeMirror()` | edge tier       | `dune_edge`, `dune_edge_blocked`, the factored storage, the relation functions                                          |
 
 Each is idempotent (already-`ready` is a no-op) and pulls in the steps it
 depends on, so any can be called from cold. They all run through one queue —
@@ -786,12 +786,51 @@ selection change — a multi-second full scan per click, several times over, sin
 `SliceTrack` builds two mipmaps and a row count from the same source.
 
 **Both halves of the filter matter**: `process` is the name that carries the
-semantics, and `forced_by` is not exclusively a rule — on one sample trace 182
-of 1,151 process slices read `dep <path>` instead of `rule <rule_id>`, and a dep
-forcer names no rule to hang the slice off. The table is keyed by `rule_id`, not
+semantics, and `forced_by` is not exclusively a rule — a `dep <path>` forcer
+names no rule to hang the slice off, so those slices have to go. What it costs
+is nothing: 1 of `merlin.perfetto`'s 1,151 process slices reads `dep <path>`,
+and 1 of `monorepo.perfetto`'s 266,615. The table is keyed by `rule_id`, not
 `node_id`, deliberately: nothing in it knows about the graph. The `dune_process`
 view is its public face and does make that join, lazily, per query, against a
 partial index the node tier keeps.
+
+**What a process ran** is on the slice's own arg set, not in the graph blob —
+`debug.prog` for the program and the array arg `debug.dune.process_args` for
+argv, the program excluded. `dune_process.prog` reads the first with
+`extract_arg` per row, the same call `dune_gen_rules` makes for its `dune` file.
+The second becomes a sibling view, `dune_process_arg`, one row per argument —
+the split `dune_gen_rules` makes off `dune_dir`, and for the same reason.
+
+Three decisions there, all measured. _The figures in this subsection are
+**native** `tools/trace_processor` figures on `monorepo.perfetto`, 2026-09-15,
+not the browser figures the rest of this document quotes_; the stated
+native→browser ratio is ~2x, so re-measure before treating them as what a user
+pays.
+
+- **One row per argument, not a joined command line.** The view is 43.0M rows
+  (85% of the trace's whole `args` table) with a maximum argv index of 1,979,
+  and 1.26 GB of argument text. A full `count(*)` over it is 7.7 s. The same
+  thing as a correlated `group_concat` column on `dune_process` is 443 s per
+  scan, and as a separate `GROUP BY` view 15.3 s — so the command line is a
+  recipe in the catalogue description rather than a column. Per-argument is also
+  the better shape for the query that motivated this: `WHERE arg = '-O3'` is
+  exact, where `cmd GLOB '*-O3*'` matches inside paths.
+- **`arg_set_id` is stored on `_dune_process` and indexed.** Phrased the obvious
+  way — reaching `args` through a join on `slice` — the view is fine on a full
+  scan but pathological under a predicate on the argument: `WHERE arg = '-impl'`
+  did not finish in 580 s, because the planner drives from the 50.6M-row `args`
+  and re-scans the 266k-row process table per candidate. It is the same trap
+  ["Why it is shaped this way"](#why-it-is-shaped-this-way) records for
+  `dune_edge`: a constraint arriving by join does not push down. Stored and
+  indexed, that query is 1.0 s for 55,028 rows, and the view loses its `slice`
+  join entirely.
+- **`slice_id` is declared `LONG`, not `JOINID(slice.id)`** — the first public
+  slice-id column in the mirror that is not, and deliberate. JOINID only sticks
+  when the SELECT reads `slice.id` itself, which would mean re-adding the join
+  this design just removed and paying 43M rowid probes for a type annotation
+  that buys nothing: the core results table makes a cell clickable by column
+  _name_, ignoring the SQL type, and `views/query_results.ts` keys on the name
+  `slice_id` too. Do not "fix" it.
 
 ## Performance
 
@@ -913,7 +952,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**703 tests across 36 files** as of 2026-09-15.
+**709 tests across 36 files** as of 2026-09-15.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

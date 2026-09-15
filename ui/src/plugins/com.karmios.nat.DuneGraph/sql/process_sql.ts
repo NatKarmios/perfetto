@@ -48,7 +48,7 @@ const RULE_PREFIX = 'rule ';
 // program excluded (so `[0]` is the first real argument). See the file comment
 // for the rest of the arg set, which the slice's own details panel renders in
 // full (row_details_panel.ts).
-const PROG_ARG = 'debug.prog';
+export const PROG_ARG = 'debug.prog';
 const CWD_ARG = 'debug.dir';
 const EXIT_ARG = 'debug.exit';
 const ARGV_FLAT_KEY = 'debug.dune.process_args';
@@ -74,6 +74,28 @@ export const PROCESS_INDEX_PHASE = 'process: index by rule';
  * {@link SqlProcessSlices.processesForRuleId}.
  */
 export const PROCESS_TABLE = '_dune_process';
+
+/**
+ * One row per element of a process's argv: `(slice_id, idx, arg)`.
+ *
+ * A sibling view rather than more columns on `dune_process`, for the reason
+ * `dune_gen_rules` hangs off `dune_dir` - see ARCHITECTURE.md, "Processes",
+ * which also records why the joined command line is a `group_concat` recipe
+ * rather than a column, and why `slice_id` is declared `LONG`.
+ */
+export const PROCESS_ARG_VIEW = 'dune_process_arg';
+
+/**
+ * Index on {@link PROCESS_TABLE}'s `arg_set_id`, which is the only reason
+ * {@link PROCESS_ARG_VIEW} is usable under a predicate on the arg value.
+ *
+ * Measured on the perf plan's monorepo trace (43.0M arg rows):
+ * `WHERE arg = '-impl'` did not finish in 580 s when the view reached the arg
+ * set through `slice`, because the planner drives from the 50.6M-row `args`
+ * and re-scans the process table per candidate. Storing `arg_set_id` here and
+ * indexing it makes the same query 1.0 s. Do not remove either half.
+ */
+const PROCESS_ARG_SET_INDEX = '_dune_process_args';
 
 /**
  * What one process slice ran, for the panel that explains a rule (see
@@ -141,22 +163,49 @@ export async function buildProcessSlices(
   perf?: PerfRun,
 ): Promise<SqlProcessSlices> {
   const rowCount = await measure(perf, PROCESS_INDEX_PHASE, async (p) => {
+    // The view first: it depends on the table.
+    await engine.tryQuery(`DROP VIEW IF EXISTS ${PROCESS_ARG_VIEW}`);
     await engine.tryQuery(`DROP TABLE IF EXISTS ${PROCESS_TABLE}`);
     // The name filter goes in the inner query so `extract_arg` - the expensive
     // half - runs only for slices that can possibly qualify. The GLOB is what
     // validates the value: `substr`/`cast` would silently read a `dep <path>`
     // forcer (or a non-numeric one) as rule 0, which is a real rule.
+    //
+    // `arg_set_id` is stored rather than re-reached through `slice` for
+    // {@link PROCESS_ARG_SET_INDEX}'s sake; see there for the measurement.
     await engine.query(`
       CREATE PERFETTO TABLE ${PROCESS_TABLE} AS
       SELECT slice_id,
-        cast(substr(forced_by, ${RULE_PREFIX.length + 1}) AS INTEGER) AS rule_id
+        cast(substr(forced_by, ${RULE_PREFIX.length + 1}) AS INTEGER) AS rule_id,
+        arg_set_id
       FROM (
-        SELECT s.id AS slice_id,
+        SELECT s.id AS slice_id, s.arg_set_id AS arg_set_id,
           extract_arg(s.arg_set_id, '${FORCED_BY_ARG}') AS forced_by
         FROM slice s
         WHERE s.name = '${PROCESS_SLICE_NAME}'
       )
       WHERE forced_by GLOB '${RULE_PREFIX}[0-9]*'
+    `);
+    await engine.query(`
+      CREATE PERFETTO INDEX ${PROCESS_ARG_SET_INDEX}
+        ON ${PROCESS_TABLE}(arg_set_id)
+    `);
+    // The array arg's elements all share one `flat_key` and carry their index
+    // in `key` as `<flat>[N]`, so the index is parsed back out of `key`:
+    // `args.id` happens to come out in index order, but nothing promises that.
+    // This is the mirror's single place that knows the encoding.
+    await engine.query(`
+      CREATE PERFETTO VIEW ${PROCESS_ARG_VIEW}(
+        slice_id LONG,
+        idx LONG,
+        arg STRING
+      ) AS
+      SELECT p.slice_id AS slice_id,
+        cast(substr(a.key, ${ARGV_FLAT_KEY.length + 2}) AS INTEGER) AS idx,
+        a.string_value AS arg
+      FROM ${PROCESS_TABLE} p
+      JOIN args a ON a.arg_set_id = p.arg_set_id
+      WHERE a.flat_key = '${ARGV_FLAT_KEY}'
     `);
     const count = await engine.query(
       `SELECT count(*) AS n FROM ${PROCESS_TABLE}`,
@@ -200,6 +249,8 @@ export async function buildProcessSlices(
     },
 
     async [Symbol.asyncDispose](): Promise<void> {
+      // The view depends on the table, so it goes first.
+      await engine.tryQuery(`DROP VIEW IF EXISTS ${PROCESS_ARG_VIEW}`);
       await engine.tryQuery(`DROP TABLE IF EXISTS ${PROCESS_TABLE}`);
     },
   };
@@ -244,12 +295,10 @@ async function scalarsForRule(
   return rows;
 }
 
-// The argv of each of `sliceIds`, by slice id. The array arg's elements share a
-// `flat_key` and carry their index in `key` as `<flat>[N]`, so the index is
-// parsed back out to order them - the same `cast(substr(...) AS INTEGER)` trick
-// PROCESS_TABLE's build uses, and for the same reason: it is the only thing in
-// the row that says where the element belongs. A slice with no argv at all
-// (a program invoked bare) simply has no entry.
+// The argv of each of `sliceIds`, by slice id, read off
+// {@link PROCESS_ARG_VIEW} - which is where the array-arg encoding lives, so
+// this does not repeat it. A slice with no argv at all (a program invoked bare)
+// simply has no entry.
 async function argvForSlices(
   engine: Engine,
   sliceIds: readonly number[],
@@ -257,21 +306,16 @@ async function argvForSlices(
   const byId = new Map<number, string[]>();
   if (sliceIds.length === 0) return byId;
   const result = await engine.query(`
-    SELECT s.id AS slice_id,
-      cast(substr(a.key, ${ARGV_FLAT_KEY.length + 2}) AS INTEGER) AS idx,
-      a.string_value AS value
-    FROM slice s
-    JOIN args a USING (arg_set_id)
-    WHERE s.id IN (${sliceIds.join(', ')})
-      AND a.flat_key = '${ARGV_FLAT_KEY}'
-    ORDER BY s.id, idx
+    SELECT slice_id, idx, arg FROM ${PROCESS_ARG_VIEW}
+    WHERE slice_id IN (${sliceIds.join(', ')})
+    ORDER BY slice_id, idx
   `);
-  const it = result.iter({slice_id: NUM, value: STR_NULL});
+  const it = result.iter({slice_id: NUM, arg: STR_NULL});
   for (; it.valid(); it.next()) {
-    if (it.value === null) continue;
+    if (it.arg === null) continue;
     const args = byId.get(it.slice_id);
-    if (args === undefined) byId.set(it.slice_id, [it.value]);
-    else args.push(it.value);
+    if (args === undefined) byId.set(it.slice_id, [it.arg]);
+    else args.push(it.arg);
   }
   return byId;
 }

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Keeps dune_tables.ts honest. Its column lists are a second copy of what
-// sql_graph.ts declares in its `CREATE PERFETTO VIEW` statements, so this
-// parses those statements out of the source and compares. A mirror change that
+// Keeps dune_tables.ts honest. Its column lists are a second copy of what the
+// mirror declares in its `CREATE PERFETTO VIEW` statements, so this parses
+// those statements out of the sources and compares. A mirror change that
 // adds, drops or renames a column fails here rather than quietly leaving the
 // query page's "Tables" sidebar describing a table that no longer exists that
 // way.
@@ -59,7 +59,7 @@ function declaredColumns(constName: string): string[] | undefined {
   const re = new RegExp(
     `CREATE PERFETTO VIEW \\$\\{${constName}\\}\\(([\\s\\S]*?)\\)\\s*AS`,
   );
-  const body = re.exec(SQL_GRAPH)?.[1];
+  const body = re.exec(ALL_SQL)?.[1];
   if (body === undefined) return undefined;
   return body
     .split(',')
@@ -82,7 +82,7 @@ function definedNames(): Set<string> {
 
 // `const NODE_TABLE = 'dune_node';` -> the SQL name for a constant.
 function sqlNameOf(constName: string): string | undefined {
-  return new RegExp(`const ${constName} = '([a-z_]+)'`).exec(SQL_GRAPH)?.[1];
+  return new RegExp(`const ${constName} = '([a-z_]+)'`).exec(ALL_SQL)?.[1];
 }
 
 // The public views whose columns are declared inline, and so can be checked
@@ -96,6 +96,7 @@ const INLINE_VIEWS = [
   'EDGE_TABLE',
   'EDGE_BLOCKED_VIEW',
   'PROCESS_VIEW',
+  'PROCESS_ARG_VIEW',
   'GEN_RULES_VIEW',
   'DYN_INCLUDES_VIEW',
 ];
@@ -109,11 +110,14 @@ function documentedColumns(sqlName: string): string[] {
 describe('dune_tables matches sql_graph', () => {
   it.each(INLINE_VIEWS)('documents %s exactly as declared', (constName) => {
     const sqlName = sqlNameOf(constName);
-    expect(sqlName, `no constant ${constName} in sql_graph.ts`).toBeDefined();
+    expect(
+      sqlName,
+      `no constant ${constName} in the mirror's sources`,
+    ).toBeDefined();
     const declared = declaredColumns(constName);
     expect(
       declared,
-      `no CREATE PERFETTO VIEW for ${constName} in sql_graph.ts`,
+      `no CREATE PERFETTO VIEW for ${constName} in the mirror's sources`,
     ).toBeDefined();
     expect(documentedColumns(sqlName!)).toEqual(declared);
   });

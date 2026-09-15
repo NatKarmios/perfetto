@@ -74,8 +74,8 @@ function stubEngine(canned: readonly Canned[], sql: string[]): Engine {
         get exit_code() {
           return rows[i]?.exit_code;
         },
-        get value() {
-          return rows[i]?.value;
+        get arg() {
+          return rows[i]?.arg;
         },
       }),
     };
@@ -108,12 +108,16 @@ const SCALAR_ROWS: Canned = {
 
 // Slice 10's argv, and none for slice 11. Ordered by the query, so the rows
 // arrive in index order; slice 11 simply has no rows.
+//
+// Matched on the lookup's own `WHERE`, not on the flat key: the flat key now
+// appears in the view the build creates, which is a different statement.
+const ARGV_LOOKUP = 'WHERE slice_id IN';
 const ARGV_ROWS: Canned = {
-  match: 'a.flat_key',
+  match: ARGV_LOOKUP,
   rows: [
-    {slice_id: 10, value: '-c'},
-    {slice_id: 10, value: '-impl'},
-    {slice_id: 10, value: 'src/a.ml'},
+    {slice_id: 10, arg: '-c'},
+    {slice_id: 10, arg: '-impl'},
+    {slice_id: 10, arg: 'src/a.ml'},
   ],
 };
 
@@ -175,7 +179,7 @@ describe('processesForRuleId', () => {
     const sql: string[] = [];
     const processes = await build([COUNT_ROWS], sql);
     expect(await processes.processesForRuleId(1314)).toEqual([]);
-    expect(sql.some((q) => q.includes('a.flat_key'))).toBe(false);
+    expect(sql.some((q) => q.includes(ARGV_LOOKUP))).toBe(false);
   });
 
   test('a non-finite rule id is refused rather than interpolated', async () => {
@@ -197,15 +201,65 @@ describe('the SQL it issues', () => {
     expect(scalars).toContain('ORDER BY s.ts');
   });
 
-  test('parses the argv index out of the element key', async () => {
+  test('stores the arg set on the table and indexes it', async () => {
+    // The 580 s-vs-1.0 s guard. With the arg set reached through `slice`
+    // instead, `SELECT * FROM dune_process_arg WHERE arg = '-impl'` did not
+    // finish in 580 s on the monorepo trace (native tools/trace_processor):
+    // the planner drives from the 50.6M-row `args` and re-scans the process
+    // table per candidate row. Stored and indexed, the same query is 1.0 s.
+    const sql: string[] = [];
+    await build([COUNT_ROWS], sql);
+    const create = sql.find((q) => q.includes('CREATE PERFETTO TABLE'))!;
+    expect(create).toContain('s.arg_set_id AS arg_set_id');
+    const index = sql.find((q) => q.includes('CREATE PERFETTO INDEX'))!;
+    expect(index).toContain('CREATE PERFETTO INDEX _dune_process_args');
+    expect(index).toContain('ON _dune_process(arg_set_id)');
+  });
+
+  test('the arg view parses the index out of the element key', async () => {
     // `key` reads `debug.dune.process_args[N]`, so the index starts one past
     // the flat key's length plus the bracket - i.e. character 25.
     const sql: string[] = [];
+    await build([COUNT_ROWS], sql);
+    const view = sql.find((q) =>
+      q.includes('CREATE PERFETTO VIEW dune_process_arg'),
+    )!;
+    expect(view).toContain('substr(a.key, 25)');
+    expect(view).toContain("a.flat_key = 'debug.dune.process_args'");
+  });
+
+  test('the arg view reaches args off the stored arg set, not off slice', async () => {
+    // What pins the shape above: a `JOIN slice` here would put the planner
+    // back where the 580 s came from.
+    const sql: string[] = [];
+    await build([COUNT_ROWS], sql);
+    const view = sql.find((q) =>
+      q.includes('CREATE PERFETTO VIEW dune_process_arg'),
+    )!;
+    expect(view).toContain('JOIN args a ON a.arg_set_id = p.arg_set_id');
+    expect(view).not.toContain('JOIN slice');
+    expect(view).not.toContain('FROM slice');
+  });
+
+  test('drops the arg view before the table it depends on', async () => {
+    const sql: string[] = [];
+    const processes = await build([COUNT_ROWS], sql);
+    await processes[Symbol.asyncDispose]();
+    const drops = sql.filter((q) => q.startsWith('DROP '));
+    expect(drops.slice(-2)).toEqual([
+      'DROP VIEW IF EXISTS dune_process_arg',
+      'DROP TABLE IF EXISTS _dune_process',
+    ]);
+  });
+
+  test('reads argv off the view rather than repeating its join', async () => {
+    const sql: string[] = [];
     const processes = await build([COUNT_ROWS, SCALAR_ROWS, ARGV_ROWS], sql);
     await processes.processesForRuleId(1314);
-    const argv = sql.find((q) => q.includes('a.flat_key'))!;
-    expect(argv).toContain('substr(a.key, 25)');
-    expect(argv).toContain("a.flat_key = 'debug.dune.process_args'");
-    expect(argv).toContain('s.id IN (10, 11)');
+    const argv = sql.find((q) => q.includes(ARGV_LOOKUP))!;
+    expect(argv).toContain('FROM dune_process_arg');
+    expect(argv).toContain('slice_id IN (10, 11)');
+    expect(argv).toContain('ORDER BY slice_id, idx');
+    expect(argv).not.toContain('flat_key');
   });
 });
