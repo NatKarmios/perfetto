@@ -8,15 +8,15 @@ Explorer, the DataGrid, the query page and a couple of widgets — 22 commits on
 This file is the ledger. It exists for one reason: in six months the _diff_ will
 still be readable and the _motivation_ will not.
 
-Every change here is upstreamable and intended to be upstreamed, with one
-explicit exception marked below.
+Every change here is upstreamable and intended to be upstreamed, with two
+explicit exceptions marked below.
 
-## The one dependency (spike only)
+## The one dependency
 
-`ui/package.json` and `ui/pnpm-lock.yaml` gain `@hpcc-js/wasm-graphviz` on the
-`dune-graph-graphviz-spike` branch, and **nowhere else**. It is the first
-dependency this plugin has asked for, so it is worth being explicit about what
-that means:
+`ui/package.json` and `ui/pnpm-lock.yaml` gain `@hpcc-js/wasm-graphviz`. It is
+the first dependency this plugin has asked for, and the one change in this
+ledger that is **not** upstreamable as it stands, so it is worth being explicit
+about what it means:
 
 - The UI bundles as a single IIFE with no code splitting, so a dependency added
   for an optional plugin ships to every ui.perfetto.dev user whether or not the

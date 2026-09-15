@@ -206,10 +206,13 @@ width.
 **The graphviz spike.** `views/graph_layout_graphviz.ts` is an alternative
 engine behind the same `GraphLayout` shape: the pane prefers it when it has
 loaded and the graph is small enough, and falls back to the passes above
-otherwise. It is on the `dune-graph-graphviz-spike` branch and is _not_ part of
-the plugin proper — the note above on why this is hand-rolled still stands for
-everything except `dot` itself, which is the one engine measured as scaling past
-dagre (7.5 s where dagre did not finish at all).
+otherwise. Still called a spike in its own header: it works and it is tested,
+but it rests on an unresolved licence question (see UPSTREAM.md), and the note
+above on why this is hand-rolled stands for every engine except `dot` itself —
+the one measured as scaling past dagre (7.5 s where dagre did not finish at
+all). The hand-rolled passes are not a fallback that can be deleted: they are
+what runs whenever graphviz is still loading, absent, or too expensive for the
+graph in hand.
 
 Three things about it are worth keeping written down, because each one was a bug
 first:
