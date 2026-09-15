@@ -59,10 +59,11 @@ Two tabs, **Dune** and **Explorer**.
 is selected on the timeline — what the rule actually ran, what depends on it,
 and what it depends on, the last two as trees grouped by path. Under that sits
 the set of nodes you have collected, drawn as a layered node graph you can pan
-and zoom. Every node in the UI carries a ＋/－ toggle that adds it to or removes
-it from that set. Right-clicking a node in that graph offers the same menu the
-selected node's "Add to graph" button does — the node, its parents, children,
-ancestors, descendants or forcers — plus "Remove from graph".
+and zoom. It opens fitted to the pane, and "Fit" is the way back to that view
+after panning or zooming. Every node in the UI carries a ＋/－ toggle that adds
+it to or removes it from that set. Right-clicking a node in that graph offers
+the same menu the selected node's "Add to graph" button does — the node, its
+parents, children, ancestors, descendants or forcers — plus "Remove from graph".
 
 Select a `gen-rules` slice and the same area shows the **directory** behind it
 instead: how long the span took, the `dune` file it read (or, when it recorded

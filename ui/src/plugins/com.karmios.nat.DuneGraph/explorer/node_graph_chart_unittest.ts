@@ -330,8 +330,9 @@ describe('the node graph chart', () => {
     });
 
     expect(root.querySelectorAll('circle').length).toBe(3);
-    // r1 -> a and r1 -> b, induced over the returned set.
-    expect(root.querySelectorAll('line').length).toBe(2);
+    // r1 -> a and r1 -> b, induced over the returned set. An edge is a
+    // `<path>` (it can carry bend points), so this counts the class.
+    expect(root.querySelectorAll('.pf-dune-graph__edge').length).toBe(2);
     expect(root.textContent).toContain('3 nodes');
   });
 

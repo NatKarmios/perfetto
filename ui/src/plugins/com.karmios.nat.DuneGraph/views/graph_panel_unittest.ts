@@ -35,13 +35,16 @@ import {dep, rule, testGraph} from '../model/graph_test_helper';
 
 // r1 depends on a and b; c hangs off b. Two rules and three deps, which is
 // enough for a hide-rules contraction and for an injected set that is a proper
-// subset of the selection.
+// subset of the selection. r3 is in none of those sets: it exists only to reach
+// c both directly and the long way round, which is the one shape that produces
+// a rank-skipping edge.
 const g = testGraph([
   rule('r1', {staticDeps: ['a', 'b']}),
   dep('a'),
   dep('b', {resolvedRule: 'r2'}),
   rule('r2', {staticDeps: ['c']}),
   dep('c'),
+  rule('r3', {staticDeps: ['b', 'c']}),
 ]);
 
 /**
@@ -134,8 +137,18 @@ function dotCount(): number {
   return root.querySelectorAll('circle').length;
 }
 
+// Edges are `<path>` (they carry bend points), and the arrowhead markers are
+// paths too, so this counts the class rather than the element.
 function edgeCount(): number {
-  return root.querySelectorAll('line').length;
+  return root.querySelectorAll('.pf-dune-graph__edge').length;
+}
+
+// The `d` of every drawn edge, by how many line segments it has: 1 for a plain
+// span-1 edge, one more for each bend.
+function edgeSegments(): number[] {
+  return Array.from(root.querySelectorAll('.pf-dune-graph__edge'))
+    .map((e) => (e.getAttribute('d') ?? '').match(/L/g)?.length ?? 0)
+    .sort((x, y) => x - y);
 }
 
 // Button labels, with the leading icon glyph (an `<i.pf-icon>` whose text is
@@ -205,6 +218,19 @@ describe('the graph pane over the graph selection', () => {
     expect(count()).toBe('3 nodes');
     // r1 -> a and r1 -> b, induced over the selection.
     expect(edgeCount()).toBe(2);
+  });
+
+  test('bends an edge that skips a rank around the ranks between', () => {
+    // r3 reaches c directly and also through b -> r2 -> c, so the direct edge
+    // spans three ranks and is drawn through a bend in each of the two it
+    // crosses - the other three edges stay single segments.
+    const {controller} = fakeController({
+      selection: [g.id('r3'), g.id('b'), g.id('r2'), g.id('c')],
+    });
+    render({controller});
+
+    expect(edgeCount()).toBe(4);
+    expect(edgeSegments()).toEqual([1, 1, 1, 3]);
   });
 
   test('offers the four toolbar actions it always did', () => {

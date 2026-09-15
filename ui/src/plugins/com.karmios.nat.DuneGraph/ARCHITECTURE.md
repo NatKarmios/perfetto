@@ -114,6 +114,60 @@ area of the first: a directory tree wants the whole panel height, and it has
 nothing to do with what is selected. The same pane also renders as a Data
 Explorer chart — see [The Explorer pane](#the-explorer-pane).
 
+### Drawing the node graph
+
+Both surfaces that draw nodes as a graph — the side panel's pane and the
+Explorer's node graph chart, which mounts the same pane over a different node
+set — render `views/graph_panel.ts` over a layout from `views/graph_layout.ts`.
+The layout is pure geometry: it never sees the graph, only node ids and edges,
+and returns boxes in an abstract space that the SVG `viewBox` maps. Four passes:
+
+1. **Rank.** Longest-path layering (Kahn's algorithm, roots at rank 0), so every
+   edge points downwards and a rank is a row. Deliberately left untightened — a
+   node reachable both directly and the long way round is pushed as deep as the
+   long way goes, which makes a taller picture and more rank-skipping edges. It
+   is the least visible of the layout's faults once those edges are drawn
+   properly, and a unit test pins the semantics on purpose so that tightening it
+   later is a decision rather than a regression.
+2. **Order.** A rank's items are the nodes on it plus one _dummy_ per
+   rank-skipping edge passing through. They start in the order of a depth-first
+   walk from rank 0, so a chain and its dummies begin side by side; four down/up
+   median sweeps then refine that, keeping the fewest-crossings ordering seen —
+   the starting one included, so the sweep can only improve on it. This is the
+   pass that matters most, because both callers supply an order
+   _anti-correlated_ with the structure: the chart's `ORDER BY node_id`, where a
+   node id is itself the kind partition, and the side panel's click order. There
+   is no transpose pass (the adjacent-swap polish that usually follows the
+   median rule); it is the expensive half at the dense end, and the next thing
+   to add if the picture still needs more.
+3. **X.** Slot index times a cell, each rank centred in the widest, then four
+   down/up barycentre passes under the same keep-the-best rule, scored on
+   weighted horizontal edge displacement. A segment touching a dummy is weighted
+   up, so a long edge outbids the real nodes competing for its column and comes
+   out vertical.
+4. **Bends.** Each dummy's final centre becomes a waypoint on
+   `LayoutEdge.bends`, and the pane draws that edge as a `<path>` polyline
+   through them rather than a straight segment. Without it a long edge passes
+   _under_ the dots of every rank it crosses — the edge group is painted before
+   the node group — and reads as ending at an unrelated node.
+
+`LayoutNode` stays `{node, x, y, width, height}` throughout, because the pane
+resolves a dot's hover label and its right-click menu by looking the node up in
+the live layout every render.
+
+**The budget.** `EDGE_BUDGET` and `DUMMY_BUDGET` in `graph_layout.ts` switch
+passes 2–4 off wholesale, and the layout degrades to exactly what it was before
+they existed: arrival-order rows, centred, straight edges. The dummy ceiling is
+the load-bearing one, because dummies are the _sum of the edge spans_ — a graph
+that is deep and wide multiplies both, whereas the widest case a 400-node query
+can really produce (every rule against every shared dep) is all span 1 and makes
+none. Crossing counting is an inversion count over a Fenwick tree rather than
+the pairwise one for the same reason: the pairwise count is what a single rank
+pair holding tens of thousands of edges would feel. Neither ceiling has a
+browser measurement behind it — they are set where the cost stops being bounded
+by the node cap itself, and what they buy is "no worse than before this existed"
+rather than a hang.
+
 ### Timeline — `views/graph_track.ts`, `views/arrows.ts`
 
 Four tracks in a `Dune graph` workspace, one per kind of row: `dep`, `rule`,
@@ -882,11 +936,12 @@ module at runtime and there is no silent fallback — a browser without it throw
   query may name. Three things agree on a few hundred: the geometry (a rank is a
   row of dots 36 layout units apart against a 20-units-per-pixel max zoom, so
   ~440 fit an 800px card), the redraw (every node is a `<circle>` and every edge
-  a `<line>`, rebuilt as vnodes and diffed on every frame of a pan), and
-  legibility (`views/graph_layout.ts` has no crossing reduction, so a rank of
-  `k` draws up to `k(k-1)/2` crossings). It is all-or-nothing because a graph
-  drawn from part of what was asked for is not a thinner answer, it is a wrong
-  one.
+  a `<path>`, rebuilt as vnodes and diffed on every frame of a pan), and
+  legibility (`views/graph_layout.ts` now orders each rank to reduce crossings —
+  see [Drawing the node graph](#drawing-the-node-graph) — but a rank of `k` is
+  still `k` dots in one row, and no ordering removes a crossing the graph
+  forces). It is all-or-nothing because a graph drawn from part of what was
+  asked for is not a thinner answer, it is a wrong one.
 - **The directory chart deliberately has no cap.** Its `GROUP BY` collapses any
   input to at most two rows per directory before anything leaves the engine, so
   its tree is bounded by `dune_dir` (~19k rows) rather than by the query.
@@ -952,7 +1007,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**709 tests across 36 files** as of 2026-09-15.
+**716 tests across 36 files** as of 2026-09-15.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
@@ -979,6 +1034,11 @@ What the suite does **not** cover:
 
 Things known to be imperfect, kept here so they are not rediscovered:
 
+- **A node's place in its row is no longer where you put it.** Before the
+  ordering pass a node sat in the row at the position it was added in, so the
+  thing you had just clicked was findable by memory. Structural ordering throws
+  that away, and nothing replaces it — flagged rather than fixed, because the
+  crossing reduction is worth more than the affordance.
 - **`ChartRenderContext.brushFilters` is populated only on the dashboard path**,
   so a Dune directory chart on a visualisation node cannot recover its brush
   after a reload.

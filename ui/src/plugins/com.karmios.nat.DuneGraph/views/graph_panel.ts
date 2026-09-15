@@ -96,10 +96,10 @@ const ARROW_GAP = 2;
  * The induced subgraph over a set of nodes as a layered SVG diagram: pan by
  * dragging, zoom with the wheel, click a node to jump to its slice.
  *
- * The layout is recomputed only when the set changes, and a new one is shown at
- * a fixed 1:1 scale (one layout unit per CSS pixel) centred on the content - so
- * pan/zoom only move the viewport, and resizing the pane reveals more or less
- * of the graph rather than rescaling it. "Fit" is the one explicit zoom-to-fit.
+ * The layout is recomputed only when the set changes, and a new one opens
+ * fitted to the pane and centred on its content - so pan/zoom only move the
+ * viewport, and resizing the pane reveals more or less of the graph rather than
+ * rescaling it. "Fit" is the way back to that view after panning or zooming.
  *
  * The set is the controller's graph selection unless one is handed over in
  * `attrs.nodes` - see {@link GraphPanelNodes}.
@@ -255,6 +255,11 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
         preserveAspectRatio: 'xMidYMid meet',
         oncreate: (vnode: m.VnodeDOM) => {
           if (vnode.dom instanceof SVGSVGElement) this.svgEl = vnode.dom;
+          // OPEN-FITTED (see centerContent): the layout is already computed but
+          // could not be fitted, there being nothing to measure yet. Fires once
+          // per mount, and a mount is always a fresh panel, so this never
+          // overrides a zoom the user chose.
+          this.fit();
           // The first paint above used a fallback 1x1 rect (the element didn't
           // exist yet to measure); redraw now that it does.
           m.redraw();
@@ -356,10 +361,18 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     this.centerContent();
   }
 
-  // Shows a freshly-selected graph at a fixed 1:1 scale, centred on its content.
+  // Shows a freshly-laid-out graph fitted to the pane, centred on its content.
+  //
+  // OPEN-FITTED (its own change, revertible on its own): this used to hard-set
+  // `zoom = 1`, which opened a 400-node layout - up to ~14,000 units wide -
+  // showing a sliver of it until you pressed Fit. To go back to 1:1, restore
+  // `this.zoom = 1` here and drop the `fit()` in renderSvg's oncreate; nothing
+  // else in the pane depends on either.
   private centerContent(): void {
-    this.zoom = 1;
     this.center = {x: this.layout.width / 2, y: this.layout.height / 2};
+    // A no-op before the first paint, when there is no element to measure; the
+    // oncreate below fits again as soon as there is one.
+    this.fit();
   }
 
   // Explicit zoom-to-fit: the only way the scale changes other than the wheel.
@@ -537,33 +550,51 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   }
 }
 
-// A straight line between two node dots (source depends on dest), trimmed to the
-// dot boundaries so it starts/ends at the circles' edges with an arrowhead.
-// Forced edges are drawn red (line + arrowhead via a separate marker). Edges
-// recede to half-opacity until one of their endpoints is the hovered node.
+// The polyline between two node dots (source depends on dest), through the bend
+// points of a rank-skipping edge, trimmed at both ends to the dot boundaries so
+// it starts/ends at the circles' edges with an arrowhead. With no bends - the
+// common case - this is the same two-point segment it has always been, just
+// spelt as a `<path>`. Forced edges are drawn red (line + arrowhead via a
+// separate marker). Edges recede to half-opacity until one of their endpoints
+// is the hovered node.
 function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
-  const sx = e.source.x + e.source.width / 2;
-  const sy = e.source.y + e.source.height / 2;
-  const dx = e.dest.x + e.dest.width / 2;
-  const dy = e.dest.y + e.dest.height / 2;
-  const len = Math.hypot(dx - sx, dy - sy) || 1;
-  const ux = (dx - sx) / len;
-  const uy = (dy - sy) / len;
+  const points: Point[] = [
+    dotCentre(e.source),
+    ...(e.bends ?? []),
+    dotCentre(e.dest),
+  ];
+  const last = points.length - 1;
+  const start = towards(points[0], points[1], DOT_RADIUS);
+  const end = towards(points[last], points[last - 1], DOT_RADIUS + ARROW_GAP);
+  const via = points
+    .slice(1, last)
+    .map((p) => `L${p.x},${p.y}`)
+    .join('');
   const active =
     hovered !== undefined &&
     (e.source.node === hovered || e.dest.node === hovered);
-  return m('line', {
+  return m('path', {
     'class': classNames(
       'pf-dune-graph__edge',
       e.forced && 'pf-dune-graph__edge--forced',
       active && 'pf-dune-graph__edge--active',
     ),
-    'x1': sx + ux * DOT_RADIUS,
-    'y1': sy + uy * DOT_RADIUS,
-    'x2': dx - ux * (DOT_RADIUS + ARROW_GAP),
-    'y2': dy - uy * (DOT_RADIUS + ARROW_GAP),
+    'd': `M${start.x},${start.y}${via}L${end.x},${end.y}`,
     'marker-end': e.forced ? 'url(#dune-arrow-forced)' : 'url(#dune-arrow)',
   });
+}
+
+function dotCentre(ln: LayoutNode): Point {
+  return {x: ln.x + ln.width / 2, y: ln.y + ln.height / 2};
+}
+
+// The point `dist` layout units from `from` along the line towards `to`.
+function towards(from: Point, to: Point, dist: number): Point {
+  const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+  return {
+    x: from.x + ((to.x - from.x) / len) * dist,
+    y: from.y + ((to.y - from.y) / len) * dist,
+  };
 }
 
 function arrowMarker(): m.Children {

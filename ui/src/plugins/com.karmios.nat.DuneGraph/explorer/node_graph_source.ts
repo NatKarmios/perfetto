@@ -25,7 +25,9 @@
  * is within the cap, the rows in hand are the whole answer rather than a page
  * of it. `SELECT DISTINCT` is not optional - an edge query has a `src` per
  * edge, not per node - and `ORDER BY n.node_id` is what makes a re-run redraw
- * the same picture, since graph_layout.ts ranks rows in arrival order.
+ * the same picture: graph_layout.ts orders each rank structurally now, so the
+ * row order no longer decides the picture, but it is still the tie-break the
+ * ordering heuristic walks from.
  */
 
 import {getErrorMessage} from '../../../base/errors';
