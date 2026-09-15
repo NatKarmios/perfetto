@@ -222,7 +222,7 @@ keeps its node links.
 
 ## Limits you can hit
 
-- **The node graph chart draws at most 400 nodes**, all or nothing: a query
+- **The node graph chart draws at most 150 nodes**, all or nothing: a query
   naming more is refused rather than drawn in part, and says how many it found.
   Narrow the query and the graph of what is left will be readable too.
 - **A very large trace may need a 64-bit browser.** The reference monorepo trace

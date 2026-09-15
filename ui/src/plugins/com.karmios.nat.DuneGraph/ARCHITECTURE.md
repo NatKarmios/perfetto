@@ -203,6 +203,39 @@ are few — 2/5 to 4/5 straight at identical width on a 30-node chain — so a
 width-gated version is the upgrade path if straightness ever matters more than
 width.
 
+**The graphviz spike.** `views/graph_layout_graphviz.ts` is an alternative
+engine behind the same `GraphLayout` shape: the pane prefers it when it has
+loaded and the graph is small enough, and falls back to the passes above
+otherwise. It is on the `dune-graph-graphviz-spike` branch and is _not_ part of
+the plugin proper — the note above on why this is hand-rolled still stands for
+everything except `dot` itself, which is the one engine measured as scaling past
+dagre (7.5 s where dagre did not finish at all).
+
+Three things about it are worth keeping written down, because each one was a bug
+first:
+
+- **`dot` reports an `e,x,y` arrowhead tip alongside a spline's control
+  points.** Counting it as one of them makes the total `3n+2`, which fails the
+  chain's own validity check — so every spline is dropped and the pane draws
+  straight lines through whatever `dot` routed the edge around. It degrades into
+  a plausible-looking wrong picture rather than an error.
+- **Node size, `arrowhead` and the endpoint all decide where an edge stops.**
+  `dot` halts an edge at the node boundary and reserves ~10pt more for an
+  arrowhead it is told to draw. Declaring a node wider than the pane draws it,
+  or leaving `arrowhead` at its default, both read as edges that start late and
+  stop short. Nodes are declared at `DOT_RADIUS * 2` and `arrowhead=none`, since
+  the pane draws its own with `marker-end`.
+- **`nodesep` is the width lever.** On 150 nodes with 419 edges: 20 units gives
+  1,212 of width, 14 gives 853, 10 gives 643. `concentrate=true` makes it
+  _wider_ (704) and is not used. It is set tighter than the hand-rolled layout's
+  gap because `dot` reserves horizontal lanes for routing that the hand-rolled
+  layout does not.
+
+The ceilings in that file are on total edge _span_, not node or edge count, for
+the reason the budget note above gives: 60 nodes with 1,770 edges ran over 90
+seconds while 400 nodes with 40,000 span-1 edges took 7.5. `dot` cannot be
+interrupted once started, so the refusal has to happen before the call.
+
 ### Timeline — `views/graph_track.ts`, `views/arrows.ts`
 
 Four tracks in a `Dune graph` workspace, one per kind of row: `dep`, `rule`,
@@ -966,7 +999,7 @@ module at runtime and there is no silent fallback — a browser without it throw
   2x on both). The cost is a bare `count(*) FROM dune_edge`, which went from 0
   to 17.5 s — SQLite does not elide the compound view's unused columns for a
   full scan. Bounded and one-hop queries are unaffected.
-- **`NODE_GRAPH_MAX_NODES = 400`** (`explorer/node_graph_source.ts`) is what the
+- **`NODE_GRAPH_MAX_NODES = 150`** (`explorer/node_graph_source.ts`) is what the
   node graph chart will draw at once, and since it draws all or none, the most a
   query may name. Three things agree on a few hundred: the geometry (a rank is a
   row of dots 36 layout units apart against a 20-units-per-pixel max zoom, so
@@ -1042,7 +1075,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**718 tests across 36 files** as of 2026-09-15.
+**728 tests across 37 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

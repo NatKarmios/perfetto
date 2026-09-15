@@ -26,7 +26,18 @@ import {inducedEdges, plural} from '../model/graph';
 import {decorateNode} from './node_display';
 import {addToGraphMenuItems} from './node_tree_actions';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
-import {layoutGraph, NODE_HEIGHT, NODE_WIDTH} from './graph_layout';
+import {
+  ARROW_GAP,
+  DOT_RADIUS,
+  layoutGraph,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+} from './graph_layout';
+import {
+  graphvizReady,
+  layoutWithGraphviz,
+  loadGraphviz,
+} from './graph_layout_graphviz';
 
 /**
  * A node set for the panel to draw that is *not* the controller's own graph
@@ -88,9 +99,6 @@ const MIN_ZOOM = 1 / 5;
 const MAX_ZOOM = 20;
 // Pointer travel (px) past which a drag is a pan, not a click.
 const DRAG_THRESHOLD = 3;
-// Rendered node dot radius, and the gap left before the arrowhead at the dest.
-const DOT_RADIUS = 6;
-const ARROW_GAP = 2;
 
 /**
  * The induced subgraph over a set of nodes as a layered SVG diagram: pan by
@@ -141,6 +149,8 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
   // The right-clicked node whose add-to-graph menu is open, if any. Cleared by
   // the menu's own dismissal (see renderNodeMenu).
   private menuNode?: NodeId;
+  // SPIKE: whether the graphviz load has been kicked off (once per panel).
+  private gvRequested = false;
 
   onremove(): void {
     this.resizeObs?.[Symbol.dispose]();
@@ -343,6 +353,19 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     visible: readonly NodeId[],
   ): void {
     const {controller} = attrs;
+    // SPIKE: start loading graphviz the first time a graph is drawn, and force
+    // one relayout when it lands so the first picture is not stuck on the
+    // fallback. Before the version check below, because that check is what the
+    // redraw will otherwise skip out of.
+    if (!this.gvRequested) {
+      this.gvRequested = true;
+      if (!graphvizReady()) {
+        void loadGraphviz().then(() => {
+          this.sig = -1;
+          m.redraw();
+        });
+      }
+    }
     const version = attrs.nodes?.version ?? controller.graphVersion;
     if (version === this.sig && controller.hideRules === this.sigHideRules) {
       return;
@@ -350,14 +373,18 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
     this.sig = version;
     this.sigHideRules = controller.hideRules;
     // inducedEdges walks the full selection so it can traverse through hidden
-    // rules; layoutGraph only ever sees the visible nodes.
+    // rules; the layout only ever sees the visible nodes.
     const isHiddenRule = controller.hideRules
       ? (n: NodeId) => controller.graph.isRule(n)
       : undefined;
-    this.layout = layoutGraph(
-      visible,
-      inducedEdges(controller.graph, nodes, isHiddenRule),
-    );
+    const edges = inducedEdges(controller.graph, nodes, isHiddenRule);
+    // SPIKE: prefer graphviz when it is loaded and the graph is small enough to
+    // afford it, and fall back to the hand-rolled layout otherwise - which is
+    // also what the first paint gets, since loading the module is async. The
+    // redraw when it finishes re-runs this with `sig` already matching, so the
+    // load is kicked off before that check rather than here.
+    this.layout =
+      layoutWithGraphviz(visible, edges) ?? layoutGraph(visible, edges);
     this.centerContent();
   }
 
@@ -558,18 +585,26 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
 // separate marker). Edges recede to half-opacity until one of their endpoints
 // is the hovered node.
 function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
-  const points: Point[] = [
-    dotCentre(e.source),
-    ...(e.bends ?? []),
-    dotCentre(e.dest),
-  ];
-  const last = points.length - 1;
-  points[0] = towards(points[0], points[1], DOT_RADIUS);
-  points[last] = towards(
-    points[last],
-    points[last - 1],
-    DOT_RADIUS + ARROW_GAP,
-  );
+  let d: string;
+  if (e.spline !== undefined) {
+    // SPIKE: graphviz routes edges as splines and already stops them at the
+    // node boundary, so there is nothing to trim here.
+    d = splinePath(e.spline);
+  } else {
+    const points: Point[] = [
+      dotCentre(e.source),
+      ...(e.bends ?? []),
+      dotCentre(e.dest),
+    ];
+    const last = points.length - 1;
+    points[0] = towards(points[0], points[1], DOT_RADIUS);
+    points[last] = towards(
+      points[last],
+      points[last - 1],
+      DOT_RADIUS + ARROW_GAP,
+    );
+    d = edgePath(points);
+  }
   const active =
     hovered !== undefined &&
     (e.source.node === hovered || e.dest.node === hovered);
@@ -579,7 +614,7 @@ function edgeLine(e: LayoutEdge, hovered: NodeId | undefined): m.Children {
       e.forced && 'pf-dune-graph__edge--forced',
       active && 'pf-dune-graph__edge--active',
     ),
-    'd': edgePath(points),
+    'd': d,
     'marker-end': e.forced ? 'url(#dune-arrow-forced)' : 'url(#dune-arrow)',
   });
 }
@@ -615,6 +650,20 @@ function edgePath(points: readonly Point[]): string {
   }
   const end = points[points.length - 1];
   return `${d}L${end.x},${end.y}`;
+}
+
+/**
+ * A cubic Bézier chain as a `<path>`: `[p0, c1, c2, p1, ...]` becomes
+ * `M p0 C c1 c2 p1 C ...`. This is graphviz's own edge routing, so the curve
+ * drawn is the curve it computed rather than an approximation of it.
+ */
+function splinePath(points: readonly Point[]): string {
+  let d = `M${points[0].x},${points[0].y}`;
+  for (let i = 1; i + 2 < points.length; i += 3) {
+    const [c1, c2, p] = [points[i], points[i + 1], points[i + 2]];
+    d += `C${c1.x},${c1.y} ${c2.x},${c2.y} ${p.x},${p.y}`;
+  }
+  return d;
 }
 
 function cornerCut(from: Point, to: Point): number {

@@ -11,6 +11,28 @@ still be readable and the _motivation_ will not.
 Every change here is upstreamable and intended to be upstreamed, with one
 explicit exception marked below.
 
+## The one dependency (spike only)
+
+`ui/package.json` and `ui/pnpm-lock.yaml` gain `@hpcc-js/wasm-graphviz` on the
+`dune-graph-graphviz-spike` branch, and **nowhere else**. It is the first
+dependency this plugin has asked for, so it is worth being explicit about what
+that means:
+
+- The UI bundles as a single IIFE with no code splitting, so a dependency added
+  for an optional plugin ships to every ui.perfetto.dev user whether or not the
+  plugin is enabled. It costs ~800 KB of the frontend bundle.
+- The npm wrapper is Apache-2.0, but **Graphviz itself is EPL-1.0** — the same
+  licence family that ruled out elkjs (EPL-2.0 OR GPL-3.0-or-later). That is a
+  question for whoever owns licence policy, not a code review question, and it
+  is the main reason this is a spike rather than a proposal.
+- The wasm is embedded in the package's own `index.js`, so nothing is fetched at
+  runtime and the CSP is not involved. Verified against the built bundle.
+
+Nothing on `dune-graph-trace` depends on it: the hand-rolled layout in
+`views/graph_layout.ts` is a complete answer on its own, and is what the pane
+uses whenever graphviz is absent, still loading, or too expensive for the graph
+in hand.
+
 ## Where the changes land
 
 | Area                                  | Roughly                                                                                        |

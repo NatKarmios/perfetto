@@ -36,6 +36,12 @@ import type {GraphEdge, NodeId} from '../model/graph';
 // horizontally and vertically), in layout units (== SVG user units).
 export const NODE_WIDTH = 16;
 export const NODE_HEIGHT = 16;
+// The dot the pane actually draws inside that cell, and the gap left between an
+// edge's end and the dot it points at so the arrowhead is not sitting on top of
+// it. Geometry rather than styling: a layout engine has to know where an edge
+// is allowed to stop, so these live here and graph_panel.ts reads them.
+export const DOT_RADIUS = 6;
+export const ARROW_GAP = 2;
 const GAP = 20;
 /**
  * The slot a dummy occupies. A dummy is not drawn - it is one waypoint of a
@@ -83,6 +89,14 @@ export interface LayoutEdge {
    * span-1 edge, which is the common case.
    */
   readonly bends?: readonly {readonly x: number; readonly y: number}[];
+  /**
+   * A cubic Bézier chain for this edge, as `[p0, c1, c2, p1, c3, c4, p2, ...]`
+   * in layout units: on-curve point, then three control points per segment.
+   * Only graph_layout_graphviz.ts produces these - `dot` routes edges as
+   * splines rather than polylines - and it takes precedence over
+   * {@link bends} when present.
+   */
+  readonly spline?: readonly {readonly x: number; readonly y: number}[];
 }
 
 export interface GraphLayout {
@@ -112,6 +126,48 @@ interface Item {
   // Index within its rank's current order. Kept in step with the order arrays
   // by whoever reorders them, because every median is taken over these.
   pos: number;
+}
+
+/**
+ * What laying this graph out will cost, as the two numbers any layered
+ * algorithm's expense actually scales with: the edges it will draw, and the
+ * total *span* of those edges (the dummies a layered layout threads through
+ * intervening ranks).
+ *
+ * Span is the one that matters and the one a node or edge count hides: a deep,
+ * densely connected graph has few edges and enormous span, and it is the case
+ * that makes crossing minimisation run away. Exported so a caller choosing
+ * between layout engines can price the work before committing to one - see
+ * graph_layout_graphviz.ts.
+ */
+export function layoutCost(
+  nodes: readonly NodeId[],
+  edges: readonly GraphEdge[],
+): {readonly edges: number; readonly dummies: number} {
+  const present = new Set(nodes);
+  const out = new Map<NodeId, NodeId[]>();
+  const inDegree = new Map<NodeId, number>();
+  for (const n of nodes) {
+    out.set(n, []);
+    inDegree.set(n, 0);
+  }
+  for (const {source, dest} of edges) {
+    if (!present.has(source) || !present.has(dest) || source === dest) continue;
+    out.get(source)?.push(dest);
+    inDegree.set(dest, (inDegree.get(dest) ?? 0) + 1);
+  }
+  const rank = assignRanks(nodes, out, inDegree);
+  const rankOf = (n: NodeId) => rank.get(n) ?? 0;
+  const drawn = edges.filter(
+    (e) => present.has(e.source) && present.has(e.dest) && e.source !== e.dest,
+  );
+  return {
+    edges: drawn.length,
+    dummies: drawn.reduce(
+      (n, e) => n + Math.max(0, rankOf(e.dest) - rankOf(e.source) - 1),
+      0,
+    ),
+  };
 }
 
 export function layoutGraph(

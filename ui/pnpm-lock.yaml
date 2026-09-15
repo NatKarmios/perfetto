@@ -29,6 +29,9 @@ importers:
       '@codemirror/view':
         specifier: ^6.37.1
         version: 6.43.6
+      '@hpcc-js/wasm-graphviz':
+        specifier: ^1.29.1
+        version: 1.29.1
       '@lezer/common':
         specifier: ^1.2.3
         version: 1.5.2
@@ -478,6 +481,9 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@hpcc-js/wasm-graphviz@1.29.1':
+    resolution: {integrity: sha512-koAQL0wlryEMeBs4/cQC3GB5ziITv66gR9DU/SWYjjup+iQ+Nbjcqxeaef+sffN4F4cBYZ3P31B5z7+cbSABbw==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -2458,6 +2464,8 @@ snapshots:
     dependencies:
       '@eslint/core': 0.17.0
       levn: 0.4.1
+
+  '@hpcc-js/wasm-graphviz@1.29.1': {}
 
   '@humanfs/core@0.19.2':
     dependencies:

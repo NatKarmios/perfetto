@@ -42,7 +42,7 @@ import type {NodeId} from '../model/graph';
 // agree on a few hundred are in ARCHITECTURE.md, "Performance"; 400 rather than 200
 // because the pathological case, every node on one rank, is not the usual one.
 // node_graph_chart.ts argues the all-or-nothing where it acts on it.
-export const NODE_GRAPH_MAX_NODES = 400;
+export const NODE_GRAPH_MAX_NODES = 150;
 
 // Monotonic across every source in the process, which is why it is a module
 // variable. It is the panel's relayout key, and the panel outlives the source:
