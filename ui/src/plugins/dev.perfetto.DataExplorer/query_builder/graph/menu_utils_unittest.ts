@@ -13,24 +13,16 @@
 // limitations under the License.
 
 import type m from 'mithril';
-import {
-  buildCategorizedMenuItems,
-  buildMenuItems,
-  buildPluginGroupMenuItems,
-  CORE_CATEGORY_ROOTS,
-} from './menu_utils';
+import {buildCategorizedMenuItems, buildMenuItems} from './menu_utils';
 import {nodeRegistry, type NodeDescriptor} from '../node_registry';
-import {registerCoreNodes} from '../core_nodes';
 import {NodeType} from '../../query_node';
 import {MenuItem, type MenuItemAttrs} from '../../../../widgets/menu';
-
-registerCoreNodes();
 
 type MenuVnode = m.Vnode<MenuItemAttrs>;
 
 function descriptor(
   name: string,
-  category?: readonly string[],
+  category?: string,
   available?: () => string | undefined,
 ): NodeDescriptor {
   return {
@@ -57,7 +49,7 @@ function descriptor(
 function registerTestNode(
   id: string,
   type: NodeDescriptor['type'],
-  category?: readonly string[],
+  category?: string,
   available?: () => string | undefined,
 ): Disposable {
   return nodeRegistry.register(id, {
@@ -69,9 +61,7 @@ function registerTestNode(
 
 // Builds the menu for the given [id, category] pairs, and returns the items as
 // menu vnodes so tests can walk them.
-function buildMenu(
-  nodes: Array<[string, readonly string[] | undefined]>,
-): MenuVnode[] {
+function buildMenu(nodes: Array<[string, string | undefined]>): MenuVnode[] {
   const pairs = nodes.map(([id, category]): [string, NodeDescriptor] => [
     id,
     descriptor(id, category),
@@ -94,16 +84,8 @@ describe('buildCategorizedMenuItems', () => {
     expect(items[0].attrs.onclick).toBeDefined();
   });
 
-  it('should render an empty category path as a plain item', () => {
-    const items = buildMenu([['plain', []]]);
-
-    expect(items.length).toBe(1);
-    expect(items[0].attrs.label).toBe('plain');
-    expect(items[0].attrs.onclick).toBeDefined();
-  });
-
-  it('should render a depth-1 path as one submenu holding its node', () => {
-    const items = buildMenu([['a', ['Filter']]]);
+  it('should render a category as one submenu holding its node', () => {
+    const items = buildMenu([['a', 'Filter']]);
 
     expect(items.length).toBe(1);
     expect(items[0].attrs.label).toBe('Filter');
@@ -116,10 +98,10 @@ describe('buildCategorizedMenuItems', () => {
     expect(inner[0].attrs.onclick).toBeDefined();
   });
 
-  it('should share one submenu between nodes with the same depth-1 path', () => {
+  it('should share one submenu between nodes with the same category', () => {
     const items = buildMenu([
-      ['a', ['Filter']],
-      ['b', ['Filter']],
+      ['a', 'Filter'],
+      ['b', 'Filter'],
     ]);
 
     expect(items.length).toBe(1);
@@ -127,47 +109,13 @@ describe('buildCategorizedMenuItems', () => {
     expect(children(items[0]).map((i) => i.attrs.label)).toEqual(['a', 'b']);
   });
 
-  it('should nest a depth-2 path inside its outer submenu', () => {
-    const items = buildMenu([['macro', ['Dune', 'Macros']]]);
-
-    expect(items.length).toBe(1);
-    expect(items[0].attrs.label).toBe('Dune');
-
-    const outer = children(items[0]);
-    expect(outer.length).toBe(1);
-    expect(outer[0].attrs.label).toBe('Macros');
-    expect(outer[0].attrs.onclick).toBeUndefined();
-
-    const inner = children(outer[0]);
-    expect(inner.length).toBe(1);
-    expect(inner[0].attrs.label).toBe('macro');
-    expect(inner[0].attrs.onclick).toBeDefined();
-  });
-
-  it('should share a prefix submenu between a shorter and a longer path', () => {
-    const items = buildMenu([
-      ['target', ['Dune']],
-      ['macro', ['Dune', 'Macros']],
-    ]);
-
-    expect(items.length).toBe(1);
-    expect(items[0].attrs.label).toBe('Dune');
-
-    const outer = children(items[0]);
-    expect(outer.length).toBe(2);
-    expect(outer[0].attrs.label).toBe('target');
-    expect(outer[0].attrs.onclick).toBeDefined();
-    expect(outer[1].attrs.label).toBe('Macros');
-    expect(children(outer[1]).map((i) => i.attrs.label)).toEqual(['macro']);
-  });
-
   it('should preserve first-seen order when categories interleave', () => {
     const items = buildMenu([
       ['plain1', undefined],
-      ['a', ['Filter']],
+      ['a', 'Filter'],
       ['plain2', undefined],
-      ['b', ['Time']],
-      ['c', ['Filter']],
+      ['b', 'Time'],
+      ['c', 'Filter'],
     ]);
 
     // Each group renders where its first member was seen, so 'plain2' joins
@@ -187,16 +135,16 @@ describe('buildCategorizedMenuItems', () => {
     const items = buildCategorizedMenuItems(
       [
         ['plain', descriptor('plain')],
-        ['nested', descriptor('nested', ['Dune', 'Macros'])],
+        ['grouped', descriptor('grouped', 'Dune')],
       ],
       (id) => clicked.push(id),
     ) as MenuVnode[];
 
     const click = {} as PointerEvent;
     items[0].attrs.onclick?.(click);
-    children(children(items[1])[0])[0].attrs.onclick?.(click);
+    children(items[1])[0].attrs.onclick?.(click);
 
-    expect(clicked).toEqual(['plain', 'nested']);
+    expect(clicked).toEqual(['plain', 'grouped']);
   });
 
   it('should grey out a node whose available() gives a reason', () => {
@@ -209,6 +157,18 @@ describe('buildCategorizedMenuItems', () => {
     expect(items[0].attrs.label).toBe('gated');
     expect(items[0].attrs.disabled).toBe(true);
     expect(items[0].attrs.title).toBe('needs a build first');
+  });
+
+  it('should grey out a node inside a category', () => {
+    const items = buildCategorizedMenuItems(
+      [['gated', descriptor('gated', 'Dune', () => 'no graph yet')]],
+      () => {},
+    ) as MenuVnode[];
+
+    const gated = children(items[0])[0];
+    expect(gated.attrs.label).toBe('gated');
+    expect(gated.attrs.disabled).toBe(true);
+    expect(gated.attrs.title).toBe('no graph yet');
   });
 
   it('should leave a node enabled when available() gives no reason', () => {
@@ -230,19 +190,10 @@ describe('buildCategorizedMenuItems', () => {
   });
 });
 
-describe('plugin category groups', () => {
+describe('buildMenuItems', () => {
   // Registrations made by the test under way, undone afterwards so the global
   // registry is back to just the core nodes for the next one.
   let registrations: Disposable[] = [];
-
-  function register(
-    id: string,
-    type: NodeDescriptor['type'],
-    category?: readonly string[],
-    available?: () => string | undefined,
-  ) {
-    registrations.push(registerTestNode(id, type, category, available));
-  }
 
   afterEach(() => {
     for (const registration of registrations) {
@@ -251,72 +202,11 @@ describe('plugin category groups', () => {
     registrations = [];
   });
 
-  it('should leave a plugin-categorized node out of its type section', () => {
-    register('test_dune_filter', 'modification', ['Dune']);
-    register('test_core_filter', 'modification', ['Filter']);
-
-    const labels = (
-      buildMenuItems('modification', () => {}, [
-        'test_dune_filter',
-        'test_core_filter',
-      ]) as MenuVnode[]
-    ).map((i) => i.attrs.label);
-
-    expect(labels).toEqual(['Filter']);
-  });
-
-  it('should build one submenu per plugin root, nesting the paths below it', () => {
-    register('test_dune_target', 'source', ['Dune']);
-    register('test_dune_macro', 'modification', ['Dune', 'Macros']);
-    register('test_other', 'source', ['Other']);
-
-    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
-
-    expect(items.map((i) => i.attrs.label)).toEqual(['Dune', 'Other']);
-
-    const dune = children(items[0]);
-    expect(dune.map((i) => i.attrs.label)).toEqual([
-      'test_dune_target',
-      'Macros',
-    ]);
-    expect(children(dune[1]).map((i) => i.attrs.label)).toEqual([
-      'test_dune_macro',
-    ]);
-  });
-
-  it('should put nodes of different types in the same plugin submenu', () => {
-    register('test_dune_source', 'source', ['Dune']);
-    register('test_dune_mod', 'modification', ['Dune']);
-
-    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
-
-    expect(items.length).toBe(1);
-    expect(items[0].attrs.label).toBe('Dune');
-    expect(children(items[0]).map((i) => i.attrs.label)).toEqual([
-      'test_dune_source',
-      'test_dune_mod',
-    ]);
-  });
-
-  it('should honour the allowedIds filter', () => {
-    register('test_dune_allowed', 'source', ['Dune']);
-    register('test_dune_denied', 'modification', ['Dune']);
-    register('test_other', 'source', ['Other']);
-
-    const items = buildPluginGroupMenuItems(() => {}, [
-      'test_dune_allowed',
-    ]) as MenuVnode[];
-
-    expect(items.length).toBe(1);
-    expect(items[0].attrs.label).toBe('Dune');
-    expect(children(items[0]).map((i) => i.attrs.label)).toEqual([
-      'test_dune_allowed',
-    ]);
-  });
-
   it('should ask available() again on the next render', () => {
     let reason: string | undefined = 'still building';
-    register('test_gated', 'modification', undefined, () => reason);
+    registrations.push(
+      registerTestNode('test_gated', 'modification', undefined, () => reason),
+    );
 
     const item = () =>
       (
@@ -331,34 +221,5 @@ describe('plugin category groups', () => {
 
     expect(item().attrs.disabled).toBe(false);
     expect(item().attrs.title).toBeUndefined();
-  });
-
-  it('should grey out a node nested in a plugin group', () => {
-    register('test_dune_macro', 'modification', ['Dune', 'Macros'], () => {
-      return 'no graph yet';
-    });
-
-    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
-    const macro = children(children(items[0])[0])[0];
-
-    expect(macro.attrs.label).toBe('test_dune_macro');
-    expect(macro.attrs.disabled).toBe(true);
-    expect(macro.attrs.title).toBe('no graph yet');
-  });
-
-  it('should return nothing when only core nodes are registered', () => {
-    expect(buildPluginGroupMenuItems(() => {})).toEqual([]);
-  });
-
-  it('should keep every core category root in CORE_CATEGORY_ROOTS', () => {
-    const roots = nodeRegistry
-      .list()
-      .map(([_id, descriptor]) => descriptor.category?.[0])
-      .filter((root) => root !== undefined);
-
-    expect(roots.length).toBeGreaterThan(0);
-    for (const root of roots) {
-      expect(CORE_CATEGORY_ROOTS.has(root)).toBe(true);
-    }
   });
 });

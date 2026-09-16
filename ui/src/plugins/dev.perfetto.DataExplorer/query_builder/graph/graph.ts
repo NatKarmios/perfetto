@@ -56,7 +56,7 @@ import {
 import {createEditableTextLabels} from './text_label';
 import {type QueryNode, singleNodeOperation, NodeType} from '../../query_node';
 import {NodeBox} from './node_box';
-import {buildMenuItems, buildPluginGroupMenuItems} from './menu_utils';
+import {buildMenuItems} from './menu_utils';
 import {nodeRegistry} from '../node_registry';
 import {
   getAllNodes,
@@ -240,17 +240,13 @@ function buildAddMenuItems(
 
   const exportItems = buildMenuItems('export', addCb, allowedChildren);
 
-  // A plugin's own group spans the node types, so it sits outside the sections
-  // above rather than in one of them.
-  const pluginGroupItems = buildPluginGroupMenuItems(addCb, allowedChildren);
-
   const sections: {title: string; items: m.Children[]}[] = [
     {title: 'Modifications', items: modificationItems},
     {title: 'Operations', items: multisourceItems},
     {title: 'Export', items: exportItems},
   ].filter((s) => s.items.length > 0);
 
-  if (sections.length === 0 && pluginGroupItems.length === 0) {
+  if (sections.length === 0) {
     return [];
   }
 
@@ -261,13 +257,6 @@ function buildAddMenuItems(
     }
     menuItems.push(m(MenuTitle, {label: sections[i].title}));
     menuItems.push(...sections[i].items);
-  }
-  if (pluginGroupItems.length > 0) {
-    // A submenu is its own label, so it needs the separator but no MenuTitle.
-    if (menuItems.length > 0) {
-      menuItems.push(m(MenuDivider));
-    }
-    menuItems.push(...pluginGroupItems);
   }
   return menuItems;
 }
@@ -757,15 +746,6 @@ export class Graph implements m.ClassComponent<GraphAttrs> {
       }
       addNodeMenuItems.push(m(MenuTitle, {label: sections[i].title}));
       addNodeMenuItems.push(...sections[i].items);
-    }
-
-    // A plugin's own group spans the node types, so it sits after the sections
-    // above rather than in one of them. A submenu is its own label, so it needs
-    // the separator but no MenuTitle.
-    const pluginGroupItems = buildPluginGroupMenuItems(cb);
-    if (pluginGroupItems.length > 0) {
-      addNodeMenuItems.push(m(MenuDivider));
-      addNodeMenuItems.push(...pluginGroupItems);
     }
 
     addNodeMenuItems.push(m(MenuDivider));

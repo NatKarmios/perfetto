@@ -128,14 +128,15 @@ export default class implements PerfettoPlugin {
 
     // Offers the mirror's tables as Data Explorer source nodes, so a graph can
     // start from `dune_node` without hand-written SQL. Nine menu entries in one
-    // "Dune" group; same registration lifetime as the charts above, and for the
-    // same reason - see dune_table_source.ts.
+    // "Dune" submenu of that menu's "Sources" section; same registration
+    // lifetime as the charts above, and for the same reason - see
+    // dune_table_source.ts.
     registerDuneSourceNodes(trace, controller);
 
     // And the macros as nodes that go under one of those, so a walk is an
-    // added node rather than hand-written SQL. Ten more entries, in a "Macros"
-    // submenu of the same group; the eight edge-tier ones stay greyed out
-    // until that tier exists - see dune_macro_node.ts.
+    // added node rather than hand-written SQL. Ten more entries, in a "Dune"
+    // submenu of the "Modifications" section; the eight edge-tier ones stay
+    // greyed out until that tier exists - see dune_macro_node.ts.
     registerDuneMacroNodes(trace, controller);
 
     trace.sidePanel.registerTab({

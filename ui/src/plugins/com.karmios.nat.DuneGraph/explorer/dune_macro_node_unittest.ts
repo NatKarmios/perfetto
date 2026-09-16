@@ -370,14 +370,14 @@ describe('the Dune macro registry entries', () => {
     for (const id of ids) expect(defaults()).not.toContain(id);
   });
 
-  test('all sit in the Macros submenu of the Dune group', () => {
+  test('all sit in the Dune menu group', () => {
     registerFor(fakeController());
 
     for (const [id, d] of nodeRegistry.list()) {
       if (!id.startsWith('dune_macro_')) continue;
       expect(d.type).toBe('modification');
       expect(d.inputs).toBe('primary');
-      expect(d.category).toEqual(['Dune', 'Macros']);
+      expect(d.category).toBe('Dune');
     }
   });
 

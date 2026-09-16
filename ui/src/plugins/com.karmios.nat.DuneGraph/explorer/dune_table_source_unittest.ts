@@ -179,7 +179,7 @@ describe('the registry entries', () => {
       if (!id.startsWith('dune_source_')) continue;
       expect(d.type).toBe('source');
       expect(d.inputs).toBe('none');
-      expect(d.category).toEqual(['Dune']);
+      expect(d.category).toBe('Dune');
       expect(d.showOnLandingPage).toBe(false);
       expect(d.allowedChildren).toBeUndefined();
     }

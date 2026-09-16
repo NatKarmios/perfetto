@@ -278,35 +278,36 @@ path.
 
 Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
 
-- Nine **source nodes** in that plugin's own add-node menu, one per queryable
-  table of the mirror, registered per trace (`explorer/dune_table_source.ts`).
-  One class over a table name, nine registry entries differing only in which
-  table they name; the columns and the documentation come from
-  `sql/dune_tables.ts`, since the mirror's tables are not in the `SqlModules`
-  catalogue the core `table` node resolves through. The two tiers are gated
-  differently, which is the only interesting part: a node-tier entry's
-  `preCreate` builds that tier, while `dune_edge` is shown greyed out by an
-  `available()` that reads `edgeMirrorReady` on every menu render — nothing
-  starts a minutes-long edge build from a menu click.
-- Ten **macro nodes** in a "Macros" submenu of that same group, one per `dune_*`
-  macro, registered the same way (`explorer/dune_macro_node.ts`). Again one
-  class over a name, and again the documentation comes from `sql/dune_tables.ts`
-  — including the macro's own signature, which is parsed out of the catalogue
-  entry's name to find the table parameter and the trailing scalar arguments.
-  These are modifications rather than sources: the node above supplies the table
-  the macro takes, passed as a named `fromSql` dependency, so
-  `dune_children!($starts)` becomes `dune_children!(<nested query's table>)`.
-  Three output shapes — the eight walks and `dune_process_cmd!` replace the
-  input's columns, `dune_blocked!` adds `blocked_ns` to them. The macro bodies
-  hardcode the column they read (`s.node_id`, `s.slice_id`, `e.src`/`e.dst`), so
-  an input naming it differently gets a renaming subquery wrapped round the
-  dependency; the unwrapped form is emitted whenever it will do, which for
-  `dune_blocked!` is a correctness point rather than a cosmetic one, since its
-  `e.*` would otherwise be narrowed to the columns the wrap names. The tier gate
-  is the source nodes' gate exactly: the two table-shaped macros are node tier
-  and `preCreate` builds it, the eight walks are edge tier and are greyed out by
-  the same `available()`. They are also the first nodes registered from outside
-  that plugin that go _under_ another one, which needs
+- Nine **source nodes** in a "Dune" submenu of that plugin's own add-node menu,
+  under its "Sources" section, one per queryable table of the mirror, registered
+  per trace (`explorer/dune_table_source.ts`). One class over a table name, nine
+  registry entries differing only in which table they name; the columns and the
+  documentation come from `sql/dune_tables.ts`, since the mirror's tables are
+  not in the `SqlModules` catalogue the core `table` node resolves through. The
+  two tiers are gated differently, which is the only interesting part: a
+  node-tier entry's `preCreate` builds that tier, while `dune_edge` is shown
+  greyed out by an `available()` that reads `edgeMirrorReady` on every menu
+  render — nothing starts a minutes-long edge build from a menu click.
+- Ten **macro nodes** in a "Dune" submenu of that menu's "Modifications"
+  section, one per `dune_*` macro, registered the same way
+  (`explorer/dune_macro_node.ts`). Again one class over a name, and again the
+  documentation comes from `sql/dune_tables.ts` — including the macro's own
+  signature, which is parsed out of the catalogue entry's name to find the table
+  parameter and the trailing scalar arguments. These are modifications rather
+  than sources: the node above supplies the table the macro takes, passed as a
+  named `fromSql` dependency, so `dune_children!($starts)` becomes
+  `dune_children!(<nested query's table>)`. Three output shapes — the eight
+  walks and `dune_process_cmd!` replace the input's columns, `dune_blocked!`
+  adds `blocked_ns` to them. The macro bodies hardcode the column they read
+  (`s.node_id`, `s.slice_id`, `e.src`/`e.dst`), so an input naming it
+  differently gets a renaming subquery wrapped round the dependency; the
+  unwrapped form is emitted whenever it will do, which for `dune_blocked!` is a
+  correctness point rather than a cosmetic one, since its `e.*` would otherwise
+  be narrowed to the columns the wrap names. The tier gate is the source nodes'
+  gate exactly: the two table-shaped macros are node tier and `preCreate` builds
+  it, the eight walks are edge tier and are greyed out by the same
+  `available()`. They are also the first nodes registered from outside that
+  plugin that go _under_ another one, which needs
   `nodeRegistry.addDefaultAllowedChild()` — without it `isConnectionAllowed()`
   rejects every edge into them.
 - Three **sources** the side panel can append to the graph you are working in:

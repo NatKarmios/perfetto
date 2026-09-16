@@ -14,9 +14,10 @@
 
 /**
  * The mirror's macros as Data Explorer *modification nodes*: ten entries in a
- * "Macros" submenu under the same "Dune" group the source nodes sit in
- * (dune_table_source.ts), so the walks can be reached by adding a node under a
- * query instead of by hand-writing SQL.
+ * "Dune" submenu of the add-node menu's "Modifications" section, alongside the
+ * source nodes' own "Dune" submenu under "Sources" (dune_table_source.ts), so
+ * the walks can be reached by adding a node under a query instead of by
+ * hand-writing SQL.
  *
  * This is the fourth offer into that plugin - **ARCHITECTURE.md, "Data
  * Explorer" lists all of them**. It is the source nodes' natural other half:
@@ -469,8 +470,8 @@ export class DuneMacroNode implements QueryNode {
  * The registry entry for one macro. Exported for the tests, which need
  * `available()` and the factory without going through the global registry.
  *
- * `category` puts all ten in a "Macros" submenu of the same "Dune" group the
- * source nodes are in, and `hue` gives them that group's colour.
+ * `category` puts all ten in a "Dune" submenu of the "Modifications" section,
+ * and `hue` gives them the source nodes' colour.
  */
 export function duneMacroDescriptor(
   controller: DuneGraphController,
@@ -483,7 +484,7 @@ export function duneMacroDescriptor(
     icon: 'account_tree',
     type: 'modification',
     inputs: 'primary',
-    category: ['Dune', 'Macros'],
+    category: 'Dune',
     hue: 310,
     nodeType: duneMacroNodeType(macro.macro),
 

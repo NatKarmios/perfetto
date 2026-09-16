@@ -14,8 +14,8 @@
 
 /**
  * The mirror's tables as Data Explorer *source nodes*: one entry per table in a
- * "Dune" group of the add-node menu, so a graph can start from `dune_node` the
- * way it starts from `slice`.
+ * "Dune" submenu of the add-node menu's "Sources" section, so a graph can start
+ * from `dune_node` the way it starts from `slice`.
  *
  * This is a third offer into that plugin, beside the two chart types and the
  * side panel's hand-off - **ARCHITECTURE.md, "Data Explorer" lists all of
@@ -310,8 +310,7 @@ export class DuneTableSourceNode implements QueryNode {
  * `available()` and the factory without going through the global registry.
  *
  * `hue` and `category` are what put all nine in one "Dune" submenu drawn in one
- * colour: a category root the Data Explorer does not know is hoisted into its
- * own top-level group (see that plugin's menu_utils.ts). `showOnLandingPage` is
+ * colour, inside the add-node menu's "Sources" section. `showOnLandingPage` is
  * off because the landing page is for the handful of core starting points, and
  * nine of these would swamp it.
  */
@@ -328,7 +327,7 @@ export function duneTableSourceDescriptor(
     icon: 'table_chart',
     type: 'source',
     inputs: 'none',
-    category: ['Dune'],
+    category: 'Dune',
     hue: 310,
     showOnLandingPage: false,
     nodeType: duneSourceNodeType(table),
