@@ -115,6 +115,12 @@ export interface NodeDescriptor {
   // If undefined, falls back to the registry's default allowed children.
   // If an empty array, no children are allowed (no "+" button shown).
   allowedChildren?: string[];
+
+  // Optional accent colour for this node's card in the graph, as an HSL hue in
+  // degrees (0-360). The core nodes keep their hues in getNodeHue(); a node
+  // registered by another plugin sets this instead. If unset, getNodeHue()
+  // falls back to its default (65, lime).
+  hue?: number;
 }
 
 export class NodeRegistry {
@@ -123,10 +129,53 @@ export class NodeRegistry {
   private idByNodeType: Map<NodeType, string> = new Map();
   private defaultAllowedChildren: ReadonlyArray<string> = [];
 
-  register(id: string, descriptor: NodeDescriptor) {
+  /**
+   * Add a node type to the registry.
+   *
+   * The registry is global and outlives a trace, so a plugin registering from
+   * onTraceLoad must dispose of its registration when the trace goes away:
+   *
+   *   trace.trash.use(nodeRegistry.register('my_node', descriptor));
+   *
+   * Registering something that is already registered throws, which is what
+   * makes a leaked registration visible on the next trace load rather than
+   * silently winning or losing. Two things can collide: the registry ID, and
+   * the node type, which is keyed separately because serialization looks nodes
+   * up by it.
+   *
+   * @param id The registry ID for this node
+   * @param descriptor The node descriptor to add
+   * @returns A disposable that removes this registration again.
+   */
+  register(id: string, descriptor: NodeDescriptor): Disposable {
+    if (this.nodes.has(id)) {
+      throw new Error(`Node ID '${id}' is already registered`);
+    }
+    const existingId = this.idByNodeType.get(descriptor.nodeType);
+    if (existingId !== undefined) {
+      throw new Error(
+        `Node type '${descriptor.nodeType}' is already registered by node ` +
+          `ID '${existingId}', so it cannot also be registered by '${id}'`,
+      );
+    }
     this.nodes.set(id, descriptor);
     this.byNodeType.set(descriptor.nodeType, descriptor);
     this.idByNodeType.set(descriptor.nodeType, id);
+    return {
+      [Symbol.dispose]: () => {
+        // Checked by identity, not by ID: disposing a stale registration must
+        // not remove whatever has taken the same ID since.
+        if (this.nodes.get(id) !== descriptor) return;
+        this.nodes.delete(id);
+        this.byNodeType.delete(descriptor.nodeType);
+        this.idByNodeType.delete(descriptor.nodeType);
+        // Leaving a now-unregistered ID in the default list would make
+        // validateAllowedChildren() throw, so drop it too.
+        this.defaultAllowedChildren = this.defaultAllowedChildren.filter(
+          (childId) => childId !== id,
+        );
+      },
+    };
   }
 
   get(id: string): NodeDescriptor | undefined {
@@ -147,6 +196,14 @@ export class NodeRegistry {
 
   setDefaultAllowedChildren(ids: ReadonlyArray<string>): void {
     this.defaultAllowedChildren = ids;
+  }
+
+  // Appends one node ID to the default allowed children list, which the core
+  // nodes set once at registration time. Without this a node registered later
+  // gets no "+" menu entry and isConnectionAllowed() rejects every edge into
+  // it.
+  addDefaultAllowedChild(id: string): void {
+    this.defaultAllowedChildren = [...this.defaultAllowedChildren, id];
   }
 
   // Returns the allowed children for a given node type.
@@ -171,6 +228,8 @@ export class NodeRegistry {
 
   // Validates that all allowedChildren references (both per-node and default)
   // point to actually registered node IDs. Throws if any are invalid.
+  // This only reads the registry, so it is safe to call again after a later
+  // registration to re-check the whole set.
   validateAllowedChildren(): void {
     const registeredIds = new Set(this.nodes.keys());
 

@@ -121,7 +121,17 @@ function applyJoinColumnDefaults(joinNode: JoinNode): void {
   }
 }
 
+// The core bootstrap runs both as a module side-effect of data_explorer.ts and
+// at the top of several unit test files, and nodeRegistry.register() now throws
+// on a duplicate, so a second call has to be a no-op. Only the core bootstrap
+// gets this pass; a genuine duplicate registration from anywhere else still
+// throws.
+let coreNodesRegistered = false;
+
 export function registerCoreNodes() {
+  if (coreNodesRegistered) return;
+  coreNodesRegistered = true;
+
   nodeRegistry.register('slice', {
     name: 'Slices',
     description: 'Explore all the slices from your trace.',

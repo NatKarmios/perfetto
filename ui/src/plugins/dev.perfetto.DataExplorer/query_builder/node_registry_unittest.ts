@@ -77,6 +77,7 @@ describe('NodeRegistry', () => {
       };
       const descriptor2: NodeDescriptor = {
         ...defaults,
+        nodeType: NodeType.kFilter,
         name: 'Node 2',
         description: 'Second node',
         icon: 'icon2',
@@ -91,7 +92,7 @@ describe('NodeRegistry', () => {
       expect(registry.get('node2')).toBe(descriptor2);
     });
 
-    it('should overwrite existing registration with same id', () => {
+    it('should throw when the same id is registered twice', () => {
       const registry = new NodeRegistry();
       const descriptor1: NodeDescriptor = {
         ...defaults,
@@ -103,6 +104,7 @@ describe('NodeRegistry', () => {
       };
       const descriptor2: NodeDescriptor = {
         ...defaults,
+        nodeType: NodeType.kFilter,
         name: 'Node 1 Updated',
         description: 'Updated node',
         icon: 'icon1-updated',
@@ -111,11 +113,62 @@ describe('NodeRegistry', () => {
       };
 
       registry.register('node1', descriptor1);
-      registry.register('node1', descriptor2);
 
-      const retrieved = registry.get('node1');
-      expect(retrieved).toBe(descriptor2);
-      expect(retrieved?.name).toBe('Node 1 Updated');
+      expect(() => registry.register('node1', descriptor2)).toThrow(
+        /Node ID 'node1' is already registered/,
+      );
+    });
+
+    it('should throw when the same node type is registered under another id', () => {
+      const registry = new NodeRegistry();
+      const descriptor1: NodeDescriptor = {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Node 1',
+        description: 'First node',
+        icon: 'icon1',
+        type: 'modification',
+        factory: (_state: PreCreateState) => createMockNode('node1'),
+      };
+      const descriptor2: NodeDescriptor = {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Node 2',
+        description: 'Second node',
+        icon: 'icon2',
+        type: 'modification',
+        factory: (_state: PreCreateState) => createMockNode('node2'),
+      };
+
+      registry.register('node1', descriptor1);
+
+      expect(() => registry.register('node2', descriptor2)).toThrow(
+        /Node type 'filter' is already registered by node ID 'node1', so it cannot also be registered by 'node2'/,
+      );
+    });
+
+    it('should remove all lookups for a disposed registration', () => {
+      const registry = new NodeRegistry();
+      const descriptor: NodeDescriptor = {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Plugin Node',
+        description: 'A node from another plugin',
+        icon: 'icon',
+        type: 'modification',
+        factory: (_state: PreCreateState) => createMockNode('plugin'),
+      };
+
+      const registration = registry.register('plugin-node', descriptor);
+      expect(registry.get('plugin-node')).toBe(descriptor);
+      expect(registry.getByNodeType(NodeType.kFilter)).toBe(descriptor);
+      expect(registry.getIdByNodeType(NodeType.kFilter)).toBe('plugin-node');
+
+      registration[Symbol.dispose]();
+
+      expect(registry.get('plugin-node')).toBeUndefined();
+      expect(registry.getByNodeType(NodeType.kFilter)).toBeUndefined();
+      expect(registry.getIdByNodeType(NodeType.kFilter)).toBeUndefined();
     });
 
     it('should register node with optional fields', () => {
@@ -206,6 +259,7 @@ describe('NodeRegistry', () => {
       };
       const descriptor2: NodeDescriptor = {
         ...defaults,
+        nodeType: NodeType.kFilter,
         name: 'Node 2',
         description: 'Second node',
         icon: 'icon2',
@@ -214,6 +268,7 @@ describe('NodeRegistry', () => {
       };
       const descriptor3: NodeDescriptor = {
         ...defaults,
+        nodeType: NodeType.kSort,
         name: 'Node 3',
         description: 'Third node',
         icon: 'icon3',
@@ -253,7 +308,7 @@ describe('NodeRegistry', () => {
       expect(result[0][1]).toBe(descriptor);
     });
 
-    it('should reflect updates when node is re-registered', () => {
+    it('should drop a node when its registration is disposed', () => {
       const registry = new NodeRegistry();
       const descriptor1: NodeDescriptor = {
         ...defaults,
@@ -265,22 +320,23 @@ describe('NodeRegistry', () => {
       };
       const descriptor2: NodeDescriptor = {
         ...defaults,
-        name: 'Node 1 Updated',
-        description: 'Updated node',
-        icon: 'icon1-updated',
-        type: 'source',
-        factory: (_state: PreCreateState) => createMockNode('node1-updated'),
+        nodeType: NodeType.kFilter,
+        name: 'Node 2',
+        description: 'Second node',
+        icon: 'icon2',
+        type: 'modification',
+        factory: (_state: PreCreateState) => createMockNode('node2'),
       };
 
       registry.register('node1', descriptor1);
-      let result = registry.list();
+      const registration2 = registry.register('node2', descriptor2);
+      expect(registry.list().length).toBe(2);
+
+      registration2[Symbol.dispose]();
+
+      const result = registry.list();
       expect(result.length).toBe(1);
       expect(result[0][1].name).toBe('Node 1');
-
-      registry.register('node1', descriptor2);
-      result = registry.list();
-      expect(result.length).toBe(1);
-      expect(result[0][1].name).toBe('Node 1 Updated');
     });
   });
 
@@ -469,6 +525,40 @@ describe('NodeRegistry', () => {
         registry.isConnectionAllowed(NodeType.kTable, NodeType.kFilter),
       ).toBe(false);
     });
+
+    it('should allow connection into a node added by addDefaultAllowedChild', () => {
+      const registry = new NodeRegistry();
+      registry.register('source', {
+        ...defaults,
+        nodeType: NodeType.kTable,
+        name: 'Source',
+        description: 'A source',
+        icon: 'icon',
+        type: 'source',
+        factory: () => createMockNode('s'),
+      });
+      registry.setDefaultAllowedChildren([]);
+
+      // A node registered after the default list was set is absent from it.
+      registry.register('plugin-node', {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Plugin Node',
+        description: 'A node from another plugin',
+        icon: 'icon',
+        type: 'modification',
+        factory: () => createMockNode('p'),
+      });
+      expect(
+        registry.isConnectionAllowed(NodeType.kTable, NodeType.kFilter),
+      ).toBe(false);
+
+      registry.addDefaultAllowedChild('plugin-node');
+
+      expect(
+        registry.isConnectionAllowed(NodeType.kTable, NodeType.kFilter),
+      ).toBe(true);
+    });
   });
 
   describe('validateAllowedChildren', () => {
@@ -533,6 +623,63 @@ describe('NodeRegistry', () => {
         /Default allowedChildren references unregistered node ID: 'ghost_node'/,
       );
     });
+
+    it('should pass after a late registration adds itself to the defaults', () => {
+      const registry = new NodeRegistry();
+      registry.register('source', {
+        ...defaults,
+        nodeType: NodeType.kTable,
+        name: 'Source',
+        description: 'A source',
+        icon: 'icon',
+        type: 'source',
+        factory: () => createMockNode('s'),
+      });
+      registry.setDefaultAllowedChildren([]);
+      registry.validateAllowedChildren();
+
+      registry.register('plugin-node', {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Plugin Node',
+        description: 'A node from another plugin',
+        icon: 'icon',
+        type: 'modification',
+        factory: () => createMockNode('p'),
+      });
+      registry.addDefaultAllowedChild('plugin-node');
+
+      expect(() => registry.validateAllowedChildren()).not.toThrow();
+    });
+
+    it('should throw when a late registration references an unregistered ID', () => {
+      const registry = new NodeRegistry();
+      registry.register('source', {
+        ...defaults,
+        nodeType: NodeType.kTable,
+        name: 'Source',
+        description: 'A source',
+        icon: 'icon',
+        type: 'source',
+        factory: () => createMockNode('s'),
+      });
+      registry.validateAllowedChildren();
+
+      registry.register('plugin-node', {
+        ...defaults,
+        nodeType: NodeType.kFilter,
+        name: 'Plugin Node',
+        description: 'A node from another plugin',
+        icon: 'icon',
+        type: 'modification',
+        allowedChildren: ['no_such_node'],
+        factory: () => createMockNode('p'),
+      });
+
+      expect(() => registry.validateAllowedChildren()).toThrow(
+        /Node 'plugin-node' allowedChildren references unregistered node ID: 'no_such_node'/,
+      );
+    });
   });
 
   describe('integration tests', () => {
@@ -551,13 +698,14 @@ describe('NodeRegistry', () => {
         type: 'source',
         factory: (_state: PreCreateState) => createMockNode('source'),
       };
-      registry.register('source-node', descriptor1);
+      const sourceRegistration = registry.register('source-node', descriptor1);
       expect(registry.list().length).toBe(1);
       expect(registry.get('source-node')).toBe(descriptor1);
 
       // Register second node
       const descriptor2: NodeDescriptor = {
         ...defaults,
+        nodeType: NodeType.kFilter,
         name: 'Modify Node',
         description: 'A modification node',
         icon: 'modify-icon',
@@ -568,18 +716,21 @@ describe('NodeRegistry', () => {
       expect(registry.list().length).toBe(2);
       expect(registry.get('modify-node')).toBe(descriptor2);
 
-      // Update first node
-      const descriptor1Updated: NodeDescriptor = {
+      // Dispose of the first node, then register a replacement under the same
+      // ID and node type — which only works because disposal freed both.
+      sourceRegistration[Symbol.dispose]();
+      const descriptor1Replacement: NodeDescriptor = {
         ...defaults,
-        name: 'Source Node Updated',
-        description: 'Updated source node',
-        icon: 'source-icon-updated',
+        name: 'Source Node Replacement',
+        description: 'Replacement source node',
+        icon: 'source-icon-replacement',
         type: 'source',
-        factory: (_state: PreCreateState) => createMockNode('source-updated'),
+        factory: (_state: PreCreateState) =>
+          createMockNode('source-replacement'),
       };
-      registry.register('source-node', descriptor1Updated);
+      registry.register('source-node', descriptor1Replacement);
       expect(registry.list().length).toBe(2);
-      expect(registry.get('source-node')).toBe(descriptor1Updated);
+      expect(registry.get('source-node')).toBe(descriptor1Replacement);
     });
   });
 });
