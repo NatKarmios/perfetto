@@ -38,44 +38,50 @@ export function ensureCounterAbove(ids: string[]): void {
   }
 }
 
-export enum NodeType {
+export const NodeType = {
   // Sources
-  kTable = 'table',
-  kSimpleSlices = 'simple_slices',
-  kSqlSource = 'sql_source',
-  kTimeRangeSource = 'time_range_source',
+  kTable: 'table',
+  kSimpleSlices: 'simple_slices',
+  kSqlSource: 'sql_source',
+  kTimeRangeSource: 'time_range_source',
 
   // Single node operations
-  kAggregation = 'aggregation',
-  kModifyColumns = 'modify_columns',
-  kAddColumns = 'add_columns',
-  kFilterDuring = 'filter_during',
-  kFilterIn = 'filter_in',
-  kLimitAndOffset = 'limit_and_offset',
-  kSort = 'sort',
-  kFilter = 'filter',
-  kCounterToIntervals = 'counter_to_intervals',
+  kAggregation: 'aggregation',
+  kModifyColumns: 'modify_columns',
+  kAddColumns: 'add_columns',
+  kFilterDuring: 'filter_during',
+  kFilterIn: 'filter_in',
+  kLimitAndOffset: 'limit_and_offset',
+  kSort: 'sort',
+  kFilter: 'filter',
+  kCounterToIntervals: 'counter_to_intervals',
 
   // Multi node operations
-  kIntervalIntersect = 'interval_intersect',
-  kUnion = 'union',
-  kJoin = 'join',
-  kCreateSlices = 'create_slices',
+  kIntervalIntersect: 'interval_intersect',
+  kUnion: 'union',
+  kJoin: 'join',
+  kCreateSlices: 'create_slices',
 
   // Visualization
-  kVisualisation = 'visualisation',
+  kVisualisation: 'visualisation',
 
   // Dashboard
-  kDashboard = 'dashboard',
+  kDashboard: 'dashboard',
 
   // Group (encapsulates a subgraph as a single node)
-  kGroup = 'group',
+  kGroup: 'group',
 
   // Deprecated (kept for backward compatibility)
-  kMerge = kJoin,
-  kMetrics = 'metrics',
-  kTraceSummary = 'trace_summary',
-}
+  kMerge: 'join',
+  kMetrics: 'metrics',
+  kTraceSummary: 'trace_summary',
+} as const;
+
+// This is deliberately a const object plus a type alias rather than an enum:
+// the `(string & {})` member lets other plugins register their own node types
+// (whose values this file cannot know about) while still giving editor
+// autocomplete for the members declared above.
+export type NodeType = (typeof NodeType)[keyof typeof NodeType] | (string & {});
 
 export function singleNodeOperation(type: NodeType): boolean {
   switch (type) {
