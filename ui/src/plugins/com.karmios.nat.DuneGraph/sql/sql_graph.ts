@@ -119,6 +119,9 @@ const DYN_INCLUDES_VIEW = 'dune_dyn_includes';
 // them across an edge.
 const SPAN_VIEW = '_dune_span';
 const BLOCKED_MACRO = 'dune_blocked';
+// The set filter, which needs the edge relation rather than a node's span (see
+// {@link leavesMacro}), so it is created with the edge tier.
+const LEAVES_MACRO = 'dune_leaves';
 // `dune_edge` with the macro already applied. Built with the edge tier, since
 // that is the tier it reads (see {@link edgeBlockedView}).
 const EDGE_BLOCKED_VIEW = 'dune_edge_blocked';
@@ -1966,6 +1969,44 @@ function edgeBlockedView(): string {
     SELECT * FROM ${BLOCKED_MACRO}!(${EDGE_TABLE})`;
 }
 
+// `dune_leaves!(rows)`, documented for users in dune_tables.ts: the rows of a
+// node set that depend on no *other* row of it - the bottom of the set - with
+// every input column passed through untouched (`r.*`), so it composes with
+// anything carrying a `node_id`.
+//
+// "Depends on" is transitive, not one hop, and that is the whole point: the
+// edge relation alternates rule -> dep -> rule, so a set of rules alone has no
+// edges *within* it at all and a one-hop filter would be a no-op on the most
+// obvious input there is (every failed rule, a directory's rules).
+//
+// One multi-source BFS rather than a walk per row. `r` is dropped exactly when
+// it is a proper ancestor of some input row, and the set of those is the
+// upward reachable set of the input's *parents* - taking that first hop
+// separately is what keeps a start out of its own answer, which the BFS's own
+// output cannot say (a start is reported with a NULL `parent_node_id` whether
+// or not something else reached it). Cost is therefore one pass over the edge
+// relation plus one over it for the first hop, whatever the input's size.
+//
+// Two consequences worth knowing, both documented: a cycle drops *both* its
+// members, each being the other's ancestor; and `$rows` is expanded twice, so
+// pass a table or a CTE rather than an expensive subquery.
+function leavesMacro(): string {
+  return `
+      CREATE OR REPLACE PERFETTO MACRO ${LEAVES_MACRO}(
+        rows TableOrSubquery
+      )
+      RETURNS TableOrSubquery AS
+      (
+        SELECT r.* FROM ($rows) r
+        WHERE r.node_id NOT IN (
+          SELECT node_id FROM graph_reachable_bfs!(
+            ${edgeSet('up')},
+            (SELECT e.src AS node_id FROM ${ALL_EDGE_VIEW} e
+              JOIN ($rows) o ON o.node_id = e.dst)))
+      )
+  `;
+}
+
 // Builds the edge tier on top of an already-built {@link SqlNodeMirror}, whose
 // `node_id` space the endpoints live in. Past {@link EDGE_HARD_LIMIT} it
 // refuses outright, with no partial state to leave behind since nothing has
@@ -2189,6 +2230,8 @@ export async function buildEdgeMirror(
     await engine.query('INCLUDE PERFETTO MODULE graphs.search');
     // Parameterized transitive-relationship functions + list-macro wrappers.
     await createRelationFunctions(engine, space);
+    // Same phase, same stdlib module: the set filter is a BFS too.
+    await engine.query(leavesMacro());
   });
 
   return {

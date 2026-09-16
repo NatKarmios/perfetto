@@ -253,6 +253,25 @@ either). Each has a `!()` form taking a table of start nodes instead of one, and
 `dune_blocked!(edges)` appends blocked time to anything with `src` / `dst`
 columns.
 
+`dune_leaves!(rows)` goes the other way and takes rows _away_: given anything
+with a `node_id`, it drops the rows that depend on another row of it and keeps
+the bottom of the set.
+
+```sql
+-- Of the rules that failed, the ones that failed first: a rule that failed
+-- because something below it did is not where to look.
+WITH failed AS (
+  SELECT node_id, outcome FROM dune_rule
+  WHERE outcome IN ('failed-action', 'failed-deps')
+)
+SELECT * FROM dune_leaves!(failed);
+```
+
+"Depends on" there is transitive, which matters because edges alternate rule →
+dep → rule: a set of rules alone has no edges within it, so a one-hop version
+would drop nothing. A dependency cycle loses both its rows, each being the
+other's ancestor.
+
 Any grid in the UI — not just this plugin's — renders a column typed
 `JOINID(dune_node.node_id)` as a Dune node chip and one typed
 `JOINID(dune_dir.dir_id)` as a directory chip, so a query you take elsewhere

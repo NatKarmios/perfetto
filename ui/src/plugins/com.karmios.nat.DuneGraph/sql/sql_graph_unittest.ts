@@ -713,6 +713,59 @@ describe('sql_graph blocked time', () => {
   });
 });
 
+describe('sql_graph dune_leaves', () => {
+  const graph = () =>
+    testGraph([rule('1'), rule('2'), rule('3'), rule('4'), rule('5'), dep('a')])
+      .graph;
+
+  const macro = async () => {
+    const sql = await capture(graph());
+    const stmt = sql.find((q) => q.includes('PERFETTO MACRO dune_leaves'));
+    expect(stmt).toBeDefined();
+    return stmt!;
+  };
+
+  it('drops a row that is a transitive ancestor of another one', async () => {
+    // The filter is an anti-join against the input's *proper* ancestors, which
+    // is the upward reachable set of the input's parents - the first hop taken
+    // separately so that a start cannot appear in its own answer.
+    const stmt = await macro();
+    expect(stmt).toContain('SELECT r.* FROM ($rows) r');
+    expect(stmt).toContain('WHERE r.node_id NOT IN (');
+    expect(stmt).toContain('graph_reachable_bfs!(');
+    expect(stmt).toContain(
+      '(SELECT dst AS source_node_id, src AS dest_node_id FROM _dune_edge_all)',
+    );
+    expect(stmt).toContain(
+      'SELECT e.src AS node_id FROM _dune_edge_all e\n' +
+        '              JOIN ($rows) o ON o.node_id = e.dst',
+    );
+  });
+
+  it('passes the input table through, so it composes', async () => {
+    // `r.*`, like `dune_blocked!`'s `e.*`: a filter on whatever the caller
+    // already had, not a new shape.
+    const stmt = await macro();
+    expect(stmt).toContain('rows TableOrSubquery');
+    expect(stmt).toContain('RETURNS TableOrSubquery');
+    expect(stmt).toContain('CREATE OR REPLACE PERFETTO MACRO');
+  });
+
+  it('is created with the edge tier, after the views it reads', async () => {
+    const sql = await capture(graph());
+    const at = (needle: string) => sql.findIndex((q) => q.includes(needle));
+    expect(at('PERFETTO MACRO dune_leaves')).toBeGreaterThan(
+      at('CREATE VIEW _dune_edge_all'),
+    );
+    // graph_reachable_bfs! comes from this module, included once for the
+    // relation functions and this.
+    expect(at('INCLUDE PERFETTO MODULE graphs.search')).toBeGreaterThan(-1);
+    expect(at('PERFETTO MACRO dune_leaves')).toBeGreaterThan(
+      at('INCLUDE PERFETTO MODULE graphs.search'),
+    );
+  });
+});
+
 describe('sql_graph phase manifests', () => {
   // NODE_MIRROR_PHASES / EDGE_MIRROR_PHASES are hand-written (see their doc for
   // why they are not a descriptor array the builders are driven from), so this

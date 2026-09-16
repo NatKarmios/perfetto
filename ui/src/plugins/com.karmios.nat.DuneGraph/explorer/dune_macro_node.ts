@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /**
- * The mirror's macros as Data Explorer *modification nodes*: ten entries in a
+ * The mirror's macros as Data Explorer *modification nodes*: eleven entries in a
  * "Dune" submenu of the add-node menu's "Modifications" section, alongside the
  * source nodes' own "Dune" submenu under "Sources" (dune_table_source.ts), so
  * the walks can be reached by adding a node under a query instead of by
@@ -41,8 +41,8 @@
  *
  * The tier gate is the same asymmetry dune_table_source.ts explains at length:
  * the two table-shaped macros are node tier and so are built by picking them,
- * while the eight walks need the edge tier and are therefore shown greyed out
- * until something else has built it.
+ * while the eight walks and the set filter need the edge tier and are therefore
+ * shown greyed out until something else has built it.
  */
 
 import m from 'mithril';
@@ -106,8 +106,10 @@ interface DuneMacroSpec {
   // be wrapped rather than argued with.
   readonly keyCols: readonly string[];
   // Whether the macro's own columns replace the input's or are added to them.
-  // `dune_blocked!` is the only one that adds: it returns `e.*, blocked_ns`,
-  // where the others select their own shape explicitly.
+  // The eight walks and `dune_process_cmd!` replace: each selects its own
+  // shape explicitly. `dune_blocked!` adds (`e.*, blocked_ns`), and
+  // `dune_leaves!` adds nothing at all (`r.*`), which is the same case with an
+  // empty column list.
   readonly columns: 'replace' | 'add';
   // Which tier of the mirror defines the macro.
   readonly tier: 'node' | 'edge';
@@ -136,6 +138,17 @@ const MACRO_SPECS: ReadonlyArray<DuneMacroSpec> = [
     keyCols: ['src', 'dst'],
     columns: 'add',
     tier: 'node',
+  },
+  {
+    label: 'Leaves of set',
+    macro: 'dune_leaves',
+    keyCols: ['node_id'],
+    // It filters rows rather than producing any of its own, so its columns are
+    // the input's: `add` with nothing to add (its catalogue entry documents no
+    // columns) is exactly that.
+    columns: 'add',
+    // It reads the edge relation, so it is created with the edge tier.
+    tier: 'edge',
   },
 ];
 
@@ -203,7 +216,7 @@ export function duneMacroNodeType(macro: string): NodeType {
 // only place a macro argument survives a reload.
 export interface DuneMacroNodeAttrs {
   // The macro this node calls, without the `!`. Fixed by the registry entry
-  // that created the node; carried here because one class serves all ten.
+  // that created the node; carried here because one class serves all eleven.
   macro: string;
   // Which input column supplies each of the macro's key columns, keyed by the
   // name the macro's body reads it under. A missing or equal entry means no
@@ -217,7 +230,7 @@ export interface DuneMacroNodeAttrs {
 
 /**
  * A node calling one of the mirror's macros on the query above it. Shared by
- * all ten registry entries, which differ only in which macro they name.
+ * all eleven registry entries, which differ only in which macro they name.
  *
  * Holds the controller for the same reason the source nodes do: `validate()`
  * has to answer "is this macro's tier built" when the query is assembled, so
@@ -495,7 +508,7 @@ export class DuneMacroNode implements QueryNode {
  * The registry entry for one macro. Exported for the tests, which need
  * `available()` and the factory without going through the global registry.
  *
- * `category` puts all ten in a "Dune" submenu of the "Modifications" section,
+ * `category` puts all eleven in a "Dune" submenu of the "Modifications" section,
  * and `hue` gives them the source nodes' colour.
  */
 export function duneMacroDescriptor(

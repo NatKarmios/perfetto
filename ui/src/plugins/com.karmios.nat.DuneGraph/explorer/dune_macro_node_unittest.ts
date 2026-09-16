@@ -171,6 +171,17 @@ describe('the Dune macro node', () => {
     expect(sq?.sql?.dependencies?.map((d) => d.alias)).toEqual(['edges']);
   });
 
+  test('takes a node set for dune_leaves!, and keeps its columns', () => {
+    const n = node('dune_leaves', ['node_id', 'outcome']);
+    const sq = n.getStructuredQuery();
+
+    expect(sq?.sql?.sql).toBe('SELECT * FROM dune_leaves!($rows)');
+    expect(sq?.sql?.dependencies?.map((d) => d.alias)).toEqual(['rows']);
+    // It filters rows and adds nothing, so the input's columns are the output's
+    // - the one macro node whose shape is entirely its input's.
+    expect(n.finalCols.map((c) => c.name)).toEqual(['node_id', 'outcome']);
+  });
+
   // The wrap exists only because the macro bodies hardcode the column they
   // read, so it has to be absent when it is not needed: for `dune_blocked!`,
   // whose body returns `e.*`, wrapping also narrows what comes through.
@@ -410,8 +421,8 @@ describe('the Dune macro registry entries', () => {
       .list()
       .map(([id]) => id)
       .filter((id) => id.startsWith('dune_macro_'));
-    expect(ids.length).toBe(10);
-    expect(nodeRegistry.list().length).toBe(before + 10);
+    expect(ids.length).toBe(11);
+    expect(nodeRegistry.list().length).toBe(before + 11);
     expect(
       nodeRegistry.getByNodeType(duneMacroNodeType('dune_children')),
     ).toBeDefined();
@@ -462,8 +473,9 @@ describe('the Dune macro registry entries', () => {
   });
 
   test('the edge tier entries are greyed out with a reason, and never build', () => {
+    // The eight walks plus `dune_leaves!`, which reads the edge relation too.
     const walks = DUNE_MACRO_NODES.filter((m) => m.tier === 'edge');
-    expect(walks.length).toBe(8);
+    expect(walks.length).toBe(9);
 
     for (const macro of walks) {
       const unbuilt = duneMacroDescriptor(

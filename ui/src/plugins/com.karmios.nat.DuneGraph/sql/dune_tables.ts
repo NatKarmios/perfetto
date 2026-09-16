@@ -785,10 +785,12 @@ export const DUNE_FUNCTIONS: ReadonlyArray<TableListEntry> = [
  * them, runs the function per row and unions the results. That is the answer
  * to "do this for every failed rule" without a correlated subquery.
  *
- * The ninth, `dune_blocked!`, is the odd one out: it takes an edge set and
+ * The last two are the odd ones out. `dune_blocked!` takes an edge set and
  * returns it with a `blocked_ns` column added, which is how `dune_edge_blocked`
- * is built. Worth knowing directly, because applying it to a *filtered* edge
+ * is built; worth knowing directly, because applying it to a *filtered* edge
  * set is much cheaper than selecting from the whole blocked view.
+ * `dune_leaves!` neither walks nor adds a column - it *filters*, keeping the
+ * rows of a node set that nothing else in the set depends on.
  */
 export const DUNE_MACROS: ReadonlyArray<TableListEntry> = [
   ...RELATION_FUNCTIONS.map((fn) => macroFor(fn)),
@@ -827,6 +829,33 @@ export const DUNE_MACROS: ReadonlyArray<TableListEntry> = [
         type: STR,
       },
     ],
+  },
+  {
+    name: 'dune_leaves!(rows)',
+    description:
+      'Takes any table or subquery with a `node_id` column and drops the ' +
+      'rows that depend on another row of it, transitively - leaving the ' +
+      'bottom of the set: the rows nothing else in it needs. Every input ' +
+      "column comes back untouched, so it is a filter on a query's result " +
+      'rather than a new shape. Transitive on purpose: edges alternate rule ' +
+      '-> dep -> rule, so a set of rules alone has no edges *within* it and a ' +
+      'one-hop version would drop nothing. Two things to know: each member ' +
+      'of a dependency cycle is the other’s ancestor, so a cycle loses both ' +
+      'its rows; and `rows` is evaluated twice, so pass a table or a `WITH` ' +
+      'CTE rather than an expensive subquery.',
+    exampleQuery: [
+      '-- Of the rules that failed, only the ones that failed first: a rule',
+      '-- that failed because a rule below it did is not the place to look.',
+      'WITH failed AS (',
+      '  SELECT node_id, outcome FROM dune_rule',
+      "  WHERE outcome IN ('failed-action', 'failed-deps')",
+      ')',
+      'SELECT * FROM dune_leaves!(failed)',
+      'LIMIT 1000',
+    ].join('\n'),
+    // Nothing of its own: the macro returns `r.*`. The sidebar renders no
+    // "Columns" block for an empty list, which is the honest answer here.
+    columns: [],
   },
   {
     name: 'dune_blocked!(edges)',

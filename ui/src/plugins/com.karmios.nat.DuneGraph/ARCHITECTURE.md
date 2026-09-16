@@ -294,7 +294,7 @@ Three kinds of offer into `dev.perfetto.DataExplorer`, twenty-one in all:
   `preCreate` builds that tier, while `dune_edge` is shown greyed out by an
   `available()` that reads `edgeMirrorReady` on every menu render — nothing
   starts a minutes-long edge build from a menu click.
-- Ten **macro nodes** in a "Dune" submenu of that menu's "Modifications"
+- Eleven **macro nodes** in a "Dune" submenu of that menu's "Modifications"
   section, one per `dune_*` macro, registered the same way
   (`explorer/dune_macro_node.ts`). Again one class over a name, and again the
   documentation comes from `sql/dune_tables.ts` — including the macro's own
@@ -304,16 +304,17 @@ Three kinds of offer into `dev.perfetto.DataExplorer`, twenty-one in all:
   named `fromSql` dependency, so `dune_children!($starts)` becomes
   `dune_children!(<nested query's table>)`. Three output shapes — the eight
   walks and `dune_process_cmd!` replace the input's columns, `dune_blocked!`
-  adds `blocked_ns` to them. The macro bodies hardcode the column they read
-  (`s.node_id`, `s.slice_id`, `e.src`/`e.dst`), so an input naming it
-  differently gets a renaming subquery wrapped round the dependency; the
-  unwrapped form is emitted whenever it will do, which for `dune_blocked!` is a
-  correctness point rather than a cosmetic one, since its `e.*` would otherwise
-  be narrowed to the columns the wrap names. The tier gate is the source nodes'
-  gate exactly: the two table-shaped macros are node tier and `preCreate` builds
-  it, the eight walks are edge tier and are greyed out by the same
-  `available()`. They are also the first nodes registered from outside that
-  plugin that go _under_ another one, which needs
+  adds `blocked_ns` to them, and `dune_leaves!`, which only filters rows, adds
+  nothing and so passes them straight through. The macro bodies hardcode the
+  column they read (`s.node_id`, `s.slice_id`, `e.src`/`e.dst`), so an input
+  naming it differently gets a renaming subquery wrapped round the dependency;
+  the unwrapped form is emitted whenever it will do, which for `dune_blocked!`
+  is a correctness point rather than a cosmetic one, since its `e.*` would
+  otherwise be narrowed to the columns the wrap names. The tier gate is the
+  source nodes' gate exactly: the two table-shaped macros are node tier and
+  `preCreate` builds it, the eight walks and `dune_leaves!` are edge tier and
+  are greyed out by the same `available()`. They are also the first nodes
+  registered from outside that plugin that go _under_ another one, which needs
   `nodeRegistry.addDefaultAllowedChild()` — without it `isConnectionAllowed()`
   rejects every edge into them.
 - Two **chart types**, registered per trace: `dune-dir-tree`
@@ -583,7 +584,7 @@ the panel and separately re-runnable:
 | ------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `loadGraph()`       | parses the blob | the in-memory `BuildGraph`                                                                                              |
 | `buildNodeMirror()` | node tier       | `dune_node`, `dune_rule`, `dune_dep`, `dune_rule_target`, `dune_string`, `dune_dir`, `dune_process`, `dune_process_arg` |
-| `buildEdgeMirror()` | edge tier       | `dune_edge`, `dune_edge_blocked`, the factored storage, the relation functions                                          |
+| `buildEdgeMirror()` | edge tier       | `dune_edge`, `dune_edge_blocked`, the factored storage, the relation functions, `dune_leaves!`                          |
 
 Each is idempotent (already-`ready` is a no-op) and pulls in the steps it
 depends on, so any can be called from cold. They all run through one queue —
@@ -1105,7 +1106,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**760 tests across 36 files** as of 2026-09-16.
+**764 tests across 36 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
@@ -1122,7 +1123,12 @@ What the suite does **not** cover:
 
 - No diff test touches `dune_process`, or any of the mirror. The SQL is
   exercised only through unit tests of the _generated strings_, not by running
-  them — there is no trace processor in a unit test.
+  them — there is no trace processor in a unit test. `dune_leaves!` is the one
+  statement that has been run outside a browser: its generated text, over a
+  hand-written `_dune_edge_all`, under `out/*/trace_processor_shell -q` on an
+  empty trace. That recipe works for any macro whose body names only tables the
+  check can fake, and is the cheapest way to check one really answers what it
+  claims.
 
 ## Loose ends
 
