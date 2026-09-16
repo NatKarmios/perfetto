@@ -121,6 +121,14 @@ export interface NodeDescriptor {
   // registered by another plugin sets this instead. If unset, getNodeHue()
   // falls back to its default (65, lime).
   hue?: number;
+
+  // Optional check for whether this node type can be used right now.
+  // Returning undefined means it can; returning a string is the reason it
+  // cannot, which is shown to the user on the greyed-out menu entry. This is
+  // consulted every time the menu renders, so a type can become available
+  // again without anything re-registering. The core nodes are always usable
+  // and omit it.
+  available?: () => string | undefined;
 }
 
 export class NodeRegistry {

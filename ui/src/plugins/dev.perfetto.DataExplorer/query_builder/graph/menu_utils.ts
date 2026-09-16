@@ -63,11 +63,36 @@ function getLabelWithHotkey(descriptor: NodeDescriptor): m.Children {
 }
 
 /**
+ * Build the menu item that adds one node.
+ *
+ * @param id - The node's registry ID
+ * @param descriptor - Node descriptor
+ * @param onClickHandler - Callback when the item is clicked
+ * @returns The Mithril child representing the menu item
+ */
+function buildNodeMenuItem(
+  id: string,
+  descriptor: NodeDescriptor,
+  onClickHandler: (id: string) => void,
+): m.Child {
+  // A node type that cannot be used yet is greyed out with its reason as the
+  // tooltip, rather than hidden: the entry stays discoverable, and since
+  // available() is asked again on every render it comes back on its own once
+  // whatever it needs exists.
+  const unavailableReason = descriptor.available?.();
+  return m(MenuItem, {
+    label: getLabelWithHotkey(descriptor),
+    onclick: () => onClickHandler(id),
+    disabled: unavailableReason !== undefined,
+    title: unavailableReason,
+  });
+}
+
+/**
  * Build categorized menu items from a list of node descriptors.
  *
  * Nodes with the same `category` will be grouped into a submenu.
- * If a category only has one node, it will be shown directly without a submenu.
- * Uncategorized nodes (category === undefined) will be shown at the end.
+ * Uncategorized nodes (category === undefined) will be shown directly.
  *
  * @param nodes - Array of [id, descriptor] pairs
  * @param onClickHandler - Callback when a menu item is clicked, receives the node id
@@ -102,12 +127,7 @@ export function buildCategorizedMenuItems(
     if (category === undefined) {
       // Uncategorized nodes - render directly
       for (const [id, descriptor] of catNodes) {
-        menuItems.push(
-          m(MenuItem, {
-            label: getLabelWithHotkey(descriptor),
-            onclick: () => onClickHandler(id),
-          }),
-        );
+        menuItems.push(buildNodeMenuItem(id, descriptor, onClickHandler));
       }
     } else {
       // Categorized nodes - render as submenu
@@ -118,10 +138,7 @@ export function buildCategorizedMenuItems(
             label: category,
           },
           catNodes.map(([id, descriptor]) =>
-            m(MenuItem, {
-              label: getLabelWithHotkey(descriptor),
-              onclick: () => onClickHandler(id),
-            }),
+            buildNodeMenuItem(id, descriptor, onClickHandler),
           ),
         ),
       );
