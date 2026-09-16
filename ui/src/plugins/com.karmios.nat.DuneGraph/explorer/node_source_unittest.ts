@@ -32,7 +32,11 @@ import {
 } from '../../dev.perfetto.DataExplorer/json_handler';
 import type {Trace} from '../../../public/trace';
 import {appendExploreSourceToGraph, exploreSelect} from './explore_source';
-import {DUNE_NODE_JOINID, DUNE_NODE_TABLE} from '../views/node_cell';
+import {
+  DUNE_DIR_JOINID,
+  DUNE_NODE_JOINID,
+  DUNE_NODE_TABLE,
+} from '../sql/dune_tables';
 import {DUNE_NODE_COLUMNS, NODE_SOURCE} from './node_source';
 
 // The node registry is populated as a side effect of the Data Explorer's own
@@ -80,8 +84,7 @@ describe('NODE_SOURCE', () => {
     // whichever unrelated node shared the number. The mirror-side counterpart
     // of this check is DIR_TREE_COLUMNS' in dir_tree_source_unittest.ts.
     const byName = new Map(DUNE_NODE_COLUMNS.map((c) => [c.name, c.type]));
-    expect(byName.has('dir_id')).toBe(true);
-    expect(byName.get('dir_id')).toBe('int');
+    expect(byName.get('dir_id')).toEqual(DUNE_DIR_JOINID);
   });
 });
 

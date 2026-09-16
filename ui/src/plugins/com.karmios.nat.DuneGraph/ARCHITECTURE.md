@@ -354,9 +354,13 @@ untouched, ids and all — the ids are what the user's dashboard items name thei
 data sources by.
 
 `views/node_cell.ts` additionally teaches **every** DataGrid in the UI to render
-a `JOINID(dune_node.node_id)` column as a node chip, so a grid built anywhere —
-the query page, a Data Explorer results panel, a dashboard — draws nodes the
-same way.
+a `JOINID(dune_node.node_id)` column as a node chip and a
+`JOINID(dune_dir.dir_id)` column as a directory chip, so a grid built anywhere —
+the query page, a Data Explorer results panel, a dashboard — draws them the same
+way. A grid decides by _type_ where the query page decides by _name_, which is
+why `sql/dune_tables.ts` types every id column with those two `JOINID`s rather
+than as a plain integer: the Dune source and macro nodes take their columns
+straight from it.
 
 ## The Explorer pane
 
@@ -1134,7 +1138,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**772 tests across 39 files** as of 2026-09-16.
+**788 tests across 40 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

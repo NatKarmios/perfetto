@@ -44,9 +44,9 @@ import {Spinner} from '../../../widgets/spinner';
 import {StackAuto} from '../../../widgets/stack';
 import type {DuneGraphController} from '../controller';
 import type {BuildGraph, NodeId} from '../model/graph';
+import {DUNE_NODE_ID_COLUMN} from '../sql/dune_tables';
 import {
   DUNE_DIR_ID_COLUMNS,
-  DUNE_NODE_ID_COLUMN,
   DUNE_NODE_ID_COLUMNS,
   dirCellLabel,
   nodeAnchor,

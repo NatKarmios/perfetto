@@ -26,6 +26,7 @@
  * in explore_source_unittest.ts, which is where the mechanism lives.
  */
 
+import {DUNE_DIR_JOINID, DUNE_NODE_TABLE} from '../sql/dune_tables';
 import {DIR_TREE_COLUMNS, DIR_TREE_SQL} from './dir_tree_source';
 import {exploreColumnType} from './explore_source';
 
@@ -59,13 +60,23 @@ describe('DIR_TREE_COLUMNS types', () => {
   it('declares no column as a reference to a graph node', () => {
     // `dune_dir` numbers *directories*, so its `dir_id` / `parent_dir_id` are
     // directory ids. Typing either as JOINID(dune_node.node_id) would render
-    // it as whichever unrelated graph node happened to share the number, which
-    // is worse than the plain integer it is. A directory is not a node.
-    // (node_source_unittest.ts is where a column that *is* one is checked.)
+    // it as whichever unrelated graph node happened to share the number. A
+    // directory is not a node. (node_source_unittest.ts is where a column that
+    // *is* one is checked.)
     for (const col of DIR_TREE_COLUMNS) {
       const type = exploreColumnType(col);
       expect(type.kind).not.toBe('id');
-      expect(type.kind).not.toBe('joinid');
+      if (type.kind === 'joinid') {
+        expect(type.source.table).not.toBe(DUNE_NODE_TABLE);
+      }
     }
+  });
+
+  it('declares dir_id and parent_dir_id as directory references', () => {
+    // Which is what makes a grid built from this source chip them as
+    // directories, exactly as the query page does by name.
+    const byName = new Map(DIR_TREE_COLUMNS.map((c) => [c.name, c.type]));
+    expect(byName.get('dir_id')).toEqual(DUNE_DIR_JOINID);
+    expect(byName.get('parent_dir_id')).toEqual(DUNE_DIR_JOINID);
   });
 });

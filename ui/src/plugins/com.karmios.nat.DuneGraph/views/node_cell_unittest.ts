@@ -40,13 +40,17 @@ import type {DuneGraphController} from '../controller';
 import type {BuildGraph, NodeId} from '../model/graph';
 import {dep, rule, testGraph} from '../model/graph_test_helper';
 import {
+  DUNE_DIR_JOINID,
+  DUNE_DIR_TABLE,
   DUNE_NODE_ID_COLUMN,
   DUNE_NODE_JOINID,
   DUNE_NODE_TABLE,
+} from '../sql/dune_tables';
+import {
   dirCellLabel,
   nodeCellLabel,
   nodeForCellValue,
-  registerNodeColumnRenderer,
+  registerIdColumnRenderers,
   renderDirCell,
   renderNodeCell,
   renderNodeCellActions,
@@ -351,11 +355,11 @@ describe('renderNodeCellActions', () => {
   });
 });
 
-describe('registerNodeColumnRenderer', () => {
+describe('registerIdColumnRenderers', () => {
   test('makes a JOINID(dune_node.node_id) column render a chip', () => {
     const {controller} = fakeController();
     const {trace} = fakeTrace();
-    registerNodeColumnRenderer(trace, controller);
+    registerIdColumnRenderers(trace, controller);
 
     const renderers = resolveColumnRenderers(trace, DUNE_NODE_JOINID, 'src');
     expect(renderers.columnType).toBe('identifier');
@@ -370,7 +374,7 @@ describe('registerNodeColumnRenderer', () => {
   test("also handles dune_node's own id column", () => {
     const {controller} = fakeController();
     const {trace} = fakeTrace();
-    registerNodeColumnRenderer(trace, controller);
+    registerIdColumnRenderers(trace, controller);
 
     const idType: PerfettoSqlType = {
       kind: 'id',
@@ -381,10 +385,46 @@ describe('registerNodeColumnRenderer', () => {
     ).toBeDefined();
   });
 
+  test('makes a JOINID(dune_dir.dir_id) column render a directory chip', () => {
+    const {controller} = fakeController();
+    const {trace} = fakeTrace();
+    registerIdColumnRenderers(trace, controller);
+
+    const renderers = resolveColumnRenderers(
+      trace,
+      DUNE_DIR_JOINID,
+      'parent_dir_id',
+    );
+    expect(renderers.columnType).toBe('identifier');
+
+    const root = render(renderers.cellRenderer?.(2, {}));
+    expect(root.querySelector('.pf-dune-graph__chip--dir')?.textContent).toBe(
+      'dir',
+    );
+    expect(root.textContent).toContain('a/b');
+    // A directory is not a graph node, so there is no ＋/－ to offer.
+    expect(renderers.actions).toBeUndefined();
+  });
+
+  test('leaves a reference to another dune_dir column alone', () => {
+    const {controller} = fakeController();
+    const {trace} = fakeTrace();
+    registerIdColumnRenderers(trace, controller);
+
+    // dune_dir.n_rules is a count, not a directory id.
+    const countRef: PerfettoSqlType = {
+      kind: 'joinid',
+      source: {table: DUNE_DIR_TABLE, column: 'n_rules'},
+    };
+    expect(
+      resolveColumnRenderers(trace, countRef, 'n_rules').cellRenderer,
+    ).toBeUndefined();
+  });
+
   test('leaves a reference to another dune_node column alone', () => {
     const {controller} = fakeController();
     const {trace} = fakeTrace();
-    registerNodeColumnRenderer(trace, controller);
+    registerIdColumnRenderers(trace, controller);
 
     // dune_node.slice_id holds slice ids, not node ids: chipping one would name
     // whichever node happened to share the number.
@@ -407,7 +447,7 @@ describe('registerNodeColumnRenderer', () => {
     const node = g.id('a/b/dep1.ml');
 
     const traceA = fakeTrace();
-    registerNodeColumnRenderer(traceA.trace, first.controller);
+    registerIdColumnRenderers(traceA.trace, first.controller);
     const withFirst = resolveColumnRenderers(
       traceA.trace,
       DUNE_NODE_JOINID,
@@ -417,7 +457,7 @@ describe('registerNodeColumnRenderer', () => {
     traceA.unload();
 
     const traceB = fakeTrace();
-    registerNodeColumnRenderer(traceB.trace, second.controller);
+    registerIdColumnRenderers(traceB.trace, second.controller);
     const withSecond = resolveColumnRenderers(
       traceB.trace,
       DUNE_NODE_JOINID,
@@ -431,11 +471,13 @@ describe('registerNodeColumnRenderer', () => {
   test('unloading the trace drops the registration', () => {
     const {controller} = fakeController();
     const {trace, unload} = fakeTrace();
-    registerNodeColumnRenderer(trace, controller);
+    registerIdColumnRenderers(trace, controller);
     expect(idColumnRenderers.has(DUNE_NODE_TABLE)).toBe(true);
+    expect(idColumnRenderers.has(DUNE_DIR_TABLE)).toBe(true);
 
     unload();
     expect(idColumnRenderers.has(DUNE_NODE_TABLE)).toBe(false);
+    expect(idColumnRenderers.has(DUNE_DIR_TABLE)).toBe(false);
     expect(
       resolveColumnRenderers(trace, DUNE_NODE_JOINID, 'node_id').cellRenderer,
     ).toBeUndefined();
@@ -444,13 +486,13 @@ describe('registerNodeColumnRenderer', () => {
   test('a second trace load does not throw', () => {
     const {controller} = fakeController();
     const first = fakeTrace();
-    registerNodeColumnRenderer(first.trace, controller);
+    registerIdColumnRenderers(first.trace, controller);
     // A trace is unloaded (disposing its trash) before the next one loads.
     first.unload();
 
     const second = fakeTrace();
     expect(() =>
-      registerNodeColumnRenderer(second.trace, fakeController().controller),
+      registerIdColumnRenderers(second.trace, fakeController().controller),
     ).not.toThrow();
     expect(idColumnRenderers.has(DUNE_NODE_TABLE)).toBe(true);
   });
@@ -459,9 +501,9 @@ describe('registerNodeColumnRenderer', () => {
     // Not a case the plugin should reach - it is what a registration leaked
     // past its trace would look like, and the throw is how it stays visible.
     const {controller} = fakeController();
-    registerNodeColumnRenderer(fakeTrace().trace, controller);
+    registerIdColumnRenderers(fakeTrace().trace, controller);
     expect(() =>
-      registerNodeColumnRenderer(fakeTrace().trace, controller),
+      registerIdColumnRenderers(fakeTrace().trace, controller),
     ).toThrowError(/already registered/);
   });
 });

@@ -27,6 +27,7 @@
  */
 
 import {TOP_LEVEL_LABEL} from '../model/dir_tree';
+import {DUNE_DIR_JOINID} from '../sql/dune_tables';
 import type {ExploreColumn, ExploreSource} from './explore_source';
 import {exploreSelect} from './explore_source';
 
@@ -39,13 +40,13 @@ import {exploreSelect} from './explore_source';
  * a column the source drops cannot be added to a grid later without editing the
  * graph, whereas one it exports is a click away in the grid's column menu.
  *
- * Nothing here is an id *reference*, and nothing may become one by accident:
- * `dune_dir`'s `dir_id` / `parent_dir_id` are *directory* ids, from a table
- * that numbers directories, not graph nodes (see {@link ExploreColumn.type}).
+ * `dir_id` / `parent_dir_id` are *directory* references, from a table that
+ * numbers directories rather than graph nodes, and are typed as such so a grid
+ * chips them as directories and never as nodes (see {@link ExploreColumn.type}).
  */
 export const DIR_TREE_COLUMNS: ReadonlyArray<ExploreColumn> = [
-  {name: 'dir_id', type: 'int'},
-  {name: 'parent_dir_id', type: 'int'},
+  {name: 'dir_id', type: DUNE_DIR_JOINID},
+  {name: 'parent_dir_id', type: DUNE_DIR_JOINID},
   {
     name: 'path',
     type: 'string',

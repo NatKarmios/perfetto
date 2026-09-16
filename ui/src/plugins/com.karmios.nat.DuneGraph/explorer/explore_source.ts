@@ -47,7 +47,7 @@ export interface ExploreColumn {
    * it (see `resolveColumnRenderers`): a bare {@link SimpleTypeKind} for the
    * simple cases, or a full {@link PerfettoSqlType} where the type carries more
    * than a kind - notably an id reference such as `JOINID(dune_node.node_id)`
-   * (`DUNE_NODE_JOINID` in node_cell.ts), which renders as a node chip.
+   * (`DUNE_NODE_JOINID` in sql/dune_tables.ts), which renders as a node chip.
    *
    * An id type is a claim about *which table's* ids these are, so it has to be
    * true: a column of directory ids typed as node ids would chip each row as

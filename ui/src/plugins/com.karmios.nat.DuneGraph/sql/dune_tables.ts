@@ -28,6 +28,12 @@
  * Only the public surface is documented: `dune_*` is what is meant to be
  * queried, `_dune_*` is storage backing it whose shape changes without notice
  * (see sql_graph.ts's header), so the sidebar does not advertise it.
+ *
+ * The id column types live here too - {@link DUNE_NODE_JOINID} and
+ * {@link DUNE_DIR_JOINID}, with the table and column names they are built
+ * from - because this is the lowest layer that needs them: the catalogue types
+ * its own id columns with them, and views/node_cell.ts keys its DataGrid chip
+ * renderers on the same names, so the two cannot drift apart.
  */
 
 import type {
@@ -44,6 +50,36 @@ const BOOL: PerfettoSqlType = {kind: 'boolean'};
 const SLICE_ID: PerfettoSqlType = {
   kind: 'joinid',
   source: {table: 'slice', column: 'id'},
+};
+
+/**
+ * The mirror's node table and its id column (see sql_graph.ts). The table name
+ * is the key the DataGrid's id-column renderer registry is keyed on, so it is
+ * also what a `JOINID(...)` in someone else's query has to name to get a chip.
+ */
+export const DUNE_NODE_TABLE = 'dune_node';
+export const DUNE_NODE_ID_COLUMN = 'node_id';
+
+/** The directory table and its id column, likewise. */
+export const DUNE_DIR_TABLE = 'dune_dir';
+export const DUNE_DIR_ID_COLUMN = 'dir_id';
+
+/**
+ * The type a column of graph-node ids declares to render as a node chip. Every
+ * DataGrid decides by *type* (`resolveColumnRenderers`), so a node id documented
+ * as a plain INT gets no chip, however the query page treats the same column by
+ * name. Exported so a builder emitting columns (node_source.ts,
+ * process_source.ts) stamps it rather than spelling the type out.
+ */
+export const DUNE_NODE_JOINID: PerfettoSqlType = {
+  kind: 'joinid',
+  source: {table: DUNE_NODE_TABLE, column: DUNE_NODE_ID_COLUMN},
+};
+
+/** The same for a column of directory ids, which render as a directory chip. */
+export const DUNE_DIR_JOINID: PerfettoSqlType = {
+  kind: 'joinid',
+  source: {table: DUNE_DIR_TABLE, column: DUNE_DIR_ID_COLUMN},
 };
 
 // `node_id` and the `src`/`dst` endpoints: the mirror's own dense node id, and
@@ -64,14 +100,14 @@ const RELATION_COLUMNS: ReadonlyArray<{
   readonly description: string;
   readonly type: PerfettoSqlType;
 }> = [
-  {name: 'src', description: 'The walk’s near end.', type: INT},
+  {name: 'src', description: 'The walk’s near end.', type: DUNE_NODE_JOINID},
   {name: 'src_kind', description: "'rule' or 'dep'.", type: STR},
   {
     name: 'src_id',
     description: "`src`'s label: a rule id, or a dep's path.",
     type: STR,
   },
-  {name: 'dst', description: 'The reached node.', type: INT},
+  {name: 'dst', description: 'The reached node.', type: DUNE_NODE_JOINID},
   {name: 'dst_kind', description: "'rule' or 'dep'.", type: STR},
   {
     name: 'dst_id',
@@ -111,7 +147,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       'start from: a `node_id` here joins to dune_rule / dune_dep for ' +
       'per-kind detail, and to dune_edge for structure.',
     columns: [
-      {name: 'node_id', description: NODE_ID_DESC, type: INT},
+      {name: 'node_id', description: NODE_ID_DESC, type: DUNE_NODE_JOINID},
       {
         name: 'kind',
         description: "'rule' or 'dep'.",
@@ -155,7 +191,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
         name: 'dir_id',
         description:
           'dune_dir.dir_id of the directory this node is filed under.',
-        type: INT,
+        type: DUNE_DIR_JOINID,
       },
       {
         name: 'ts',
@@ -185,7 +221,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {
         name: 'node_id',
         description: 'The dune_node this row details.',
-        type: INT,
+        type: DUNE_NODE_JOINID,
       },
       {name: 'rule_id', description: "Dune's own rule id.", type: INT},
       {
@@ -248,7 +284,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {
         name: 'node_id',
         description: 'The dune_node this row details.',
-        type: INT,
+        type: DUNE_NODE_JOINID,
       },
       {
         name: 'dep_id',
@@ -273,7 +309,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
         description:
           'The rule node that produces this path, when the resolution was ' +
           "'rule'. NULL otherwise.",
-        type: INT,
+        type: DUNE_NODE_JOINID,
       },
       {
         name: 'is_source',
@@ -292,9 +328,13 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {
         name: 'src',
         description: 'The depending node.',
-        type: INT,
+        type: DUNE_NODE_JOINID,
       },
-      {name: 'dst', description: 'The node depended on.', type: INT},
+      {
+        name: 'dst',
+        description: 'The node depended on.',
+        type: DUNE_NODE_JOINID,
+      },
       {
         name: 'forced',
         description:
@@ -326,8 +366,12 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       'critical path" questions; more expensive than dune_edge, so prefer ' +
       'that one when you do not need the wait.',
     columns: [
-      {name: 'src', description: 'The depending node.', type: INT},
-      {name: 'dst', description: 'The node depended on.', type: INT},
+      {name: 'src', description: 'The depending node.', type: DUNE_NODE_JOINID},
+      {
+        name: 'dst',
+        description: 'The node depended on.',
+        type: DUNE_NODE_JOINID,
+      },
       {name: 'forced', description: 'As dune_edge.forced.', type: BOOL},
       {name: 'edge_kind', description: 'As dune_edge.edge_kind.', type: STR},
       {
@@ -351,7 +395,11 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       'so joining it onto dune_dep.path is the way to ask "which rule built ' +
       'this dependency".',
     columns: [
-      {name: 'node_id', description: 'The producing rule node.', type: INT},
+      {
+        name: 'node_id',
+        description: 'The producing rule node.',
+        type: DUNE_NODE_JOINID,
+      },
       {name: 'path', description: 'A path the rule produces.', type: STR},
       {
         name: 'is_dir',
@@ -388,7 +436,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
         name: 'node_id',
         description:
           'That rule as a dune_node, or NULL if the graph has no such rule.',
-        type: INT,
+        type: DUNE_NODE_JOINID,
       },
       {
         name: 'prog',
@@ -434,11 +482,15 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       'parent, its direct membership and its rolled-up duration. Shaped for ' +
       "a DataGrid's id/parent tree.",
     columns: [
-      {name: 'dir_id', description: 'The directory’s id.', type: INT},
+      {
+        name: 'dir_id',
+        description: 'The directory’s id.',
+        type: DUNE_DIR_JOINID,
+      },
       {
         name: 'parent_dir_id',
         description: 'Its parent directory; NULL at the root.',
-        type: INT,
+        type: DUNE_DIR_JOINID,
       },
       {name: 'name', description: 'The last path segment.', type: STR},
       {name: 'path', description: 'The full path.', type: STR},
@@ -504,7 +556,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       {
         name: 'dir_id',
         description: 'The directory, as a dune_dir id.',
-        type: INT,
+        type: DUNE_DIR_JOINID,
       },
       {
         name: 'start_slice_id',

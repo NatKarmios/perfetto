@@ -36,22 +36,19 @@ import {Icons} from '../../../base/semantic_icons';
 import type {ColumnRenderers} from '../../../components/widgets/datagrid/column_renderers';
 import {idColumnRenderers} from '../../../components/widgets/datagrid/column_renderers';
 import type {Trace} from '../../../public/trace';
-import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
 import type {SqlValue} from '../../../trace_processor/query_result';
 import {Anchor} from '../../../widgets/anchor';
 import type {DuneGraphController} from '../controller';
 import {dirPathLabel} from '../model/dir_tree';
 import type {NodeId} from '../model/graph';
+import {
+  DUNE_DIR_ID_COLUMN,
+  DUNE_DIR_TABLE,
+  DUNE_NODE_ID_COLUMN,
+  DUNE_NODE_TABLE,
+} from '../sql/dune_tables';
 import {decorateNode, kindChip} from './node_display';
 import {nodeToggleButton} from './node_tree_actions';
-
-/**
- * The SQL mirror's node table and its id column (see sql_graph.ts). The table
- * name is the key the id-column renderer registry is keyed on, so it is also
- * what a `JOINID(...)` in someone else's query has to name to get a chip.
- */
-export const DUNE_NODE_TABLE = 'dune_node';
-export const DUNE_NODE_ID_COLUMN = 'node_id';
 
 /**
  * Every column name whose value IS a `dune_node.node_id`, in the order to
@@ -71,7 +68,7 @@ export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
 ];
 
 /**
- * The `dune_dir` id column, and every column name whose value IS one.
+ * Every column name whose value IS a `dune_dir.dir_id`.
  *
  * `dune_dir`'s own key is spelled `dir_id`, and its parent link
  * `parent_dir_id`, precisely so that `SELECT * FROM dune_dir` chips: a bare
@@ -85,22 +82,10 @@ export const DUNE_NODE_ID_COLUMNS: readonly string[] = [
  * both of those map each row onto a *graph node*, and a directory is not one,
  * so a chart pointed at `dir_id` would draw nothing.
  */
-export const DUNE_DIR_ID_COLUMN = 'dir_id';
 export const DUNE_DIR_ID_COLUMNS: readonly string[] = [
   DUNE_DIR_ID_COLUMN,
   'parent_dir_id',
 ];
-
-/**
- * The type a column of graph-node ids should declare to render as a node chip.
- * Exported so a builder emitting serialized Data Explorer JSON (see
- * dir_tree_source.ts for the shape) can stamp it on a column rather than
- * spelling the type out.
- */
-export const DUNE_NODE_JOINID: PerfettoSqlType = {
-  kind: 'joinid',
-  source: {table: DUNE_NODE_TABLE, column: DUNE_NODE_ID_COLUMN},
-};
 
 /**
  * A node's label as a link that jumps to its slice on the timeline. The icon
@@ -334,12 +319,23 @@ function nodeColumnRenderers(controller: DuneGraphController): ColumnRenderers {
   };
 }
 
+/**
+ * The DataGrid renderers for a column of directory ids. No `actions`, unlike
+ * the node column: a directory is not a graph node, so there is no ＋/－.
+ */
+function dirColumnRenderers(controller: DuneGraphController): ColumnRenderers {
+  return {
+    cellRenderer: (value) => renderDirCell(controller, value),
+  };
+}
+
 // Teaches every DataGrid host to render a `JOINID(dune_node.node_id)` column
-// as a node chip, wherever it appears. Registrations are global and outlive a
-// trace, so this one goes in the trace's trash; registering a table twice
-// throws by design, so a leak surfaces on the next load rather than quietly
-// capturing a dead controller.
-export function registerNodeColumnRenderer(
+// as a node chip and a `JOINID(dune_dir.dir_id)` column as a directory chip,
+// wherever either appears. Registrations are global and outlive a trace, so
+// they go in the trace's trash; registering a table twice throws by design, so
+// a leak surfaces on the next load rather than quietly capturing a dead
+// controller.
+export function registerIdColumnRenderers(
   trace: Trace,
   controller: DuneGraphController,
 ): void {
@@ -351,6 +347,14 @@ export function registerNodeColumnRenderer(
       // would be a lie - so bail out and let it render plainly.
       column === DUNE_NODE_ID_COLUMN
         ? nodeColumnRenderers(controller)
+        : undefined,
+    ),
+  );
+  trace.trash.use(
+    idColumnRenderers.register(DUNE_DIR_TABLE, ({column}) =>
+      // The same guard: `dune_dir.n_rules` is a count, not a directory.
+      column === DUNE_DIR_ID_COLUMN
+        ? dirColumnRenderers(controller)
         : undefined,
     ),
   );

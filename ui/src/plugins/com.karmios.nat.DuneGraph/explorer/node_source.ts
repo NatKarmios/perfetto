@@ -24,7 +24,11 @@
  */
 
 import type {ExploreColumn, ExploreSource} from './explore_source';
-import {DUNE_NODE_JOINID, DUNE_NODE_TABLE} from '../views/node_cell';
+import {
+  DUNE_DIR_JOINID,
+  DUNE_NODE_JOINID,
+  DUNE_NODE_TABLE,
+} from '../sql/dune_tables';
 import type {PerfettoSqlType} from '../../../trace_processor/perfetto_sql_type';
 
 /**
@@ -48,8 +52,7 @@ export const SLICE_JOINID: PerfettoSqlType = {
 // lie. `orig_id` is deliberately *not* a node reference - it is the trace-side
 // id, which collides with unrelated `node_id`s by construction - and nor is
 // `dir_id`, which indexes `dune_dir`, a space with no relation to `node_id` at
-// all. `dir_id` stays a plain int rather than `JOINID(dune_dir.id)` only
-// because no renderer is registered for directory ids yet.
+// all - it is a *directory* reference, and chips as one.
 export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'node_id', type: DUNE_NODE_JOINID},
   {name: 'kind', type: 'string'},
@@ -58,7 +61,7 @@ export const DUNE_NODE_COLUMNS: ReadonlyArray<ExploreColumn> = [
   {name: 'slice_id', type: SLICE_JOINID},
   {name: 'forced_by_kind', type: 'string'},
   {name: 'forced_by_target', type: 'string'},
-  {name: 'dir_id', type: 'int'},
+  {name: 'dir_id', type: DUNE_DIR_JOINID},
   {name: 'ts', type: 'timestamp'},
   {name: 'dur', type: 'duration', expr: 'dur_ns'},
   {name: 'occurrences', type: 'int', expr: 'n_occurrences'},

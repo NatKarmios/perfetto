@@ -259,8 +259,9 @@ either). Each has a `!()` form taking a table of start nodes instead of one, and
 columns.
 
 Any grid in the UI — not just this plugin's — renders a column typed
-`JOINID(dune_node.node_id)` as a Dune node chip, so a query you take elsewhere
-keeps its node links.
+`JOINID(dune_node.node_id)` as a Dune node chip and one typed
+`JOINID(dune_dir.dir_id)` as a directory chip, so a query you take elsewhere
+keeps its links.
 
 ## Limits you can hit
 

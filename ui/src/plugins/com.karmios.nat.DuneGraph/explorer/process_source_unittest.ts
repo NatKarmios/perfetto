@@ -31,7 +31,7 @@ import {
 } from '../../dev.perfetto.DataExplorer/json_handler';
 import type {Trace} from '../../../public/trace';
 import {appendExploreSourceToGraph, exploreSelect} from './explore_source';
-import {DUNE_NODE_JOINID, DUNE_NODE_TABLE} from '../views/node_cell';
+import {DUNE_NODE_JOINID, DUNE_NODE_TABLE} from '../sql/dune_tables';
 import {SLICE_JOINID} from './node_source';
 import {PROCESS_COLUMNS, PROCESS_SOURCE} from './process_source';
 

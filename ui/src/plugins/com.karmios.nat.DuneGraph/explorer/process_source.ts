@@ -29,7 +29,7 @@
  */
 
 import type {ExploreColumn, ExploreSource} from './explore_source';
-import {DUNE_NODE_JOINID} from '../views/node_cell';
+import {DUNE_NODE_JOINID} from '../sql/dune_tables';
 import {SLICE_JOINID} from './node_source';
 
 /**

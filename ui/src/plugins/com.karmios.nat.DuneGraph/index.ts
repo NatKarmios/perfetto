@@ -24,7 +24,7 @@ import {
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
   DuneGraphController,
 } from './controller';
-import {registerNodeColumnRenderer} from './views/node_cell';
+import {registerIdColumnRenderers} from './views/node_cell';
 import {registerDirExplorerChart} from './explorer/dir_explorer_chart';
 import {registerDuneMacroNodes} from './explorer/dune_macro_node';
 import {registerDuneSourceNodes} from './explorer/dune_table_source';
@@ -108,11 +108,12 @@ export default class implements PerfettoPlugin {
     controller.installTimeline();
 
     // Teaches every DataGrid in the UI how to render a reference to one of our
-    // nodes: a column typed `JOINID(dune_node.node_id)` shows the same chip
-    // (+ ＋/－ toggle) the query tab shows, wherever the grid lives. The
-    // registration is global, so it is scoped to this trace's lifetime - see
-    // node_cell.ts.
-    registerNodeColumnRenderer(trace, controller);
+    // nodes or directories: a column typed `JOINID(dune_node.node_id)` shows
+    // the same chip (+ ＋/－ toggle) the query tab shows, and a
+    // `JOINID(dune_dir.dir_id)` the same directory chip, wherever the grid
+    // lives. The registrations are global, so they are scoped to this trace's
+    // lifetime - see node_cell.ts.
+    registerIdColumnRenderers(trace, controller);
 
     // Offers the directory Explorer below as a Data Explorer chart type, so it
     // can be dropped into a visualisation node or a dashboard alongside the

@@ -33,7 +33,7 @@ import {resolveColumnRenderers} from '../../../components/widgets/datagrid/colum
 import {DisposableStack} from '../../../base/disposable_stack';
 import type {Trace} from '../../../public/trace';
 import type {DuneGraphController} from '../controller';
-import {registerNodeColumnRenderer} from '../views/node_cell';
+import {registerIdColumnRenderers} from '../views/node_cell';
 import {DuneTableSourceNode} from './dune_table_source';
 import {DuneMacroNode} from './dune_macro_node';
 
@@ -61,7 +61,7 @@ function fakeController(): DuneGraphController {
 function withRenderers(controller: DuneGraphController): Trace {
   const trash = new DisposableStack();
   const trace = {trash} as unknown as Trace;
-  registerNodeColumnRenderer(trace, controller);
+  registerIdColumnRenderers(trace, controller);
   live = new DisposableStack();
   live.defer(() => trash.dispose());
   return trace;
