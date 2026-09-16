@@ -8,7 +8,7 @@ Explorer, the DataGrid, the query page and a couple of widgets — 32 commits on
 This file is the ledger. It exists for one reason: in six months the _diff_ will
 still be readable and the _motivation_ will not.
 
-Every change here is upstreamable and intended to be upstreamed, with two
+Every change here is upstreamable and intended to be upstreamed, with three
 explicit exceptions marked below.
 
 ## The one dependency
@@ -42,7 +42,7 @@ in hand.
 | `components/query_table`              | the table list, tab persistence, the SQL formatter (all moved _into_ here from the query page) |
 | `plugins/dev.perfetto.QueryPage`      | the other half of those moves                                                                  |
 | `bigtrace/pages`, `widgets/grid.scss` | one-line follow-ons                                                                            |
-| `core/embedder`                       | the temporary enable, which must not be upstreamed                                             |
+| `core/embedder`                       | the temporary enable and the local plugin-list trim, neither of which must be upstreamed       |
 
 ## The ledger
 
@@ -125,6 +125,7 @@ integration line still has and then undoes — see "Not for upstream".
 | Commit                                                                      | Why                                                                                                                                                                                                                                                                                              |
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `2ea839aae1` **[TEMP] Enable plugin by default**                            | Edits `core/embedder/default_plugins.ts` so the plugin loads locally. **Must never be upstreamed.** Drop it when splitting branches.                                                                                                                                                             |
+| **[TEMP] Trim the default plugin list**                                     | Deletes 62 entries from the same `default_plugins.ts`, leaving the 26 a Dune trace can use: the core UI, generic track rendering, the query surfaces and DuneGraph's own closure. Purely local ergonomics — a Dune trace has no ftrace, sched, Android, Chrome, GPU or power data for the rest to bind to, but they still run their `onTraceLoad()` on every open. **Must never be upstreamed.** Note that `core_plugins/` are gated by this same list — `isCore` only groups them in the settings page — so the core UI entries are load-bearing, not cosmetic. |
 | `fb440d6a97` revert the dashboards hook and rename `dir_tree_graph.ts`      | Reverts an earlier commit on this branch. The net upstream diff of `DataExplorer/index.ts` is therefore **zero** — the file does not appear in the net diffstat at all. Nothing to upstream; nothing to do.                                                                                      |
 | `d513d124fa` nested menu categories, `5adf083b65` a plugin's own menu group | Both are undone later on the line by `f3ccaf6a7c` "put the Dune nodes in the existing menu sections", which puts the Dune entries in the existing type sections instead. Their net diff is zero, and `data-explorer-node-registry` was rebuilt without them. Nothing to upstream; nothing to do. |
 
