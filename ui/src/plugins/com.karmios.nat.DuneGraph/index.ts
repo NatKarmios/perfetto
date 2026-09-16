@@ -50,12 +50,12 @@ export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
   static readonly description =
     'Explore the Dune build graph extracted from the trace.';
-  // DataExplorerPlugin is for the hand-off (data_explorer_handoff.ts), which
-  // calls into that plugin's public API, and for the chart types registered
-  // below; SqlModulesPlugin is for the query page's "Tables" sidebar, which
-  // lists the trace's stdlib alongside our own `dune_*` surface. Declaring
-  // either orders its onTraceLoad before ours but does *not* enable it, so
-  // both call sites still check that it is enabled before reaching for it.
+  // DataExplorerPlugin is for the registrations below, which add node types and
+  // chart types to that plugin's own registries; SqlModulesPlugin is for the
+  // query page's "Tables" sidebar, which lists the trace's stdlib alongside our
+  // own `dune_*` surface. Declaring either orders its onTraceLoad before ours
+  // but does *not* enable it, which is why the query page checks before
+  // reaching for SqlModules.
   static readonly dependencies = [DataExplorerPlugin, SqlModulesPlugin];
 
   // The two settings, here rather than in `onTraceLoad` for two reasons:

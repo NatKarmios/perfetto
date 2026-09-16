@@ -68,8 +68,8 @@ export const DUNE_DIR_ID_COLUMN = 'dir_id';
  * The type a column of graph-node ids declares to render as a node chip. Every
  * DataGrid decides by *type* (`resolveColumnRenderers`), so a node id documented
  * as a plain INT gets no chip, however the query page treats the same column by
- * name. Exported so a builder emitting columns (node_source.ts,
- * process_source.ts) stamps it rather than spelling the type out.
+ * name. Exported so a builder emitting columns stamps it rather than spelling
+ * the type out.
  */
 export const DUNE_NODE_JOINID: PerfettoSqlType = {
   kind: 'joinid',

@@ -158,11 +158,6 @@ edge set — a **Depending node** and a **Node depended on** — and adds
 query, pick the one it should use in the node's panel. The eight walks need the
 edge tier, so like **Node edges** they stay greyed out until you have built it.
 
-The side panel also offers `dune_dir`, `dune_node` and `dune_process` as **data
-sources** to append to the graph you are building in the Data Explorer — a
-ready-made two-node chain rather than a bare table. Those buttons appear only
-while the Data Explorer is the open page.
-
 ## Loading the graph
 
 Most traces load themselves: open one and the graph is there. Reading the graph

@@ -17,12 +17,8 @@
  * "Dune" submenu of the add-node menu's "Sources" section, so a graph can start
  * from `dune_node` the way it starts from `slice`.
  *
- * This is a third offer into that plugin, beside the two chart types and the
- * side panel's hand-off - **ARCHITECTURE.md, "Data Explorer" lists all of
- * them**. The difference from the hand-off (data_explorer_handoff.ts) is who
- * starts it: that one is a button on our panel that pushes a whole chain into
- * the user's graph, this one is an entry in the Data Explorer's own menu that
- * adds a single node the user then builds on.
+ * One of three offers into that plugin, beside the macro nodes and the two
+ * chart types - **ARCHITECTURE.md, "Data Explorer" lists all of them**.
  *
  * Why not the core `table` source node: it resolves its table through the
  * `SqlModules` stdlib catalogue, and the mirror's tables are created at runtime
@@ -62,7 +58,6 @@ import {perfettoSqlTypeToString} from '../../../trace_processor/perfetto_sql_typ
 import type {Trace} from '../../../public/trace';
 import type {DuneGraphController} from '../controller';
 import {DUNE_TABLES} from '../sql/dune_tables';
-import {ensureNodeMirror} from './data_explorer_handoff';
 
 /**
  * The tables offered, in menu order, with the label each is offered under.
@@ -112,6 +107,32 @@ export function nodeTierUnavailable(what: string): string {
     `The Dune graph is not loaded, so ${what} does not exist yet. Load it ` +
     'from the Dune side panel and run this again.'
   );
+}
+
+/**
+ * Whether the node tier is queryable, building it if it is not. False means the
+ * load failed, and the caller - a descriptor's `preCreate` - answers by
+ * refusing to add the node. The failure is deliberately not reported from here:
+ * the Dune side panel reports a load's progress and its errors, so a modal from
+ * a menu click would only say the same thing twice.
+ *
+ * The whole `load` rather than just `buildNodeMirror`, because on a trace big
+ * enough not to load by itself this is the *first* load, and stopping at the
+ * node tier would leave the edge tier idle with nothing offering to finish it
+ * (panel.ts's prompt speaks for a refusal and an error, not for "never
+ * started"). A graph past the hard edge cap still goes ahead - `load` skips that
+ * tier and the panel explains it, and everything gated on this reads the node
+ * tier anyway.
+ *
+ * Shared with the macro nodes (dune_macro_node.ts), whose node-tier entries
+ * need the same tier under them before they mean anything.
+ */
+export async function ensureNodeMirror(
+  controller: DuneGraphController,
+): Promise<boolean> {
+  if (controller.nodeMirrorReady) return true;
+  await controller.load();
+  return controller.nodeMirrorReady;
 }
 
 // The node type string a table's source node serialises as. Derived rather than

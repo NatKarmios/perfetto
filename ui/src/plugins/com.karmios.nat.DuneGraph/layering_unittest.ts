@@ -43,9 +43,10 @@ const LAYER_OF_ROOT_FILE: ReadonlyMap<string, number> = new Map([
   ['index', 5],
 ]);
 
-// `views/` and `explorer/` share a layer deliberately: the panel reaches the
-// Data Explorer hand-off and the hand-off reaches the panel's own tree, so
-// ordering them against each other would only manufacture violations.
+// `views/` and `explorer/` share a layer deliberately: the Data Explorer charts
+// mount the panels from `views/` and reuse their cell renderers, and both
+// directories are the same Mithril tier, so ordering them against each other
+// would only manufacture violations.
 
 /**
  * Edges that point the wrong way and are known to. Empty is the goal; each

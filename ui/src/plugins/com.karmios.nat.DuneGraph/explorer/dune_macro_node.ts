@@ -71,10 +71,10 @@ import {TextInput} from '../../../widgets/text_input';
 import type {Trace} from '../../../public/trace';
 import type {DuneGraphController} from '../controller';
 import {DUNE_MACROS} from '../sql/dune_tables';
-import {ensureNodeMirror} from './data_explorer_handoff';
 import {
   EDGE_TIER_UNAVAILABLE,
   duneTableEntryInfo,
+  ensureNodeMirror,
   nodeTierUnavailable,
 } from './dune_table_source';
 

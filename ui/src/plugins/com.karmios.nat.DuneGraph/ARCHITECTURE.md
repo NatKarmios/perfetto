@@ -276,7 +276,7 @@ path.
 
 ### Data Explorer — `explorer/`
 
-Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
+Three kinds of offer into `dev.perfetto.DataExplorer`, twenty-one in all:
 
 - Nine **source nodes** in a "Dune" submenu of that plugin's own add-node menu,
   under its "Sources" section, one per queryable table of the mirror, registered
@@ -316,11 +316,6 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
   plugin that go _under_ another one, which needs
   `nodeRegistry.addDefaultAllowedChild()` — without it `isConnectionAllowed()`
   rejects every edge into them.
-- Three **sources** the side panel can append to the graph you are working in:
-  `dune_dir` (`explorer/dir_tree_source.ts`), `dune_node`
-  (`explorer/node_source.ts`) and `dune_process` (`explorer/process_source.ts`).
-  This is the only place DuneGraph reaches into another plugin, and it goes
-  through that plugin's public `getActiveGraphJson` / `setActiveGraphJson`.
 - Two **chart types**, registered per trace: `dune-dir-tree`
   (`explorer/dir_explorer_chart.ts`) draws a query's rows as the part of the
   directory tree they landed in, and `dune-node-graph`
@@ -330,28 +325,6 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
   (waiting, loading, error, no matching nodes), are shared in
   `explorer/chart_node_column.ts` — the two cards say the same thing in those
   states, so they say it in one place.
-
-Each source becomes a two-node chain wrapped in a group named after it:
-`sql_source (SELECT … FROM <table>) -> modify_columns`. The `modify_columns`
-node looks redundant — the source alone is the obvious graph — but it is what
-makes the chain usable on a dashboard, for a reason invisible from the dashboard
-end. A dashboard item renders nothing until its data source reports columns
-(`DashboardGridView` bails out with "No columns" before it would ever ask for
-execution), and a `sql_source`'s `finalCols` are _discovered by running it_:
-empty on a freshly loaded graph, and the node is `autoExecute: false`, so
-nothing runs it until someone presses "Run Query". A `modify_columns`'s
-`finalCols` come from its _serialized_ `selectedColumns` instead, so the columns
-are known the instant the graph loads, the grid renders, and its own
-wait-then-`requestExecution()` materialises the whole chain. It is also the only
-place a column's _type_ can be declared, which is what decides how the grid
-renders it.
-
-The chain is appended into the graph the user already has, in a group, and
-**nothing is exported to a dashboard**: the button's job is to make the data
-available, not to decide what is done with it, and connecting a `dashboard` node
-to the group's output is one drag away. Everything already in the graph survives
-untouched, ids and all — the ids are what the user's dashboard items name their
-data sources by.
 
 `views/node_cell.ts` additionally teaches **every** DataGrid in the UI to render
 a `JOINID(dune_node.node_id)` column as a node chip and a
@@ -1116,12 +1089,6 @@ The ones a _user_ can trip over are in
   `MouseEvent` of the right type with a `pointerId`, and stub in the missing
   pointer-capture methods — see `views/graph_panel_unittest.ts`.
 - **jsdom has no `performance.measure`.** `perf.ts` feature-detects it.
-- **A `sql_source` node's columns are discovered by running it**, and a Data
-  Explorer dashboard item renders nothing until its source reports columns. That
-  is why every appended source is a two-node chain
-  (`sql_source -> modify_columns`) rather than the obvious single node: a
-  `modify_columns` node's columns come from its _serialized_ state, so they are
-  known the instant the graph loads. See `explorer/explore_source.ts`.
 - **A value-based DataGrid renderer may read only its own cell value.**
   `SQLDataSource` only SELECTs the columns the grid's model shows, so a hidden
   sibling column is simply absent from the row, and the grid's added columns are
@@ -1138,7 +1105,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**788 tests across 40 files** as of 2026-09-16.
+**760 tests across 36 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
@@ -1156,11 +1123,6 @@ What the suite does **not** cover:
 - No diff test touches `dune_process`, or any of the mirror. The SQL is
   exercised only through unit tests of the _generated strings_, not by running
   them — there is no trace processor in a unit test.
-- `explorer/data_explorer_handoff.ts` has no test at all. (The payload it hands
-  over, `explore_source.ts`, is tested against the Data Explorer's own
-  validators, which is where a typo would otherwise become a silently dropped
-  node rather than a compile error. The tier gate it shares with the source
-  nodes, `ensureNodeMirror`, is covered from that side.)
 
 ## Loose ends
 

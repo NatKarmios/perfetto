@@ -22,42 +22,17 @@ import {Icon} from '../../../widgets/icon';
 import {Spinner} from '../../../widgets/spinner';
 import type {Trace} from '../../../public/trace';
 import type {DuneGraphController, LoadStatus, LoadStep} from '../controller';
-import {
-  APPENDABLE_SOURCES,
-  appendExploreSource,
-} from '../explorer/data_explorer_handoff';
 import {plural} from '../model/graph';
 import {SelectionInfoPanel} from './selection_info_panel';
 import {GraphPanel} from './graph_panel';
 import {EDGE_HARD_LIMIT} from '../sql/sql_graph';
 import type {MirrorPhase} from '../sql/sql_graph';
 
-// The Data Explorer's route (`DataExplorerPlugin`'s registered page), which is
-// the only place the "add to the current graph" section makes sense.
-const EXPLORE_PAGE = '/explore';
-
-// The prefix the shell puts in front of every route in the URL fragment.
-const ROUTE_PREFIX = '#!';
-
-/**
- * Whether the Data Explorer's page is the one currently open.
- *
- * The shell's own `Router` is core-private - plugins can navigate (`app.navigate`)
- * but can't ask what the current route is - so this reads the fragment itself.
- * It only needs the page, i.e. the first path component of `#!/page/subpage`,
- * so it stops short of the subpage/args parsing `Router.parseUrl` does.
- */
-function isExplorePageOpen(): boolean {
-  const hash = window.location.hash;
-  if (!hash.startsWith(ROUTE_PREFIX)) return false;
-  const path = hash.substring(ROUTE_PREFIX.length).split(/[?#]/)[0];
-  return path === EXPLORE_PAGE || path.startsWith(`${EXPLORE_PAGE}/`);
-}
-
 interface DuneGraphPanelAttrs {
   readonly controller: DuneGraphController;
-  // Only needed for the Data Explorer hand-off, which is a plugin-level action
-  // rather than a graph one - everything else here goes through the controller.
+  // Passed straight through to `SelectionInfoPanel`, which needs the trace to
+  // resolve the timeline selection - everything else here goes through the
+  // controller.
   readonly trace: Trace;
 }
 
@@ -97,7 +72,6 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
       return this.renderUnloaded(controller);
     }
     return [
-      this.renderExplore(attrs),
       this.renderMirrorWarnings(controller),
       m(
         '.pf-dune-graph__area.pf-dune-graph__area--info',
@@ -110,40 +84,6 @@ export class DuneGraphPanel implements m.ClassComponent<DuneGraphPanelAttrs> {
         m(GraphPanel, {controller}),
       ),
     ];
-  }
-
-  // The mirror's tables, offered to the Data Explorer as data sources. At the
-  // top of the panel because it is about the whole build rather than anything
-  // selected, and only once the graph is up, so the pre-load screen keeps its
-  // single call to action.
-  //
-  // Only while the Data Explorer is the open page: "add to the current graph"
-  // means nothing elsewhere. These buttons being the only way in is what lets
-  // the hand-off assume this panel is on screen to report a load in.
-  //
-  // The route is read straight off the URL rather than watched - the shell
-  // redraws on `hashchange`, so the section appears with the navigation.
-  private renderExplore(attrs: DuneGraphPanelAttrs): m.Children {
-    if (!isExplorePageOpen()) {
-      return undefined;
-    }
-    const {controller, trace} = attrs;
-    return m(
-      '.pf-dune-graph__toolbar',
-      m('.pf-dune-graph__area-title', 'Data Explorer'),
-      m(
-        '.pf-dune-graph__toolbar-buttons',
-        APPENDABLE_SOURCES.map((source) =>
-          m(Button, {
-            label: source.label,
-            icon: source.icon,
-            title: source.title,
-            disabled: controller.busy,
-            onclick: () => void appendExploreSource(trace, controller, source),
-          }),
-        ),
-      ),
-    );
   }
 
   // What the panel shows before the graph is up. Reading the trace's headline

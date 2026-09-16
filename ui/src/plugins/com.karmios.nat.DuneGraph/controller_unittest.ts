@@ -310,7 +310,8 @@ describe('load', () => {
 
   test('from cold, never leaves the edge tier merely idle', async () => {
     // What makes `load()` the thing to call when something else needs the
-    // mirror - the Data Explorer hand-off, say (see data_explorer_handoff.ts).
+    // mirror - a Dune source node's `preCreate`, say (see
+    // explorer/dune_table_source.ts).
     // One load settles every tier: the edge tables are either built or
     // explicitly refused, never just absent. `buildNodeMirror()` leaves exactly
     // that third state, and nothing in the panel offers to finish it - the
