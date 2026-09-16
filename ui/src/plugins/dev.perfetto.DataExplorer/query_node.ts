@@ -56,6 +56,7 @@ export const NodeType = {
   kSort: 'sort',
   kFilter: 'filter',
   kCounterToIntervals: 'counter_to_intervals',
+  kOverlapCount: 'overlap_count',
 
   // Multi node operations
   kIntervalIntersect: 'interval_intersect',

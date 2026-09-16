@@ -62,6 +62,10 @@ import {
   CounterToIntervalsNode,
   type CounterToIntervalsNodeAttrs,
 } from './nodes/counter_to_intervals_node';
+import {
+  OverlapCountNode,
+  type OverlapCountNodeAttrs,
+} from './nodes/overlap_count_node';
 import {MetricsNode, type MetricsNodeAttrs} from './nodes/metrics_node';
 import {
   TraceSummaryNode,
@@ -515,6 +519,22 @@ export function registerCoreNodes() {
       }),
   });
 
+  nodeRegistry.register('overlap_count', {
+    name: 'Overlap Count',
+    description: 'Count how many intervals are open at each point in time.',
+    icon: 'stacked_line_chart',
+    type: 'modification',
+    inputs: 'primary',
+    category: 'Advanced',
+    nodeType: NodeType.kOverlapCount,
+    factory: (_attrs) =>
+      new OverlapCountNode(_attrs as OverlapCountNodeAttrs, {}),
+    deserialize: (_attrs, _trace, sqlModules) =>
+      new OverlapCountNode(_attrs as OverlapCountNodeAttrs, {
+        sqlModules,
+      }),
+  });
+
   nodeRegistry.register('dashboard', {
     name: 'Export to Dashboard',
     description: 'Export this data source so it can be used on dashboards.',
@@ -655,6 +675,7 @@ export function registerCoreNodes() {
     'aggregation',
     'filter_node',
     'counter_to_intervals',
+    'overlap_count',
     'sort_node',
     'limit_and_offset_node',
     'visualisation',
