@@ -14,6 +14,7 @@
 
 import type {Node, NodePort} from '../../../../widgets/nodegraph';
 import {type QueryNode, NodeType, singleNodeOperation} from '../../query_node';
+import {nodeRegistry} from '../node_registry';
 
 function getPortName(
   portNames: string[] | ((portIndex: number) => string),
@@ -26,6 +27,11 @@ function getPortName(
 }
 
 export function getNodeHue(node: QueryNode): number {
+  // A node registered by another plugin declares its hue on its descriptor;
+  // the core nodes' hues live in the switch below.
+  const descriptorHue = nodeRegistry.getByNodeType(node.type)?.hue;
+  if (descriptorHue !== undefined) return descriptorHue;
+
   switch (node.type) {
     case NodeType.kTable:
       return 354; // Red (#ffcdd2)
