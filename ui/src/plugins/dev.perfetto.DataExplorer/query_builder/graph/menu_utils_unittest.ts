@@ -31,6 +31,7 @@ type MenuVnode = m.Vnode<MenuItemAttrs>;
 function descriptor(
   name: string,
   category?: readonly string[],
+  available?: () => string | undefined,
 ): NodeDescriptor {
   return {
     name,
@@ -39,6 +40,7 @@ function descriptor(
     type: 'modification',
     inputs: 'primary',
     category,
+    available,
     nodeType: NodeType.kFilter,
     factory: () => {
       throw new Error('not used by these tests');
@@ -56,9 +58,10 @@ function registerTestNode(
   id: string,
   type: NodeDescriptor['type'],
   category?: readonly string[],
+  available?: () => string | undefined,
 ): Disposable {
   return nodeRegistry.register(id, {
-    ...descriptor(id, category),
+    ...descriptor(id, category, available),
     type,
     nodeType: id,
   });
@@ -195,6 +198,36 @@ describe('buildCategorizedMenuItems', () => {
 
     expect(clicked).toEqual(['plain', 'nested']);
   });
+
+  it('should grey out a node whose available() gives a reason', () => {
+    const items = buildCategorizedMenuItems(
+      [['gated', descriptor('gated', undefined, () => 'needs a build first')]],
+      () => {},
+    ) as MenuVnode[];
+
+    expect(items.length).toBe(1);
+    expect(items[0].attrs.label).toBe('gated');
+    expect(items[0].attrs.disabled).toBe(true);
+    expect(items[0].attrs.title).toBe('needs a build first');
+  });
+
+  it('should leave a node enabled when available() gives no reason', () => {
+    const items = buildCategorizedMenuItems(
+      [['ready', descriptor('ready', undefined, () => undefined)]],
+      () => {},
+    ) as MenuVnode[];
+
+    expect(items[0].attrs.label).toBe('ready');
+    expect(items[0].attrs.disabled).toBe(false);
+    expect(items[0].attrs.title).toBeUndefined();
+  });
+
+  it('should leave a node without available() enabled', () => {
+    const items = buildMenu([['plain', undefined]]);
+
+    expect(items[0].attrs.disabled).toBe(false);
+    expect(items[0].attrs.title).toBeUndefined();
+  });
 });
 
 describe('plugin category groups', () => {
@@ -206,8 +239,9 @@ describe('plugin category groups', () => {
     id: string,
     type: NodeDescriptor['type'],
     category?: readonly string[],
+    available?: () => string | undefined,
   ) {
-    registrations.push(registerTestNode(id, type, category));
+    registrations.push(registerTestNode(id, type, category, available));
   }
 
   afterEach(() => {
@@ -278,6 +312,38 @@ describe('plugin category groups', () => {
     expect(children(items[0]).map((i) => i.attrs.label)).toEqual([
       'test_dune_allowed',
     ]);
+  });
+
+  it('should ask available() again on the next render', () => {
+    let reason: string | undefined = 'still building';
+    register('test_gated', 'modification', undefined, () => reason);
+
+    const item = () =>
+      (
+        buildMenuItems('modification', () => {}, ['test_gated']) as MenuVnode[]
+      )[0];
+
+    expect(item().attrs.disabled).toBe(true);
+    expect(item().attrs.title).toBe('still building');
+
+    // Nothing re-registers; the next render simply asks again.
+    reason = undefined;
+
+    expect(item().attrs.disabled).toBe(false);
+    expect(item().attrs.title).toBeUndefined();
+  });
+
+  it('should grey out a node nested in a plugin group', () => {
+    register('test_dune_macro', 'modification', ['Dune', 'Macros'], () => {
+      return 'no graph yet';
+    });
+
+    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
+    const macro = children(children(items[0])[0])[0];
+
+    expect(macro.attrs.label).toBe('test_dune_macro');
+    expect(macro.attrs.disabled).toBe(true);
+    expect(macro.attrs.title).toBe('no graph yet');
   });
 
   it('should return nothing when only core nodes are registered', () => {

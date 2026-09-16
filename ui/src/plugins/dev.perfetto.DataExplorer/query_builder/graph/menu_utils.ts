@@ -179,10 +179,17 @@ function buildMenuLevel(
     if (segment === undefined) {
       // Nodes that stop here - render directly
       for (const [id, descriptor] of groupNodes) {
+        // A node type that cannot be used yet is greyed out with its reason as
+        // the tooltip, rather than hidden: the entry stays discoverable, and
+        // since available() is asked again on every render it comes back on
+        // its own once whatever it needs exists.
+        const unavailableReason = descriptor.available?.();
         menuItems.push(
           m(MenuItem, {
             label: getLabelWithHotkey(descriptor),
             onclick: () => onClickHandler(id),
+            disabled: unavailableReason !== undefined,
+            title: unavailableReason,
           }),
         );
       }
