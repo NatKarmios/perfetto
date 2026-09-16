@@ -86,6 +86,13 @@ export const PROCESS_TABLE = '_dune_process';
 export const PROCESS_ARG_VIEW = 'dune_process_arg';
 
 /**
+ * One row per spawned process: its slice, timing, the rule that forced it and
+ * the program it ran. Built by `processView` in sql_graph.ts, which is where
+ * the node join lives; the name is here because the helpers below read it.
+ */
+export const PROCESS_VIEW = 'dune_process';
+
+/**
  * Index on {@link PROCESS_TABLE}'s `arg_set_id`, which is the only reason
  * {@link PROCESS_ARG_VIEW} is usable under a predicate on the arg value.
  *
@@ -158,6 +165,71 @@ export interface SqlProcessSlices extends AsyncDisposable {
  * disposed. Rebuilding is idempotent: an existing table of the same name is
  * dropped first.
  */
+/**
+ * Name shared by the scalar function and the `!` macro, as the relation
+ * functions in sql_graph.ts do it: `dune_process_cmd(id)` answers for one
+ * process, `dune_process_cmd!(rows)` for a set.
+ */
+export const PROCESS_CMD_MACRO = 'dune_process_cmd';
+
+/**
+ * `dune_process_cmd(slice_id)`: the command line one process ran, as a single
+ * string - the program, then its argv joined by spaces.
+ *
+ * This is the {@link PROCESS_ARG_VIEW} recipe as a function, because writing it
+ * out by hand gets two things wrong. The `ORDER BY` inside `group_concat` is
+ * not optional: argv order is `idx`, not row order, and without it the
+ * arguments come back shuffled. And the program is *not* argv[0] here - it is a
+ * column on `dune_process`, so a hand-written join over the arg view alone
+ * silently drops it.
+ *
+ * Returns NULL for a slice that is not a process, rather than an empty string:
+ * no row in, no answer out. A process with no arguments gives just the program.
+ */
+export function processCmdFunction(): string {
+  return `
+    CREATE OR REPLACE PERFETTO FUNCTION ${PROCESS_CMD_MACRO}(slice_id LONG)
+    RETURNS STRING AS
+    SELECT trim(
+      coalesce(p.prog, '') || ' ' ||
+      coalesce(
+        (SELECT group_concat(a.arg, ' ' ORDER BY a.idx)
+         FROM ${PROCESS_ARG_VIEW} a WHERE a.slice_id = p.slice_id),
+        ''))
+    FROM ${PROCESS_VIEW} p
+    WHERE p.slice_id = $slice_id`;
+}
+
+/**
+ * `dune_process_cmd!(processes)`: the same thing for a set of processes, with
+ * the program and the argv kept as separate columns.
+ *
+ * Takes any table or subquery with a `slice_id`, the way `dune_blocked!` takes
+ * an edge set. Prefer it to calling the scalar per row: this is one grouped
+ * pass over the arg view, where the function is a correlated subquery per
+ * process, and over the whole table that difference is 15 s against several
+ * minutes.
+ *
+ * The `LEFT JOIN` matters - 122 of the monorepo trace's 266,614 processes have
+ * no arguments at all, and an inner join drops them rather than returning the
+ * program alone.
+ */
+export function processCmdMacro(): string {
+  return `
+    CREATE OR REPLACE PERFETTO MACRO ${PROCESS_CMD_MACRO}(
+      processes TableOrSubquery
+    )
+    RETURNS TableOrSubquery AS
+    (
+      SELECT p.slice_id AS slice_id, p.prog AS prog,
+        group_concat(a.arg, ' ' ORDER BY a.idx) AS args
+      FROM ($processes) s
+      JOIN ${PROCESS_VIEW} p ON p.slice_id = s.slice_id
+      LEFT JOIN ${PROCESS_ARG_VIEW} a ON a.slice_id = p.slice_id
+      GROUP BY p.slice_id
+    )`;
+}
+
 export async function buildProcessSlices(
   engine: Engine,
   perf?: PerfRun,

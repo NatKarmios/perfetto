@@ -610,7 +610,7 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
  * Each also has a same-named `!` list-macro wrapper, documented separately in
  * {@link DUNE_MACROS}.
  */
-export const DUNE_FUNCTIONS: ReadonlyArray<TableListEntry> = [
+export const RELATION_FUNCTIONS: ReadonlyArray<TableListEntry> = [
   {
     name: 'dune_descendants(node_id, max_steps, step_kind)',
     description:
@@ -685,6 +685,47 @@ function relationQuery(call: string): string {
 }
 
 /**
+ * `dune_process_cmd`, which is not a relation function and so is not part of
+ * {@link RELATION_FUNCTIONS}: it answers about one *process* rather than
+ * walking from a node, and its `!` wrapper groups rather than unions.
+ */
+const PROCESS_CMD_FUNCTION: TableListEntry = {
+  name: 'dune_process_cmd(slice_id)',
+  description:
+    'The command line one process ran, as a single string: the program, then ' +
+    'its argv joined by spaces. NULL for a slice that is not a process; just ' +
+    'the program for one that took no arguments. Use it when you already have ' +
+    'the slice - for a whole set of processes reach for `dune_process_cmd!` ' +
+    'instead, which is one grouped pass rather than a subquery per row.',
+  exampleQuery: [
+    '-- The ten longest-running processes, and what each of them ran.',
+    'SELECT slice_id, dur_ns, dune_process_cmd(slice_id) AS cmd',
+    'FROM dune_process',
+    'ORDER BY dur_ns DESC',
+    'LIMIT 10',
+  ].join('\n'),
+  columns: [
+    {
+      name: 'cmd',
+      description:
+        'Program and argv, space-joined, in argv order. Arguments are NOT ' +
+        'shell-quoted, so one containing a space is indistinguishable from ' +
+        'two arguments - join `dune_process_arg` if that matters.',
+      type: STR,
+    },
+  ],
+};
+
+/**
+ * The functions. Eight relation walks plus `dune_process_cmd`; each has a
+ * same-named `!` macro documented in {@link DUNE_MACROS}.
+ */
+export const DUNE_FUNCTIONS: ReadonlyArray<TableListEntry> = [
+  ...RELATION_FUNCTIONS,
+  PROCESS_CMD_FUNCTION,
+];
+
+/**
  * The macros. Two kinds, and the `!` in the name is part of calling them.
  *
  * Eight of them are the list wrappers over the relation functions: where the
@@ -698,7 +739,43 @@ function relationQuery(call: string): string {
  * set is much cheaper than selecting from the whole blocked view.
  */
 export const DUNE_MACROS: ReadonlyArray<TableListEntry> = [
-  ...DUNE_FUNCTIONS.map((fn) => macroFor(fn)),
+  ...RELATION_FUNCTIONS.map((fn) => macroFor(fn)),
+  {
+    name: 'dune_process_cmd!(processes)',
+    description:
+      'The command line of every process in `processes` - any table or ' +
+      'subquery with a `slice_id` - with the program and the argv as separate ' +
+      'columns. One grouped pass over the arg view, so prefer it to calling ' +
+      'the function per row: over the whole table that is seconds rather than ' +
+      'minutes. Processes that took no arguments come back with a NULL `args` ' +
+      'rather than being dropped.',
+    exampleQuery: [
+      '-- What every process forced by a given rule actually ran.',
+      'WITH mine AS (SELECT slice_id FROM dune_process WHERE node_id = 42)',
+      'SELECT slice_id, prog, args',
+      'FROM dune_process_cmd!(mine)',
+      'LIMIT 1000',
+    ].join('\n'),
+    columns: [
+      {
+        name: 'slice_id',
+        description: 'The process slice, as passed in.',
+        type: SLICE_ID,
+      },
+      {
+        name: 'prog',
+        description: 'The program, from `dune_process.prog`.',
+        type: STR,
+      },
+      {
+        name: 'args',
+        description:
+          'The argv, space-joined in `idx` order, NOT including the program. ' +
+          'NULL when the process took no arguments.',
+        type: STR,
+      },
+    ],
+  },
   {
     name: 'dune_blocked!(edges)',
     description:

@@ -29,6 +29,7 @@ import * as path from 'path';
 import {
   DUNE_FUNCTIONS,
   DUNE_MACROS,
+  RELATION_FUNCTIONS,
   DUNE_TABLES,
   duneTableSections,
 } from './dune_tables';
@@ -155,7 +156,7 @@ describe('dune_tables matches sql_graph', () => {
 
     // Every function in RELATION_FUNCTIONS has an entry, matched on the name
     // before the '(' of its documented call signature.
-    const documented = DUNE_FUNCTIONS.map((f) => f.name.split('(')[0]);
+    const documented = RELATION_FUNCTIONS.map((f) => f.name.split('(')[0]);
     expect(documented.sort()).toEqual(listed.map((m) => m[1]).sort());
 
     // And each documented signature names exactly the args the function takes:
@@ -165,7 +166,7 @@ describe('dune_tables matches sql_graph', () => {
         'node_id',
         ...[...extraArgs.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]),
       ];
-      const signature = DUNE_FUNCTIONS.find(
+      const signature = RELATION_FUNCTIONS.find(
         (f) => f.name.split('(')[0] === name,
       )!.name;
       const args = /\(([^)]*)\)/
@@ -182,12 +183,28 @@ describe('dune_tables matches sql_graph', () => {
       .split(',')
       .map((entry) => entry.trim().split(/\s+/)[0])
       .filter((name) => name !== '');
-    for (const fn of DUNE_FUNCTIONS) {
+    for (const fn of RELATION_FUNCTIONS) {
       expect(
         fn.columns.map((c) => c.name),
         `${fn.name}'s columns`,
       ).toEqual(declared);
     }
+  });
+
+  it('documents every function beyond the relation walks', () => {
+    // The relation walks are checked above against RELATION_FUNCTIONS. What is
+    // left is whatever else the mirror defines, and the risk is a function
+    // that exists in SQL but never reaches the query page's sidebar.
+    const extras = DUNE_FUNCTIONS.filter(
+      (f) => !RELATION_FUNCTIONS.includes(f),
+    );
+    expect(extras.map((f) => f.name)).toEqual(['dune_process_cmd(slice_id)']);
+
+    // ...and each one is really created, under the name it is documented by.
+    expect(ALL_SQL).toContain("const PROCESS_CMD_MACRO = 'dune_process_cmd'");
+    expect(ALL_SQL).toMatch(
+      /PERFETTO FUNCTION \$\{PROCESS_CMD_MACRO\}\(slice_id LONG\)/,
+    );
   });
 
   it('documents a list-macro wrapper for every relation function', () => {
@@ -215,7 +232,7 @@ describe('dune_tables matches sql_graph', () => {
       expect(args, `${name}!'s documented signature`).toEqual(expected);
       // A wrapper returns exactly what the function it wraps does.
       expect(entry!.columns).toEqual(
-        DUNE_FUNCTIONS.find((f) => f.name.startsWith(`${name}(`))!.columns,
+        RELATION_FUNCTIONS.find((f) => f.name.startsWith(`${name}(`))!.columns,
       );
     }
   });

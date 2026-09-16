@@ -56,8 +56,11 @@ import type {ProcessDetails, SqlProcessSlices} from './process_sql';
 import {
   PROCESS_INDEX_PHASE,
   PROCESS_TABLE,
+  PROCESS_VIEW,
   PROG_ARG,
   buildProcessSlices,
+  processCmdFunction,
+  processCmdMacro,
 } from './process_sql';
 
 // `dune_node` / `dune_rule` / `dune_dep` / `dune_edge` are typed PERFETTO VIEWS
@@ -98,7 +101,6 @@ const STRING_TABLE = 'dune_string';
 // rule -> node join a probe. Kept for the tier's lifetime, unlike
 // RULE_DEP_SET_INDEX: one entry per *rule* (386k, ~1.5 MB), and the only route
 // from a trace-side rule id back to a node there is.
-const PROCESS_VIEW = 'dune_process';
 const NODE_ORIG_ID_INDEX = '_dune_node_orig_id';
 // The directory hierarchy, plus a transient rule -> directory map the duration
 // rollup aggregates through and drops again (see {@link ruleDurationsByDir}).
@@ -1402,6 +1404,11 @@ export async function buildNodeMirror(
     await engine.query(genRulesView());
     await engine.query(dynIncludesView());
     await engine.query(processView(space));
+    // The command-line helpers, after the view they read. A function body is
+    // resolved at CREATE time, unlike a macro's, so this order is load-bearing
+    // for the function even though it is not for the macro.
+    await engine.query(processCmdFunction());
+    await engine.query(processCmdMacro());
     // The span view and the macro over it: cheap to define, and defining the
     // macro here rather than with the edge tier keeps it usable over any
     // src/dst-shaped table (a hand-written one included) while only the node

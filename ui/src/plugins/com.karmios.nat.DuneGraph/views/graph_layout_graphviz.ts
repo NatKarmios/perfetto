@@ -25,14 +25,14 @@
  *
  * Two things shape the design:
  *
- * - **Loading is async, laying out is not.** `Graphviz.load()` instantiates a
+ * - Loading is async, laying out is not. `Graphviz.load()` instantiates a
  *   WebAssembly module; `layout()` on the result is synchronous. So the module
  *   is loaded once, off to one side, and until it arrives the caller keeps
  *   using the hand-rolled layout. No async state machine in the pane.
- * - **`dot` cannot be interrupted.** It has no time limit we can set from
+ * - `dot` _cannot be interrupted_. It has no time limit we can set from
  *   here, and it is genuinely capable of taking minutes: 60 ranks of a complete
  *   DAG did not finish in 90 seconds. So the decision to call it at all is made
- *   *before* calling it, from the same edge-span estimate the hand-rolled
+ *   _before_ calling it, from the same edge-span estimate the hand-rolled
  *   layout budgets on. See {@link graphvizAffordable}.
  */
 

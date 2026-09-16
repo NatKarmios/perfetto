@@ -29,7 +29,11 @@
 import {describe, expect, test} from 'vitest';
 import type {Engine} from '../../../trace_processor/engine';
 import type {Row} from '../../../trace_processor/query_result';
-import {buildProcessSlices} from './process_sql';
+import {
+  buildProcessSlices,
+  processCmdFunction,
+  processCmdMacro,
+} from './process_sql';
 
 // One canned answer: the substring identifying the statement, and the rows it
 // returns.
@@ -261,5 +265,55 @@ describe('the SQL it issues', () => {
     expect(argv).toContain('slice_id IN (10, 11)');
     expect(argv).toContain('ORDER BY slice_id, idx');
     expect(argv).not.toContain('flat_key');
+  });
+});
+
+/**
+ * `dune_process_cmd` and `dune_process_cmd!`.
+ *
+ * Every assertion here is something a hand-written version of this query gets
+ * wrong, and each was confirmed against a real trace before being pinned:
+ * argv order is `idx` and not row order, the program is a column rather than
+ * argv[0], and 122 of the monorepo trace's 266,614 processes have no arguments
+ * at all and vanish under an inner join.
+ */
+describe('the command-line helpers', () => {
+  test('orders the argv by idx, not by row order', () => {
+    // Without the ORDER BY, group_concat takes whatever order the scan
+    // produces - which looks right on small inputs and shuffles on real ones.
+    for (const sql of [processCmdFunction(), processCmdMacro()]) {
+      expect(sql).toContain("group_concat(a.arg, ' ' ORDER BY a.idx)");
+    }
+  });
+
+  test('takes the program from the process, not from the argv', () => {
+    // `idx = 0` is the first real argument: the program is a column on
+    // dune_process, so reading the arg view alone silently drops it.
+    expect(processCmdFunction()).toContain('p.prog');
+    expect(processCmdFunction()).toContain('FROM dune_process p');
+    expect(processCmdMacro()).toContain('p.prog AS prog');
+  });
+
+  test('keeps a process that took no arguments', () => {
+    // The LEFT is the whole point; an inner join drops the argless ones.
+    expect(processCmdMacro()).toContain('LEFT JOIN dune_process_arg a');
+  });
+
+  test('is replaceable, because neither can be dropped', () => {
+    // There is no DROP PERFETTO MACRO, and a rebuild has to be idempotent.
+    expect(processCmdFunction()).toContain(
+      'CREATE OR REPLACE PERFETTO FUNCTION',
+    );
+    expect(processCmdMacro()).toContain('CREATE OR REPLACE PERFETTO MACRO');
+  });
+
+  test('answers for one slice and for a set', () => {
+    // The function is scalar and keyed by slice; the macro takes a table.
+    expect(processCmdFunction()).toContain('dune_process_cmd(slice_id LONG)');
+    expect(processCmdFunction()).toContain('RETURNS STRING');
+    expect(processCmdFunction()).toContain('WHERE p.slice_id = $slice_id');
+    expect(processCmdMacro()).toContain('processes TableOrSubquery');
+    expect(processCmdMacro()).toContain('RETURNS TableOrSubquery');
+    expect(processCmdMacro()).toContain('GROUP BY p.slice_id');
   });
 });

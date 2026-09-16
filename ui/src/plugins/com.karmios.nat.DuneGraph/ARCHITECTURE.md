@@ -957,6 +957,24 @@ pays.
   _name_, ignoring the SQL type, and `views/query_results.ts` keys on the name
   `slice_id` too. Do not "fix" it.
 
+**`dune_process_cmd`, and why it is a function rather than a recipe.** The
+joined command line is deliberately not a column on `dune_process` — as a
+correlated `group_concat` it is 443 s per full scan — but leaving it as a recipe
+in the docs meant every caller re-derived it, and a hand-written version gets
+three things wrong. `group_concat` without `ORDER BY idx` returns the argv
+shuffled, because argv order is `idx` and not row order. The program is a column
+on `dune_process`, not `argv[0]`, so joining the arg view alone drops it. And an
+inner join loses the processes that took no arguments — 122 of the monorepo
+trace's, which come back with a NULL `args` under the `LEFT JOIN`.
+
+So both forms exist, sharing one name the way the relation functions do:
+`dune_process_cmd(slice_id)` is scalar and answers for one process, and
+`dune_process_cmd!(processes)` takes a table of them and is one grouped pass
+rather than a subquery per row — seconds against minutes over the whole table.
+The function is created after `dune_process`, which is load-bearing: a function
+body is resolved at CREATE time where a macro's is expanded, so the order
+matters for one and not the other.
+
 ## Performance
 
 The reference trace throughout is `monorepo.perfetto` — 52 MB gzipped, ~378 MB
@@ -1078,7 +1096,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**728 tests across 37 files** as of 2026-09-16.
+**735 tests across 37 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

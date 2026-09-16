@@ -93,8 +93,8 @@ export interface LayoutEdge {
    * A cubic Bézier chain for this edge, as `[p0, c1, c2, p1, c3, c4, p2, ...]`
    * in layout units: on-curve point, then three control points per segment.
    * Only graph_layout_graphviz.ts produces these - `dot` routes edges as
-   * splines rather than polylines - and it takes precedence over
-   * {@link bends} when present.
+   * splines rather than polylines - and it takes precedence over `bends` when
+   * present.
    */
   readonly spline?: readonly {readonly x: number; readonly y: number}[];
 }

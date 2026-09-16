@@ -525,6 +525,22 @@ describe('sql_graph process view', () => {
     return stmt!;
   };
 
+  it('creates the command-line helpers after the view they read', async () => {
+    // A function body is resolved when it is created, unlike a macro's, so
+    // `dune_process_cmd` has to come after `dune_process` exists. The macro is
+    // order-independent and is only checked to be present.
+    const sql = await capture(graph());
+    const at = (needle: string) => sql.findIndex((q) => q.includes(needle));
+
+    const view = at('CREATE PERFETTO VIEW dune_process(');
+    const fn = at('PERFETTO FUNCTION dune_process_cmd(');
+    const macro = at('PERFETTO MACRO dune_process_cmd(');
+
+    expect(view).toBeGreaterThanOrEqual(0);
+    expect(fn).toBeGreaterThan(view);
+    expect(macro).toBeGreaterThanOrEqual(0);
+  });
+
   it('reaches a node from a trace-side rule id through an index', async () => {
     // Without an index on `orig_id` this join is a scan of every node in the
     // build per process slice (818k rows on the monorepo trace) - the reason

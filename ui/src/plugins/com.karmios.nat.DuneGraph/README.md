@@ -210,6 +210,24 @@ SELECT * FROM dune_forcers(42);
 SELECT * FROM dune_forced(42);
 ```
 
+And `dune_process_cmd`, for the question the argv view is awkward to answer by
+hand - what a process actually ran:
+
+```sql
+-- One process, program and argv joined into a command line.
+SELECT slice_id, dur_ns, dune_process_cmd(slice_id) AS cmd
+FROM dune_process ORDER BY dur_ns DESC LIMIT 10;
+
+-- A whole set of them, program and argv kept apart. One grouped pass, so
+-- prefer this to calling the function per row.
+WITH mine AS (SELECT slice_id FROM dune_process WHERE node_id = 42)
+SELECT slice_id, prog, args FROM dune_process_cmd!(mine);
+```
+
+Both order the argv by `idx` rather than by row order, and both keep a process
+that took no arguments. Neither shell-quotes, so an argument containing a space
+is indistinguishable from two - join `dune_process_arg` when that matters.
+
 `max_steps` bounds the walk (`NULL` for unbounded) and `step_kind` restricts
 which node kinds a step may pass through (`'rule'`, `'dep'`, or `NULL` for
 either). Each has a `!()` form taking a table of start nodes instead of one, and
