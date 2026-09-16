@@ -63,6 +63,7 @@ registerCoreNodes() {
 **AddColumnsNode** - Adds columns from secondary source via LEFT JOIN and/or computed expressions
 **LimitAndOffsetNode** - Pagination
 **CounterToIntervalsNode** - Converts counter events to time intervals
+**OverlapCountNode** - Counts overlapping intervals over time via `intervals_overlap_count!()`
 **MetricsNode** - Runs pre-defined trace metrics
 **VisualisationNode** - Visualizes query output as a chart
 **TraceSummaryNode** - Renders trace summary data

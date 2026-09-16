@@ -60,7 +60,8 @@ If only one side is set the edge is dropped on load. Always set both.
 Which input a node uses:
 - Source nodes (table, simple_slices, sql_source, time_range_source): no input.
 - Single-input operations (aggregation, modify_columns, filter, sort,
-  limit_and_offset, counter_to_intervals, visualisation, dashboard, metrics):
+  limit_and_offset, counter_to_intervals, overlap_count, visualisation,
+  dashboard, metrics):
   use "primaryInputId".
 - add_columns, filter_during, filter_in: "primaryInputId" for the main data,
   PLUS "secondaryInputIds":{"0": <the other input>}.
@@ -190,6 +191,10 @@ SINGLE-INPUT OPERATIONS (set "primaryInputId" to the upstream node)
 - "counter_to_intervals"  -> turn counter rows (ts, value) into intervals
   (adds dur, next_value, delta_value). Input must have id, ts, track_id, value
   and NOT already have dur. state: {} (no fields)
+
+- "overlap_count"  -> count how many input intervals are open over time.
+  Input must have ts and dur. Output is only (ts, value); input columns are
+  dropped. state: {} (no fields)
 
 - "visualisation"  -> charts over the input rows.
   state: {
