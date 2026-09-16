@@ -94,11 +94,24 @@ const SOURCE_TABLES: ReadonlyArray<{
 const EDGE_TIER_TABLE = 'dune_edge';
 
 // Why `dune_edge` cannot be picked yet. It names the way out, because there is
-// no other: nothing on this side starts an edge build, by design.
-const EDGE_TIER_UNAVAILABLE =
-  'The Dune edge tier is not built, so dune_edge does not exist yet. ' +
+// no other: nothing on this side starts an edge build, by design. Shared with
+// the macro nodes (dune_macro_node.ts), whose eight edge-tier entries are
+// blocked on the same build for the same reason.
+export const EDGE_TIER_UNAVAILABLE =
+  'The Dune edge tier is not built, so the edges and the walk macros over ' +
+  'them do not exist yet. ' +
   'Building it can take minutes, so it is started from the Dune side panel ' +
   'rather than from here; do that and this becomes available.';
+
+// Why a node-tier table or macro cannot be used yet. Unlike the edge tier this
+// one is worth starting, so the way out is the ordinary load. Also shared with
+// dune_macro_node.ts.
+export function nodeTierUnavailable(what: string): string {
+  return (
+    `The Dune graph is not loaded, so ${what} does not exist yet. Load it ` +
+    'from the Dune side panel and run this again.'
+  );
+}
 
 // The node type string a table's source node serialises as. Derived rather than
 // listed so the registry entry, the node instance and a deserialised graph
@@ -114,6 +127,43 @@ export function duneSourceNodeType(table: string): NodeType {
 // a table is renamed.
 function duneTableEntry(table: string): TableListEntry | undefined {
   return DUNE_TABLES.find((t) => t.name === table);
+}
+
+/**
+ * One `dune_*` entry's own documentation, as an info panel: its description and
+ * a column table. That documentation is the only place these columns are
+ * described - the mirror's tables are not in the stdlib catalogue, and
+ * trace_processor's wire format carries no column comments (see
+ * sql/dune_tables.ts). Deliberately not `loadNodeDoc`, which would fetch a
+ * markdown file out of the Data Explorer's shipped assets.
+ *
+ * Shared with the macro nodes (dune_macro_node.ts), which document themselves
+ * from the same catalogue.
+ */
+export function duneTableEntryInfo(entry: TableListEntry): m.Children {
+  return m(
+    'div',
+    m('h2', entry.name),
+    m('p', entry.description),
+    m(
+      'table.pf-table.pf-table-striped',
+      m(
+        'thead',
+        m('tr', m('th', 'Column'), m('th', 'Type'), m('th', 'Description')),
+      ),
+      m(
+        'tbody',
+        entry.columns.map((col) =>
+          m(
+            'tr',
+            m('td', col.name),
+            m('td', perfettoSqlTypeToString(col.type)),
+            m('td', col.description),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 // Serializable node configuration. The table *name* rather than an index into
@@ -191,8 +241,7 @@ export class DuneTableSourceNode implements QueryNode {
         this.context,
         this.attrs.table === EDGE_TIER_TABLE
           ? EDGE_TIER_UNAVAILABLE
-          : `The Dune graph is not loaded, so ${this.attrs.table} does not ` +
-              'exist yet. Load it from the Dune side panel and run this again.',
+          : nodeTierUnavailable(this.attrs.table),
       );
       return false;
     }
@@ -231,37 +280,9 @@ export class DuneTableSourceNode implements QueryNode {
     };
   }
 
-  // The table's own documentation, which is the only place these columns are
-  // described: the mirror's tables are not in the stdlib catalogue, and
-  // trace_processor's wire format carries no column comments (see
-  // sql/dune_tables.ts). Deliberately not `loadNodeDoc`, which would fetch a
-  // markdown file out of the Data Explorer's shipped assets.
   nodeInfo(): m.Children {
-    const entry = this.entry;
-    if (entry === undefined) return undefined;
-    return m(
-      'div',
-      m('h2', entry.name),
-      m('p', entry.description),
-      m(
-        'table.pf-table.pf-table-striped',
-        m(
-          'thead',
-          m('tr', m('th', 'Column'), m('th', 'Type'), m('th', 'Description')),
-        ),
-        m(
-          'tbody',
-          entry.columns.map((col) =>
-            m(
-              'tr',
-              m('td', col.name),
-              m('td', perfettoSqlTypeToString(col.type)),
-              m('td', col.description),
-            ),
-          ),
-        ),
-      ),
-    );
+    if (this.entry === undefined) return undefined;
+    return duneTableEntryInfo(this.entry);
   }
 
   clone(): QueryNode {

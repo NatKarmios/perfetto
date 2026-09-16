@@ -145,6 +145,17 @@ edges** is the exception: it needs the edge tier, which can take minutes, so it
 stays greyed out (with the reason) until you have built that tier from the Dune
 side panel.
 
+The `dune_*` **macros** are there too, in a **Macros** submenu of that same
+group, as nodes you add _under_ an existing one: the query above becomes the
+table the macro walks from. Children, Parents, Descendants, Ancestors, All
+descendants, All ancestors, Forcers and Forced take a `node_id` column;
+Descendants and Ancestors also have `max_steps` and `step_kind` boxes. **Process
+commands** takes a `slice_id` and gives you the program and its arguments;
+**Blocked time** takes an edge set and adds `blocked_ns` to it. If the column
+the macro needs is called something else in your query, pick the one it should
+use in the node's panel. The eight walks need the edge tier, so like **Node
+edges** they stay greyed out until you have built it.
+
 The side panel also offers `dune_dir`, `dune_node` and `dune_process` as **data
 sources** to append to the graph you are building in the Data Explorer — a
 ready-made two-node chain rather than a bare table. Those buttons appear only

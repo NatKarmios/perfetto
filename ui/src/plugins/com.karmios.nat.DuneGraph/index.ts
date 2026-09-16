@@ -26,6 +26,7 @@ import {
 } from './controller';
 import {registerNodeColumnRenderer} from './views/node_cell';
 import {registerDirExplorerChart} from './explorer/dir_explorer_chart';
+import {registerDuneMacroNodes} from './explorer/dune_macro_node';
 import {registerDuneSourceNodes} from './explorer/dune_table_source';
 import {registerNodeGraphChart} from './explorer/node_graph_chart';
 import {DirExplorerPanel} from './views/dir_explorer_panel';
@@ -130,6 +131,12 @@ export default class implements PerfettoPlugin {
     // "Dune" group; same registration lifetime as the charts above, and for the
     // same reason - see dune_table_source.ts.
     registerDuneSourceNodes(trace, controller);
+
+    // And the macros as nodes that go under one of those, so a walk is an
+    // added node rather than hand-written SQL. Ten more entries, in a "Macros"
+    // submenu of the same group; the eight edge-tier ones stay greyed out
+    // until that tier exists - see dune_macro_node.ts.
+    registerDuneMacroNodes(trace, controller);
 
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,
