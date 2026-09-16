@@ -1,9 +1,9 @@
 # What DuneGraph needed from outside its own directory
 
 This plugin is not self-contained. Making it work meant changing the Data
-Explorer, the DataGrid, the query page and a couple of widgets — 22 commits on
-`main..dune-graph-trace`, and a net footprint of **37 files, +3,978/−1,314**
-(measured 2026-09-10, excluding the plugin directory itself).
+Explorer, the DataGrid, the query page and a couple of widgets — 30 commits on
+`main..dune-graph-trace`, and a net footprint of **53 files, +5,141/−1,426**
+(measured 2026-09-16, excluding the plugin directory itself).
 
 This file is the ledger. It exists for one reason: in six months the _diff_ will
 still be readable and the _motivation_ will not.
@@ -101,6 +101,26 @@ having twice were moved into `components/query_table` rather than copied.
 | `4d6c81f371` share the query page's tab persistence | `tab-persistence-helper`    | The Dune query page remembers its tabs; the core page already did the same thing, privately.                                                                                                     |
 | `8d52c1cddf` share the PerfettoSQL formatter        | none — **needs a branch**   | Format-on-demand in the Dune editor. Also touches `bigtrace/pages` and `dev.perfetto.QueryPage`.                                                                                                 |
 
+### The node registry
+
+The plugin registers nine source nodes and ten macro nodes of its own into the
+Data Explorer's add-node menu. None of this was possible: the node set was a
+closed registry with no disposal, no duplicate guard, and a category scheme one
+level deep.
+
+Unlike the others, this is **one branch carrying six commits** rather than one.
+They are ordered so each is a no-op in behaviour and lands under the existing
+tests, with the two menu changes last.
+
+| Commit                                                 | Branch                        | Why the plugin needed it                                                                                                                                                                                                                        |
+| ------------------------------------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dfffd84b4c` `NodeType` open to plugin-defined values  | `data-explorer-node-registry` | `NodeType` was a string enum, so a plugin's own node type was not assignable to it. The const-object form admits one without touching the ~50 signatures that name the type.                                                                    |
+| `f3c6caf026` a node's input arity from its descriptor  | `data-explorer-node-registry` | `singleNodeOperation()` was a hardcoded switch, and it decides both whether a node renders an input port and whether an edge into it is legal. A plugin node would have rendered portless and rejected every connection.                        |
+| `6d6abd4643` plugins can register node types           | `data-explorer-node-registry` | The core requirement. `register()` returned void with no duplicate guard, and the allowed-children list froze when `registerCoreNodes()` finished, so a later registration got no `+` menu and no incoming edges.                               |
+| `d513d124fa` nested add-node menu categories           | `data-explorer-node-registry` | A category was a single string, so it could only make one tier of submenu. The macro nodes need `Dune > Macros > …`.                                                                                                                            |
+| `5adf083b65` a plugin's nodes get their own menu group | `data-explorer-node-registry` | Both add-node menus section by node type _before_ grouping by category, so a Dune group holding both source nodes and macros appeared twice — once under Sources, once under Modifications.                                                     |
+| `615c2ab023` a node type can report itself unavailable | `data-explorer-node-registry` | Nine of the nineteen Dune nodes read the edge tier, which takes minutes to build and refuses outright past a hard cap. They are greyed out with a reason until it exists, rather than hidden or offering to start that build from a menu click. |
+
 ### Not for upstream
 
 | Commit                                                                 | Why                                                                                                                                                                                                         |
@@ -110,11 +130,11 @@ having twice were moved into `components/query_table` rather than copied.
 
 ## Branch status
 
-17 topic branches exist, one commit each, stacked on whichever branch introduced
-the code they fix. The four commits with no branch are called out above:
-`5280bf7452` and `b8abfef93f` want squashing/splitting into
-`data-explorer-dashboard-grid`, `8d52c1cddf` wants a branch of its own, and
-`2ea839aae1` wants dropping.
+18 topic branches exist, stacked on whichever branch introduced the code they
+fix. All carry one commit except `data-explorer-node-registry`, which carries
+six. The four commits with no branch are called out above: `5280bf7452` and
+`b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
+`8d52c1cddf` wants a branch of its own, and `2ea839aae1` wants dropping.
 
 ```
 dev/nat/brush-filter-identifiers      dev/nat/dashboard-cleanup-scope
@@ -125,7 +145,7 @@ dev/nat/chart-default-column          dev/nat/grid-cell-align-right-actions
 dev/nat/chart-no-self-brush           dev/nat/tab-persistence-helper
 dev/nat/chart-surface-drag            dev/nat/table-list-component
 dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
-dev/nat/chart-type-registry
+dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
 ```
 
 Nothing is pushed. No PR has been raised for any of them.
@@ -142,6 +162,12 @@ Worth reading before the next split.
   and it referenced `chart_type_registry`, which does not exist in that lineage.
   Only `tsc` caught it. **Always diff the test files against the base after a
   pick.**
+- **The same trap, from the other side.** `data-explorer-node-registry` was
+  written off `main`, where the chart-type registry does not exist either — on
+  `main` that file is still a frozen const array under `query_builder/nodes/`.
+  The node registry deliberately only _resembles_ it, so the branch stands
+  alone; nothing in it imports the chart registry, and its commit messages do
+  not claim a sibling file that a reviewer of that branch could not find.
 - **A test harness's `vi.mock` path is lineage-specific.** `chart-brush-owner`'s
   harness mocks `chart_renderers`, not `chart_type_registry`; rebasing it onto a
   base that has the registry means flipping that path.
