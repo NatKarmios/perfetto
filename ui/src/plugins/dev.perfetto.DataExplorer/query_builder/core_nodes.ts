@@ -253,7 +253,7 @@ export function registerCoreNodes() {
     icon: 'add_box',
     type: 'modification',
     inputs: 'primary',
-    category: 'Columns',
+    category: ['Columns'],
     nodeType: NodeType.kAddColumns,
     factory: (_attrs, factoryCtx) =>
       new AddColumnsNode(
@@ -270,7 +270,7 @@ export function registerCoreNodes() {
     icon: 'edit',
     type: 'modification',
     inputs: 'primary',
-    category: 'Columns',
+    category: ['Columns'],
     nodeType: NodeType.kModifyColumns,
     factory: (_attrs, factoryCtx) =>
       new ModifyColumnsNode(
@@ -306,7 +306,7 @@ export function registerCoreNodes() {
     icon: Icons.Filter,
     type: 'modification',
     inputs: 'primary',
-    category: 'Filter',
+    category: ['Filter'],
     nodeType: NodeType.kFilter,
     factory: (_attrs, factoryCtx) =>
       new FilterNode(_attrs as FilterNodeAttrs, factoryCtx?.context ?? {}),
@@ -321,7 +321,7 @@ export function registerCoreNodes() {
     icon: Icons.Filter,
     type: 'modification',
     inputs: 'primary',
-    category: 'Filter',
+    category: ['Filter'],
     nodeType: NodeType.kFilterDuring,
     factory: (_attrs) =>
       new FilterDuringNode(_attrs as FilterDuringNodeAttrs, {}),
@@ -336,7 +336,7 @@ export function registerCoreNodes() {
     icon: Icons.Filter,
     type: 'modification',
     inputs: 'primary',
-    category: 'Filter',
+    category: ['Filter'],
     nodeType: NodeType.kFilterIn,
     factory: (_attrs, factoryCtx) =>
       new FilterInNode(_attrs as FilterInNodeAttrs, factoryCtx?.context ?? {}),
@@ -350,7 +350,7 @@ export function registerCoreNodes() {
     icon: 'timeline',
     type: 'multisource',
     inputs: 'none',
-    category: 'Time',
+    category: ['Time'],
     nodeType: NodeType.kIntervalIntersect,
     factory: (_attrs) =>
       new IntervalIntersectNode(_attrs as IntervalIntersectNodeAttrs, {}),
@@ -400,7 +400,7 @@ export function registerCoreNodes() {
     icon: 'add_circle',
     type: 'multisource',
     inputs: 'none',
-    category: 'Time',
+    category: ['Time'],
     nodeType: NodeType.kCreateSlices,
     factory: (_attrs) =>
       new CreateSlicesNode(
@@ -505,7 +505,7 @@ export function registerCoreNodes() {
     icon: 'show_chart',
     type: 'modification',
     inputs: 'primary',
-    category: 'Advanced',
+    category: ['Advanced'],
     nodeType: NodeType.kCounterToIntervals,
     factory: (_attrs) =>
       new CounterToIntervalsNode(_attrs as CounterToIntervalsNodeAttrs, {}),

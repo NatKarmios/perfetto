@@ -65,9 +65,10 @@ function getLabelWithHotkey(descriptor: NodeDescriptor): m.Children {
 /**
  * Build categorized menu items from a list of node descriptors.
  *
- * Nodes with the same `category` will be grouped into a submenu.
- * If a category only has one node, it will be shown directly without a submenu.
- * Uncategorized nodes (category === undefined) will be shown at the end.
+ * A node's `category` is a path from the outermost group inwards, so nodes
+ * sharing a path end up in the same submenu, and nodes sharing only a prefix
+ * of it share the submenus that prefix names. Uncategorized nodes (no
+ * `category`, or an empty one) are shown directly.
  *
  * @param nodes - Array of [id, descriptor] pairs
  * @param onClickHandler - Callback when a menu item is clicked, receives the node id
@@ -77,31 +78,48 @@ export function buildCategorizedMenuItems(
   nodes: Array<[string, NodeDescriptor]>,
   onClickHandler: (id: string) => void,
 ): m.Children[] {
-  // Group nodes by category, preserving first-seen order for interleaving.
+  return buildMenuLevel(nodes, 0, onClickHandler);
+}
+
+/**
+ * Build the menu items for one level of the category paths.
+ *
+ * @param nodes - Array of [id, descriptor] pairs that reached this level
+ * @param depth - Index into each descriptor's category path
+ * @param onClickHandler - Callback when a menu item is clicked
+ * @returns Array of Mithril children representing the menu items
+ */
+function buildMenuLevel(
+  nodes: Array<[string, NodeDescriptor]>,
+  depth: number,
+  onClickHandler: (id: string) => void,
+): m.Child[] {
+  // Group nodes by their category segment at this depth. A node whose path has
+  // run out belongs at this level rather than in a submenu, and groups under
+  // the `undefined` key.
   const grouped = new Map<
     string | undefined,
     Array<[string, NodeDescriptor]>
   >();
-  const categoryOrder: Array<string | undefined> = [];
-  for (const [id, descriptor] of nodes) {
-    const category = descriptor.category;
-    if (!grouped.has(category)) {
-      grouped.set(category, []);
-      categoryOrder.push(category);
+  for (const node of nodes) {
+    const segment = node[1].category?.[depth];
+    let group = grouped.get(segment);
+    if (group === undefined) {
+      group = [];
+      grouped.set(segment, group);
     }
-    grouped.get(category)?.push([id, descriptor]);
+    group.push(node);
   }
 
   const menuItems: m.Child[] = [];
 
-  // Render in first-seen order, so uncategorized and categorized items
-  // are interleaved based on registration order.
-  for (const category of categoryOrder) {
-    const catNodes = grouped.get(category);
-    if (catNodes === undefined) continue;
-    if (category === undefined) {
-      // Uncategorized nodes - render directly
-      for (const [id, descriptor] of catNodes) {
+  // A Map iterates in insertion order, so this renders in first-seen order,
+  // interleaving the nodes at this level with the submenus below it based on
+  // registration order.
+  for (const [segment, groupNodes] of grouped) {
+    if (segment === undefined) {
+      // Nodes that stop here - render directly
+      for (const [id, descriptor] of groupNodes) {
         menuItems.push(
           m(MenuItem, {
             label: getLabelWithHotkey(descriptor),
@@ -110,19 +128,14 @@ export function buildCategorizedMenuItems(
         );
       }
     } else {
-      // Categorized nodes - render as submenu
+      // Nodes that go deeper - render as a submenu holding the next level
       menuItems.push(
         m(
           MenuItem,
           {
-            label: category,
+            label: segment,
           },
-          catNodes.map(([id, descriptor]) =>
-            m(MenuItem, {
-              label: getLabelWithHotkey(descriptor),
-              onclick: () => onClickHandler(id),
-            }),
-          ),
+          buildMenuLevel(groupNodes, depth + 1, onClickHandler),
         ),
       );
     }

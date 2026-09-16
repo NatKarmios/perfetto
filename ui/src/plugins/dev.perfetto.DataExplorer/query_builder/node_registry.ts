@@ -53,9 +53,11 @@ export interface NodeDescriptor {
   // `secondaryInputs` and are 'none' here.
   inputs: 'none' | 'primary';
 
-  // Optional category for grouping related nodes in the UI.
-  // Nodes with the same category will be shown in a submenu.
-  category?: string;
+  // Optional category path for grouping related nodes in the UI, from the
+  // outermost group inwards. Nodes sharing a path are shown in the same
+  // submenu, and nodes sharing only a prefix of it share the submenus that
+  // prefix names.
+  category?: readonly string[];
 
   // An optional, async function that runs before the node is created.
   // It can be used for interactive setup, like showing a modal.
