@@ -20,6 +20,9 @@ import {
   connectSecondary,
   createUnboundedSecondaryInputs,
 } from '../testing/test_utils';
+import {registerCoreNodes} from '../core_nodes';
+
+registerCoreNodes();
 
 describe('buildReadOnlyNodeConfig', () => {
   it('should dock a single-operation child into its parent via next', () => {

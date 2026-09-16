@@ -48,6 +48,11 @@ export interface NodeDescriptor {
   // Whether this node is a source, modification, multi-source, or export node.
   type: 'source' | 'modification' | 'multisource' | 'export';
 
+  // Whether the node takes a single primary input from above ('primary') or
+  // none ('none'). Multi-input nodes declare their inputs on the instance via
+  // `secondaryInputs` and are 'none' here.
+  inputs: 'none' | 'primary';
+
   // Optional category for grouping related nodes in the UI.
   // Nodes with the same category will be shown in a submenu.
   category?: string;

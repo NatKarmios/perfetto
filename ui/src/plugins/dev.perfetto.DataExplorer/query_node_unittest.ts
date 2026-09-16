@@ -21,6 +21,9 @@ import {
 } from './query_node';
 import {queryToRun, isAQuery} from './query_builder/query_builder_utils';
 import {notifyNextNodes} from './query_builder/graph_utils';
+import {registerCoreNodes} from './query_builder/core_nodes';
+
+registerCoreNodes();
 
 describe('query_node utilities', () => {
   describe('nextNodeId', () => {

@@ -54,6 +54,9 @@ import {
   INTERVAL_COLUMNS,
   expectValidationSuccess,
 } from '../testing/test_utils';
+import {registerCoreNodes} from '../core_nodes';
+
+registerCoreNodes();
 
 function createMockPrevNode(id: string, columns: ColumnInfo[]): QueryNode {
   return createMockNode({nodeId: id, columns});

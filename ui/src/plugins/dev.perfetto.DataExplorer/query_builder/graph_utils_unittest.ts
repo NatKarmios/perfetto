@@ -35,6 +35,9 @@ import {
 } from './testing/test_utils';
 import {GroupNode} from './nodes/group_node';
 import {unwrapResult} from '../../../base/result';
+import {registerCoreNodes} from './core_nodes';
+
+registerCoreNodes();
 
 describe('graph_utils', () => {
   let mockTrace: Trace;
