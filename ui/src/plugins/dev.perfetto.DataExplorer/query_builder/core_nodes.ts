@@ -128,6 +128,7 @@ export function registerCoreNodes() {
     icon: 'bar_chart',
     hotkey: 'l',
     type: 'source',
+    inputs: 'none',
     showOnLandingPage: true,
     nodeType: NodeType.kSimpleSlices,
     factory: (_attrs, factoryCtx) =>
@@ -142,6 +143,7 @@ export function registerCoreNodes() {
     icon: 'table_chart',
     hotkey: 't',
     type: 'source',
+    inputs: 'none',
     showOnLandingPage: true,
     nodeType: NodeType.kTable,
     preCreate: async ({sqlModules}) => {
@@ -170,6 +172,7 @@ export function registerCoreNodes() {
     icon: 'code',
     hotkey: 'q',
     type: 'source',
+    inputs: 'none',
     showOnLandingPage: true,
     nodeType: NodeType.kSqlSource,
     factory: (_attrs, factoryCtx) =>
@@ -187,6 +190,7 @@ export function registerCoreNodes() {
       'Use timeline selection as a source node. Can be dynamic (syncs with timeline) or static (snapshot).',
     icon: 'schedule',
     type: 'source',
+    inputs: 'none',
     showOnLandingPage: false, // Available in menus but not on landing page
     nodeType: NodeType.kTimeRangeSource,
     factory: (_attrs, factoryCtx) => {
@@ -238,6 +242,7 @@ export function registerCoreNodes() {
       'Add columns from another node via LEFT JOIN. Connect a node to the left-side port.',
     icon: 'add_box',
     type: 'modification',
+    inputs: 'primary',
     category: 'Columns',
     nodeType: NodeType.kAddColumns,
     factory: (_attrs, factoryCtx) =>
@@ -254,6 +259,7 @@ export function registerCoreNodes() {
     description: 'Select, rename, and add new columns to the data.',
     icon: 'edit',
     type: 'modification',
+    inputs: 'primary',
     category: 'Columns',
     nodeType: NodeType.kModifyColumns,
     factory: (_attrs, factoryCtx) =>
@@ -273,6 +279,7 @@ export function registerCoreNodes() {
     description: 'Group and aggregate data from the source node.',
     icon: 'functions',
     type: 'modification',
+    inputs: 'primary',
     nodeType: NodeType.kAggregation,
     factory: (_attrs) =>
       new AggregationNode(_attrs as unknown as AggregationNodeAttrs, {}),
@@ -288,6 +295,7 @@ export function registerCoreNodes() {
     description: 'Filter rows based on column values.',
     icon: Icons.Filter,
     type: 'modification',
+    inputs: 'primary',
     category: 'Filter',
     nodeType: NodeType.kFilter,
     factory: (_attrs, factoryCtx) =>
@@ -302,6 +310,7 @@ export function registerCoreNodes() {
       'Filter to only show intervals that occurred during intervals from another source.',
     icon: Icons.Filter,
     type: 'modification',
+    inputs: 'primary',
     category: 'Filter',
     nodeType: NodeType.kFilterDuring,
     factory: (_attrs) =>
@@ -316,6 +325,7 @@ export function registerCoreNodes() {
       'Filter rows to only those where a column value exists in another query result.',
     icon: Icons.Filter,
     type: 'modification',
+    inputs: 'primary',
     category: 'Filter',
     nodeType: NodeType.kFilterIn,
     factory: (_attrs, factoryCtx) =>
@@ -329,6 +339,7 @@ export function registerCoreNodes() {
     description: 'Intersect the intervals with another table.',
     icon: 'timeline',
     type: 'multisource',
+    inputs: 'none',
     category: 'Time',
     nodeType: NodeType.kIntervalIntersect,
     factory: (_attrs) =>
@@ -345,6 +356,7 @@ export function registerCoreNodes() {
       'Join two tables using equality columns or custom SQL condition.',
     icon: 'merge',
     type: 'multisource',
+    inputs: 'none',
     nodeType: NodeType.kJoin,
     factory: (_attrs, factoryCtx) => {
       const attrs: JoinNodeAttrs = {
@@ -377,6 +389,7 @@ export function registerCoreNodes() {
       'Create slices by pairing start and end timestamps from two sources.',
     icon: 'add_circle',
     type: 'multisource',
+    inputs: 'none',
     category: 'Time',
     nodeType: NodeType.kCreateSlices,
     factory: (_attrs) =>
@@ -397,6 +410,7 @@ export function registerCoreNodes() {
     description: 'Sort rows by one or more columns.',
     icon: 'sort',
     type: 'modification',
+    inputs: 'primary',
     nodeType: NodeType.kSort,
     factory: (_attrs, factoryCtx) =>
       new SortNode(_attrs as SortNodeAttrs, factoryCtx?.context ?? {}),
@@ -409,6 +423,7 @@ export function registerCoreNodes() {
     description: 'Combine rows from multiple sources.',
     icon: 'merge_type',
     type: 'multisource',
+    inputs: 'none',
     nodeType: NodeType.kUnion,
     factory: (_attrs, factoryCtx) => {
       const node = new UnionNode(
@@ -427,6 +442,7 @@ export function registerCoreNodes() {
     description: 'Limit the number of rows returned and optionally skip rows.',
     icon: Icons.Filter,
     type: 'modification',
+    inputs: 'primary',
     nodeType: NodeType.kLimitAndOffset,
     factory: (_attrs) =>
       new LimitAndOffsetNode(_attrs as LimitAndOffsetNodeAttrs, {}),
@@ -440,6 +456,7 @@ export function registerCoreNodes() {
       'Define a trace-based metric with value column and dimensions.',
     icon: 'analytics',
     type: 'export',
+    inputs: 'primary',
     nodeType: NodeType.kMetrics,
     allowedChildren: ['trace_summary'],
     factory: (_attrs, factoryCtx) =>
@@ -461,6 +478,7 @@ export function registerCoreNodes() {
       'Visualize data with bar charts or histograms. Click to filter.',
     icon: 'bar_chart',
     type: 'modification',
+    inputs: 'primary',
     nodeType: NodeType.kVisualisation,
     factory: (_attrs) =>
       new VisualisationNode(_attrs as unknown as VisualisationNodeAttrs, {}),
@@ -476,6 +494,7 @@ export function registerCoreNodes() {
       'Convert counter data (with ts but no dur) to interval data (with ts and dur).',
     icon: 'show_chart',
     type: 'modification',
+    inputs: 'primary',
     category: 'Advanced',
     nodeType: NodeType.kCounterToIntervals,
     factory: (_attrs) =>
@@ -491,6 +510,7 @@ export function registerCoreNodes() {
     description: 'Export this data source so it can be used on dashboards.',
     icon: 'dashboard',
     type: 'export',
+    inputs: 'primary',
     nodeType: NodeType.kDashboard,
     allowedChildren: [],
     factory: (_attrs, factoryCtx) =>
@@ -509,6 +529,7 @@ export function registerCoreNodes() {
       'Bundle multiple metrics into a single trace summary specification.',
     icon: 'summarize',
     type: 'export',
+    inputs: 'none',
     nodeType: NodeType.kTraceSummary,
     allowedChildren: [],
     factory: (_attrs, factoryCtx) =>
@@ -528,6 +549,7 @@ export function registerCoreNodes() {
     description: 'A group of nodes collapsed into a single unit.',
     icon: 'group_work',
     type: 'source',
+    inputs: 'none',
     showOnLandingPage: false,
     nodeType: NodeType.kGroup,
     factory: () => new GroupNode({name: 'Group'}, {}),

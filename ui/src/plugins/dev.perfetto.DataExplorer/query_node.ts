@@ -19,6 +19,7 @@ import type {ColumnInfo} from './query_builder/column_info';
 import type {NodeIssues} from './query_builder/node_issues';
 import type {Trace} from '../../public/trace';
 import type {NodeDetailsAttrs} from './node_types';
+import {nodeRegistry} from './query_builder/node_registry';
 
 let nodeCounter = 0;
 export function nextNodeId(): string {
@@ -83,24 +84,10 @@ export const NodeType = {
 // autocomplete for the members declared above.
 export type NodeType = (typeof NodeType)[keyof typeof NodeType] | (string & {});
 
+// Whether a node of this type takes a single primary input from above. Node
+// types with no registered descriptor take no input.
 export function singleNodeOperation(type: NodeType): boolean {
-  switch (type) {
-    case NodeType.kAggregation:
-    case NodeType.kModifyColumns:
-    case NodeType.kAddColumns:
-    case NodeType.kFilterDuring:
-    case NodeType.kFilterIn:
-    case NodeType.kLimitAndOffset:
-    case NodeType.kSort:
-    case NodeType.kFilter:
-    case NodeType.kCounterToIntervals:
-    case NodeType.kMetrics:
-    case NodeType.kVisualisation:
-    case NodeType.kDashboard:
-      return true;
-    default:
-      return false;
-  }
+  return nodeRegistry.getByNodeType(type)?.inputs === 'primary';
 }
 
 // Actions that can be performed by nodes on the parent graph.

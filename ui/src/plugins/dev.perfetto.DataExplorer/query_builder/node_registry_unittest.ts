@@ -39,9 +39,11 @@ describe('NodeRegistry', () => {
     } as QueryNode;
   }
 
-  // Default required fields for test descriptors (nodeType, deserialize).
+  // Default required fields for test descriptors (nodeType, inputs,
+  // deserialize).
   const defaults = {
     nodeType: NodeType.kTable,
+    inputs: 'none' as const,
     deserialize: () => createMockNode('mock'),
   };
 
