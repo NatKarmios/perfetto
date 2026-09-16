@@ -747,7 +747,6 @@ export class Graph implements m.ClassComponent<GraphAttrs> {
       addNodeMenuItems.push(m(MenuTitle, {label: sections[i].title}));
       addNodeMenuItems.push(...sections[i].items);
     }
-
     addNodeMenuItems.push(m(MenuDivider));
     addNodeMenuItems.push(
       m(MenuItem, {

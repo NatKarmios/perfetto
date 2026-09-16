@@ -1,8 +1,8 @@
 # What DuneGraph needed from outside its own directory
 
 This plugin is not self-contained. Making it work meant changing the Data
-Explorer, the DataGrid, the query page and a couple of widgets — 31 commits on
-`main..dune-graph-trace`, and a net footprint of **53 files, +4,890/−1,398**
+Explorer, the DataGrid, the query page and a couple of widgets — 32 commits on
+`main..dune-graph-trace`, and a net footprint of **52 files, +4,889/−1,398**
 (measured 2026-09-16, excluding the plugin directory itself).
 
 This file is the ledger. It exists for one reason: in six months the _diff_ will
@@ -107,11 +107,11 @@ The plugin registers nine source nodes and ten macro nodes of its own into the
 Data Explorer's add-node menu. None of this was possible: the node set was a
 closed registry with no disposal and no duplicate guard.
 
-Unlike the others, this is **one branch carrying six commits** rather than one.
-Four of them are wanted, ordered so each is a no-op in behaviour and lands under
-the existing tests, with the availability change last. The other two are the
-menu-nesting pair, undone later on the integration line — see "Not for
-upstream".
+Unlike the others, this is **one branch carrying four commits** rather than one,
+ordered so each is a no-op in behaviour and lands under the existing tests, with
+the availability change last. The branch was rebuilt off `main` once the menu
+shape changed, so it no longer carries the menu-nesting pair that the
+integration line still has and then undoes — see "Not for upstream".
 
 | Commit                                                 | Branch                        | Why the plugin needed it                                                                                                                                                                                                                        |
 | ------------------------------------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -122,20 +122,19 @@ upstream".
 
 ### Not for upstream
 
-| Commit                                                                      | Why                                                                                                                                                                                                                              |
-| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `2ea839aae1` **[TEMP] Enable plugin by default**                            | Edits `core/embedder/default_plugins.ts` so the plugin loads locally. **Must never be upstreamed.** Drop it when splitting branches.                                                                                             |
-| `fb440d6a97` revert the dashboards hook and rename `dir_tree_graph.ts`      | Reverts an earlier commit on this branch. The net upstream diff of `DataExplorer/index.ts` is therefore **zero** — the file does not appear in the net diffstat at all. Nothing to upstream; nothing to do.                      |
-| `d513d124fa` nested menu categories, `5adf083b65` a plugin's own menu group | Both are undone later on the branch by `ui: put the Dune nodes in the existing menu sections`, which puts the Dune entries in the existing type sections instead. Their net diff is zero, so nothing to upstream; nothing to do. |
+| Commit                                                                      | Why                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `2ea839aae1` **[TEMP] Enable plugin by default**                            | Edits `core/embedder/default_plugins.ts` so the plugin loads locally. **Must never be upstreamed.** Drop it when splitting branches.                                                                                                                                                             |
+| `fb440d6a97` revert the dashboards hook and rename `dir_tree_graph.ts`      | Reverts an earlier commit on this branch. The net upstream diff of `DataExplorer/index.ts` is therefore **zero** — the file does not appear in the net diffstat at all. Nothing to upstream; nothing to do.                                                                                      |
+| `d513d124fa` nested menu categories, `5adf083b65` a plugin's own menu group | Both are undone later on the line by `f3ccaf6a7c` "put the Dune nodes in the existing menu sections", which puts the Dune entries in the existing type sections instead. Their net diff is zero, and `data-explorer-node-registry` was rebuilt without them. Nothing to upstream; nothing to do. |
 
 ## Branch status
 
 18 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
-six — two of which want dropping, as above. The four commits with no branch are
-called out above: `5280bf7452` and `b8abfef93f` want squashing/splitting into
-`data-explorer-dashboard-grid`, `8d52c1cddf` wants a branch of its own, and
-`2ea839aae1` wants dropping.
+four. The four commits with no branch are called out above: `5280bf7452` and
+`b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
+`8d52c1cddf` wants a branch of its own, and `2ea839aae1` wants dropping.
 
 ```
 dev/nat/brush-filter-identifiers      dev/nat/dashboard-cleanup-scope
