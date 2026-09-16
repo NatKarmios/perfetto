@@ -135,9 +135,20 @@ Two **chart types** to drop onto a query or a dashboard:
 Both read their primary column as _the column holding a `dune_node.node_id`_,
 and both offer to switch to the right column if you have picked another one.
 
+The mirror's tables are also **source nodes**, under `Dune` in the Data
+Explorer's own "add node" menu: Nodes, Rules, Dependencies, Directories,
+Processes, Rule targets, Rule generation, Dynamic includes and Node edges. Add
+one and you have a query over that table to build on, with its columns
+selectable and its documentation in the node's info panel — no SQL to write.
+Picking any of the first eight loads the graph if it is not loaded yet. **Node
+edges** is the exception: it needs the edge tier, which can take minutes, so it
+stays greyed out (with the reason) until you have built that tier from the Dune
+side panel.
+
 The side panel also offers `dune_dir`, `dune_node` and `dune_process` as **data
-sources** to append to the graph you are building in the Data Explorer. Those
-buttons appear only while the Data Explorer is the open page.
+sources** to append to the graph you are building in the Data Explorer — a
+ready-made two-node chain rather than a bare table. Those buttons appear only
+while the Data Explorer is the open page.
 
 ## Loading the graph
 

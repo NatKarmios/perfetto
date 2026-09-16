@@ -26,6 +26,7 @@ import {
 } from './controller';
 import {registerNodeColumnRenderer} from './views/node_cell';
 import {registerDirExplorerChart} from './explorer/dir_explorer_chart';
+import {registerDuneSourceNodes} from './explorer/dune_table_source';
 import {registerNodeGraphChart} from './explorer/node_graph_chart';
 import {DirExplorerPanel} from './views/dir_explorer_panel';
 import {SqlDirExplorerSource} from './views/dir_explorer_source';
@@ -123,6 +124,12 @@ export default class implements PerfettoPlugin {
     // rather than over the ones clicked into the side panel's selection. Same
     // registration lifetime, for the same reason - see node_graph_chart.ts.
     registerNodeGraphChart(trace, controller);
+
+    // Offers the mirror's tables as Data Explorer source nodes, so a graph can
+    // start from `dune_node` without hand-written SQL. Nine menu entries in one
+    // "Dune" group; same registration lifetime as the charts above, and for the
+    // same reason - see dune_table_source.ts.
+    registerDuneSourceNodes(trace, controller);
 
     trace.sidePanel.registerTab({
       uri: SIDE_PANEL_URI,

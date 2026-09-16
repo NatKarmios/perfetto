@@ -79,30 +79,40 @@ export async function appendExploreSource(
   }
 }
 
+/**
+ * Whether the node tier is queryable, building it if it is not. False means the
+ * load failed, and the failure is deliberately silent: everything that gets
+ * here is on screen next to the side panel, which already reports progress and
+ * failure, so a second report would only say it twice.
+ *
+ * The whole `load` rather than just `buildNodeMirror`, because on a trace big
+ * enough not to load by itself this is the *first* load, and stopping at the
+ * node tier would leave the edge tier idle with nothing offering to finish it
+ * (panel.ts's prompt speaks for a refusal and an error, not for "never
+ * started"). A graph past the hard edge cap still goes ahead - `load` skips that
+ * tier and the panel explains it, and everything gated on this reads the node
+ * tier anyway.
+ *
+ * Shared with the Data Explorer source nodes (dune_table_source.ts), whose
+ * menu entries need the same tier under them before they mean anything.
+ */
+export async function ensureNodeMirror(
+  controller: DuneGraphController,
+): Promise<boolean> {
+  if (controller.nodeMirrorReady) return true;
+  await controller.load();
+  return controller.nodeMirrorReady;
+}
+
 // The two preconditions of a hand-off: the node tier is built (building it if
 // not), and the Data Explorer is actually there. Returns undefined when it
 // cannot go ahead, the reason already reported - by the side panel for a failed
 // load, by a modal for a missing Data Explorer.
-//
-// A load is part of the action rather than a precondition to complain about,
-// and its failure is therefore silent: the panel is on screen, since its
-// buttons are the only way here, and it already reports progress and failure.
-//
-// The whole `load` rather than just `buildNodeMirror`, because on a trace big
-// enough not to load by itself this is the *first* load, and stopping at the
-// node tier would leave the edge tier idle with nothing offering to finish it
-// (panel.ts's prompt speaks for a refusal and an error, not for "never
-// started"). A graph past the hard edge cap still hands off - `load` skips that
-// tier and the panel explains it, and these sources read the node tier anyway.
 async function ready(
   trace: Trace,
   controller: DuneGraphController,
 ): Promise<InstanceType<typeof DataExplorerPlugin> | undefined> {
-  if (!controller.nodeMirrorReady) {
-    await controller.load();
-    // Still not there: the load failed, and the panel shows why.
-    if (!controller.nodeMirrorReady) return undefined;
-  }
+  if (!(await ensureNodeMirror(controller))) return undefined;
 
   // Declared as a dependency (see index.ts), which orders the plugins but does
   // not enable them - a user who has switched the Data Explorer off gets a

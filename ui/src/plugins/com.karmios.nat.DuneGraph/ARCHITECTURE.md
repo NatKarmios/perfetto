@@ -276,8 +276,18 @@ path.
 
 ### Data Explorer — `explorer/`
 
-Five separate offers into `dev.perfetto.DataExplorer`:
+Three kinds of offer into `dev.perfetto.DataExplorer`, fourteen in all:
 
+- Nine **source nodes** in that plugin's own add-node menu, one per queryable
+  table of the mirror, registered per trace (`explorer/dune_table_source.ts`).
+  One class over a table name, nine registry entries differing only in which
+  table they name; the columns and the documentation come from
+  `sql/dune_tables.ts`, since the mirror's tables are not in the `SqlModules`
+  catalogue the core `table` node resolves through. The two tiers are gated
+  differently, which is the only interesting part: a node-tier entry's
+  `preCreate` builds that tier, while `dune_edge` is shown greyed out by an
+  `available()` that reads `edgeMirrorReady` on every menu render — nothing
+  starts a minutes-long edge build from a menu click.
 - Three **sources** the side panel can append to the graph you are working in:
   `dune_dir` (`explorer/dir_tree_source.ts`), `dune_node`
   (`explorer/node_source.ts`) and `dune_process` (`explorer/process_source.ts`).
@@ -1096,7 +1106,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**735 tests across 37 files** as of 2026-09-16.
+**747 tests across 38 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the
@@ -1117,7 +1127,8 @@ What the suite does **not** cover:
 - `explorer/data_explorer_handoff.ts` has no test at all. (The payload it hands
   over, `explore_source.ts`, is tested against the Data Explorer's own
   validators, which is where a typo would otherwise become a silently dropped
-  node rather than a compile error.)
+  node rather than a compile error. The tier gate it shares with the source
+  nodes, `ensureNodeMirror`, is covered from that side.)
 
 ## Loose ends
 
