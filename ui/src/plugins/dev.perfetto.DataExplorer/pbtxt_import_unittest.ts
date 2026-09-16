@@ -2363,7 +2363,7 @@ describe('buildNodesFromTemplateSpec - smoke test (trace_summary_spec.pbtxt)', (
 
   it('dockable modification nodes have no layout entries', () => {
     const result = buildNodesFromTemplateSpec(spec, 0);
-    const dockableTypes = new Set([
+    const dockableTypes = new Set<NodeType>([
       NodeType.kFilter,
       NodeType.kAggregation,
       NodeType.kSort,
