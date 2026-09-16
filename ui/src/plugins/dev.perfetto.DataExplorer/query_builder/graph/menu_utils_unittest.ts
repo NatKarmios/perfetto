@@ -13,10 +13,18 @@
 // limitations under the License.
 
 import type m from 'mithril';
-import {buildCategorizedMenuItems} from './menu_utils';
-import type {NodeDescriptor} from '../node_registry';
+import {
+  buildCategorizedMenuItems,
+  buildMenuItems,
+  buildPluginGroupMenuItems,
+  CORE_CATEGORY_ROOTS,
+} from './menu_utils';
+import {nodeRegistry, type NodeDescriptor} from '../node_registry';
+import {registerCoreNodes} from '../core_nodes';
 import {NodeType} from '../../query_node';
 import {MenuItem, type MenuItemAttrs} from '../../../../widgets/menu';
+
+registerCoreNodes();
 
 type MenuVnode = m.Vnode<MenuItemAttrs>;
 
@@ -39,6 +47,21 @@ function descriptor(
       throw new Error('not used by these tests');
     },
   };
+}
+
+// Registers a test descriptor, returning a disposable that unregisters it
+// again so the global registry does not leak between tests. `register()` throws
+// on a duplicate, so the id doubles as the (otherwise unused) node type.
+function registerTestNode(
+  id: string,
+  type: NodeDescriptor['type'],
+  category?: readonly string[],
+): Disposable {
+  return nodeRegistry.register(id, {
+    ...descriptor(id, category),
+    type,
+    nodeType: id,
+  });
 }
 
 // Builds the menu for the given [id, category] pairs, and returns the items as
@@ -171,5 +194,105 @@ describe('buildCategorizedMenuItems', () => {
     children(children(items[1])[0])[0].attrs.onclick?.(click);
 
     expect(clicked).toEqual(['plain', 'nested']);
+  });
+});
+
+describe('plugin category groups', () => {
+  // Registrations made by the test under way, undone afterwards so the global
+  // registry is back to just the core nodes for the next one.
+  let registrations: Disposable[] = [];
+
+  function register(
+    id: string,
+    type: NodeDescriptor['type'],
+    category?: readonly string[],
+  ) {
+    registrations.push(registerTestNode(id, type, category));
+  }
+
+  afterEach(() => {
+    for (const registration of registrations) {
+      registration[Symbol.dispose]();
+    }
+    registrations = [];
+  });
+
+  it('should leave a plugin-categorized node out of its type section', () => {
+    register('test_dune_filter', 'modification', ['Dune']);
+    register('test_core_filter', 'modification', ['Filter']);
+
+    const labels = (
+      buildMenuItems('modification', () => {}, [
+        'test_dune_filter',
+        'test_core_filter',
+      ]) as MenuVnode[]
+    ).map((i) => i.attrs.label);
+
+    expect(labels).toEqual(['Filter']);
+  });
+
+  it('should build one submenu per plugin root, nesting the paths below it', () => {
+    register('test_dune_target', 'source', ['Dune']);
+    register('test_dune_macro', 'modification', ['Dune', 'Macros']);
+    register('test_other', 'source', ['Other']);
+
+    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
+
+    expect(items.map((i) => i.attrs.label)).toEqual(['Dune', 'Other']);
+
+    const dune = children(items[0]);
+    expect(dune.map((i) => i.attrs.label)).toEqual([
+      'test_dune_target',
+      'Macros',
+    ]);
+    expect(children(dune[1]).map((i) => i.attrs.label)).toEqual([
+      'test_dune_macro',
+    ]);
+  });
+
+  it('should put nodes of different types in the same plugin submenu', () => {
+    register('test_dune_source', 'source', ['Dune']);
+    register('test_dune_mod', 'modification', ['Dune']);
+
+    const items = buildPluginGroupMenuItems(() => {}) as MenuVnode[];
+
+    expect(items.length).toBe(1);
+    expect(items[0].attrs.label).toBe('Dune');
+    expect(children(items[0]).map((i) => i.attrs.label)).toEqual([
+      'test_dune_source',
+      'test_dune_mod',
+    ]);
+  });
+
+  it('should honour the allowedIds filter', () => {
+    register('test_dune_allowed', 'source', ['Dune']);
+    register('test_dune_denied', 'modification', ['Dune']);
+    register('test_other', 'source', ['Other']);
+
+    const items = buildPluginGroupMenuItems(() => {}, [
+      'test_dune_allowed',
+    ]) as MenuVnode[];
+
+    expect(items.length).toBe(1);
+    expect(items[0].attrs.label).toBe('Dune');
+    expect(children(items[0]).map((i) => i.attrs.label)).toEqual([
+      'test_dune_allowed',
+    ]);
+  });
+
+  it('should return nothing when only core nodes are registered', () => {
+    expect(buildPluginGroupMenuItems(() => {})).toEqual([]);
+  });
+
+  it('should keep every core category root in CORE_CATEGORY_ROOTS', () => {
+    const roots = nodeRegistry
+      .list()
+      .map(([_id, descriptor]) => descriptor.category?.[0])
+      .filter((root) => root !== undefined);
+
+    expect(roots.length).toBeGreaterThan(0);
+    for (const root of roots) {
+      expect(CORE_CATEGORY_ROOTS.has(root)).toBe(true);
+    }
   });
 });

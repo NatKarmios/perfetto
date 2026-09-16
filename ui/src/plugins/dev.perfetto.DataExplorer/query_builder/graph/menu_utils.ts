@@ -18,7 +18,36 @@ import {type NodeDescriptor, nodeRegistry} from '../node_registry';
 import {Keycap} from '../../../../widgets/hotkey_glyphs';
 
 /**
+ * The category roots that group *within* a node type section.
+ *
+ * The add-node menus are sectioned by node type first, so a category root
+ * listed here groups the nodes of one section. Any other root belongs to a
+ * plugin that wants one group for all of its nodes, which would otherwise
+ * appear once per section its nodes span (e.g. both under "Sources" and under
+ * "Modifications"), so such a root is hoisted into its own top-level submenu
+ * by buildPluginGroupMenuItems() instead.
+ *
+ * Exported so a unit test can check that no core node drifts out of it.
+ */
+export const CORE_CATEGORY_ROOTS: ReadonlySet<string> = new Set([
+  'Columns',
+  'Filter',
+  'Time',
+  'Advanced',
+]);
+
+// Whether a descriptor is shown inside its node type's section, as opposed to
+// in a hoisted plugin group. An uncategorized node stays in its section.
+function isInTypeSection(descriptor: NodeDescriptor): boolean {
+  const root = descriptor.category?.[0];
+  return root === undefined || CORE_CATEGORY_ROOTS.has(root);
+}
+
+/**
  * Build menu items for a specific node type.
+ *
+ * Nodes whose category root is a plugin's own are left out: they are hoisted
+ * out of the type sections by buildPluginGroupMenuItems().
  *
  * @param nodeType - Type of nodes to include
  * @param onAddNode - Callback when a menu item is clicked
@@ -32,11 +61,41 @@ export function buildMenuItems(
   const nodes = nodeRegistry
     .list()
     .filter(([_id, descriptor]) => descriptor.type === nodeType)
+    .filter(([_id, descriptor]) => isInTypeSection(descriptor))
     .filter(
       ([id, _descriptor]) =>
         allowedIds === undefined || allowedIds.includes(id),
     );
 
+  return buildCategorizedMenuItems(nodes, onAddNode);
+}
+
+/**
+ * Build one top-level submenu per plugin category root, in first-seen order.
+ *
+ * A plugin group spans every node type, so its sources and its operations end
+ * up in the same submenu, nested below it by the usual category path recursion.
+ * Returns an empty array when nothing qualifies, so a caller can drop the
+ * section the same way it drops an empty type section.
+ *
+ * @param onAddNode - Callback when a menu item is clicked
+ * @param allowedIds - If given, only these registry IDs are included
+ * @returns Array of Mithril children representing the submenus
+ */
+export function buildPluginGroupMenuItems(
+  onAddNode: (id: string) => void,
+  allowedIds?: ReadonlyArray<string>,
+): m.Children[] {
+  const nodes = nodeRegistry
+    .list()
+    .filter(([_id, descriptor]) => !isInTypeSection(descriptor))
+    .filter(
+      ([id, _descriptor]) =>
+        allowedIds === undefined || allowedIds.includes(id),
+    );
+
+  // The recursion already turns a shared category root into one submenu, so
+  // there is nothing to group by here.
   return buildCategorizedMenuItems(nodes, onAddNode);
 }
 
