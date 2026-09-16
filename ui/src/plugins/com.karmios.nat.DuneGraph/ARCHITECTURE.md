@@ -283,11 +283,17 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
   per trace (`explorer/dune_table_source.ts`). One class over a table name, nine
   registry entries differing only in which table they name; the columns and the
   documentation come from `sql/dune_tables.ts`, since the mirror's tables are
-  not in the `SqlModules` catalogue the core `table` node resolves through. The
-  two tiers are gated differently, which is the only interesting part: a
-  node-tier entry's `preCreate` builds that tier, while `dune_edge` is shown
-  greyed out by an `available()` that reads `edgeMirrorReady` on every menu
-  render — nothing starts a minutes-long edge build from a menu click.
+  not in the `SqlModules` catalogue the core `table` node resolves through. Each
+  node is titled by its prose menu label, offers no configuration of its own —
+  as the core `TableSourceNode` does not — and renders that catalogue entry as
+  markdown into the Data Explorer's `.pf-node-info`, which is how the panel
+  reads like the core nodes' own doc files rather than like hand-built HTML.
+  `loadNodeDoc` is not usable for it: that fetches from the Data Explorer's
+  shipped assets, and these docs are not shipped there. The two tiers are gated
+  differently, which is the only interesting part: a node-tier entry's
+  `preCreate` builds that tier, while `dune_edge` is shown greyed out by an
+  `available()` that reads `edgeMirrorReady` on every menu render — nothing
+  starts a minutes-long edge build from a menu click.
 - Ten **macro nodes** in a "Dune" submenu of that menu's "Modifications"
   section, one per `dune_*` macro, registered the same way
   (`explorer/dune_macro_node.ts`). Again one class over a name, and again the
@@ -1128,7 +1134,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**767 tests across 39 files** as of 2026-09-16.
+**772 tests across 39 files** as of 2026-09-16.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

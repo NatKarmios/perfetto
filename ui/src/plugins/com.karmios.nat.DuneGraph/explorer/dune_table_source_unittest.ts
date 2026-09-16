@@ -26,6 +26,7 @@
  * asserted directly.
  */
 
+import m from 'mithril';
 import {afterEach, describe, expect, test} from 'vitest';
 import {registerCoreNodes} from '../../dev.perfetto.DataExplorer/query_builder/core_nodes';
 import {nodeRegistry} from '../../dev.perfetto.DataExplorer/query_builder/node_registry';
@@ -128,6 +129,32 @@ describe('the Dune table source node', () => {
     expect(sq?.selectColumns?.map((c) => c.columnName)).toEqual(['label']);
   });
 
+  // The node's box in the graph, and the heading of its panel, are the prose
+  // label the menu offered - not the table name, which is left to the SQL.
+  test('is titled and documented by its menu label', () => {
+    const n = node('dune_node');
+    expect(n.getTitle()).toBe('Nodes');
+
+    const el = document.createElement('div');
+    m.render(el, n.nodeInfo());
+    // The Data Explorer's own class for a node's documentation, which is where
+    // the typography comes from.
+    expect(el.querySelector('.pf-node-info')).not.toBeNull();
+    expect(el.querySelector('h1')?.textContent).toBe('Nodes');
+    // Column names as code spans, which is what the markdown route buys over
+    // the hand-built panel this replaced.
+    expect(
+      Array.from(el.querySelectorAll('code')).map((c) => c.textContent),
+    ).toContain('node_id');
+  });
+
+  // The table is fixed by the descriptor, so there is nothing to configure -
+  // the projection is still there for a downstream node to narrow, it just has
+  // no control of its own.
+  test('offers no configuration section', () => {
+    expect(node('dune_node').nodeSpecificModify().sections).toBeUndefined();
+  });
+
   test('will not build a query while its tier is missing', () => {
     const issues = new NodeIssues();
     const n = new DuneTableSourceNode(
@@ -180,6 +207,9 @@ describe('the registry entries', () => {
       expect(d.type).toBe('source');
       expect(d.inputs).toBe('none');
       expect(d.category).toBe('Dune');
+      // The core nodes' orange (#ffe0b2), so a Dune node does not read as some
+      // other kind of thing.
+      expect(d.hue).toBe(30);
       expect(d.showOnLandingPage).toBe(false);
       expect(d.allowedChildren).toBeUndefined();
     }

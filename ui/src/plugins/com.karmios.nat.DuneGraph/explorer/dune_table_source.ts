@@ -39,6 +39,7 @@
  */
 
 import m from 'mithril';
+import markdownit from 'markdown-it';
 import type {NodeDescriptor} from '../../dev.perfetto.DataExplorer/query_builder/node_registry';
 import {nodeRegistry} from '../../dev.perfetto.DataExplorer/query_builder/node_registry';
 import type {
@@ -48,7 +49,6 @@ import type {
 } from '../../dev.perfetto.DataExplorer/query_node';
 import {nextNodeId} from '../../dev.perfetto.DataExplorer/query_node';
 import type {ColumnInfo} from '../../dev.perfetto.DataExplorer/query_builder/column_info';
-import {ColumnSelector} from '../../dev.perfetto.DataExplorer/query_builder/column_selector';
 import {StructuredQueryBuilder} from '../../dev.perfetto.DataExplorer/query_builder/structured_query_builder';
 import {setValidationError} from '../../dev.perfetto.DataExplorer/query_builder/node_issues';
 import {NodeTitle} from '../../dev.perfetto.DataExplorer/query_builder/node_styling_widgets';
@@ -67,7 +67,8 @@ import {ensureNodeMirror} from './data_explorer_handoff';
 /**
  * The tables offered, in menu order, with the label each is offered under.
  * Labels rather than table names because the menu is a list of *things to start
- * from* - the node's title and its documentation name the table itself.
+ * from*, and for the same reason the label is what the node is titled and
+ * documented under; the table name is left to the SQL it generates.
  *
  * Only the public `dune_*` surface documented in sql/dune_tables.ts is
  * offerable, and only the part of it that can simply be selected from: the
@@ -129,40 +130,82 @@ function duneTableEntry(table: string): TableListEntry | undefined {
   return DUNE_TABLES.find((t) => t.name === table);
 }
 
+// The menu label a table is offered under, which is also its node title.
+// Undefined for a table not in the list above, for the same reason
+// duneTableEntry() can be.
+function duneTableLabel(table: string): string | undefined {
+  return SOURCE_TABLES.find((t) => t.table === table)?.label;
+}
+
+// One renderer for the whole module, as the Data Explorer's own
+// query_builder/node_doc_loader.ts does, and with its options: no raw HTML in
+// the source, autolinked URLs, smart quotes.
+const markdown = markdownit({
+  html: false,
+  linkify: true,
+  typographer: true,
+});
+
 /**
- * One `dune_*` entry's own documentation, as an info panel: its description and
- * a column table. That documentation is the only place these columns are
- * described - the mirror's tables are not in the stdlib catalogue, and
- * trace_processor's wire format carries no column comments (see
- * sql/dune_tables.ts). Deliberately not `loadNodeDoc`, which would fetch a
- * markdown file out of the Data Explorer's shipped assets.
+ * One `dune_*` entry's own documentation, as markdown: its description, its
+ * columns as a list, and its example query as a fenced block. That
+ * documentation is the only place these columns are described - the mirror's
+ * tables are not in the stdlib catalogue, and trace_processor's wire format
+ * carries no column comments (see sql/dune_tables.ts).
+ *
+ * Markdown rather than hand-built mithril because the core nodes' info panels
+ * are markdown files, so this is what makes a Dune panel read like theirs -
+ * code spans and fenced SQL in particular, which the descriptions here are
+ * already written with. It is not `loadNodeDoc`, though: that fetches from the
+ * Data Explorer's shipped assets, and these docs are not shipped there.
+ */
+function duneEntryMarkdown(label: string, entry: TableListEntry): string {
+  const lines = [
+    `# ${label}`,
+    '',
+    // Every entry in sql/dune_tables.ts has a description, but the type allows
+    // one without; an empty paragraph renders as nothing rather than as the
+    // word "undefined".
+    entry.description ?? '',
+    '',
+    '**Columns:**',
+    '',
+  ];
+  for (const col of entry.columns) {
+    lines.push(
+      `- \`${col.name}\` (${perfettoSqlTypeToString(col.type)}): ` +
+        `${col.description}`,
+    );
+  }
+  if (entry.exampleQuery !== undefined) {
+    lines.push(
+      '',
+      '**Example query:**',
+      '',
+      '```sql',
+      entry.exampleQuery,
+      '```',
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * That markdown as the info panel itself. `.pf-node-info` is the Data
+ * Explorer's own class for a node's documentation - these nodes render inside
+ * its panel, so wearing it is what gets them its typography rather than
+ * unstyled HTML.
  *
  * Shared with the macro nodes (dune_macro_node.ts), which document themselves
  * from the same catalogue.
  */
-export function duneTableEntryInfo(entry: TableListEntry): m.Children {
+export function duneTableEntryInfo(
+  label: string,
+  entry: TableListEntry,
+): m.Children {
   return m(
-    'div',
-    m('h2', entry.name),
-    m('p', entry.description),
-    m(
-      'table.pf-table.pf-table-striped',
-      m(
-        'thead',
-        m('tr', m('th', 'Column'), m('th', 'Type'), m('th', 'Description')),
-      ),
-      m(
-        'tbody',
-        entry.columns.map((col) =>
-          m(
-            'tr',
-            m('td', col.name),
-            m('td', perfettoSqlTypeToString(col.type)),
-            m('td', col.description),
-          ),
-        ),
-      ),
-    ),
+    '.pf-node-info',
+    m.trust(markdown.render(duneEntryMarkdown(label, entry))),
   );
 }
 
@@ -249,40 +292,30 @@ export class DuneTableSourceNode implements QueryNode {
     return true;
   }
 
+  // The menu label, not the table name: this is what is drawn on the node's
+  // box in the graph. The table name falls through for a table the list no
+  // longer offers, which is the same case `entry` is undefined in.
   getTitle(): string {
-    return this.attrs.table;
+    return duneTableLabel(this.attrs.table) ?? this.attrs.table;
   }
 
   nodeDetails(): NodeDetailsAttrs {
-    return {content: NodeTitle(this.attrs.table)};
+    return {content: NodeTitle(this.getTitle())};
   }
 
+  // No configuration at all, as the core `TableSourceNode` has none: the table
+  // is fixed by the descriptor, and the node's own panel is its documentation.
+  // `finalCols` is still the projection a downstream node narrows, it just has
+  // no control of its own here.
   nodeSpecificModify(): NodeModifyAttrs {
-    const checked = this.finalCols.filter((c) => c.checked).length;
     return {
       info: `Every row of ${this.attrs.table}, from the Dune build graph.`,
-      sections: [
-        {
-          title: `Columns (${checked} / ${this.finalCols.length} selected)`,
-          content: m(ColumnSelector, {
-            columns: this.finalCols,
-            onColumnsChange: (columns) => {
-              // In place, so that anything already holding this array - the
-              // nodes downstream read `finalCols` as their own source columns -
-              // sees the change.
-              this.finalCols.splice(0, this.finalCols.length, ...columns);
-              this.context.onchange?.();
-            },
-            helpText: 'Check the columns to select from the table',
-          }),
-        },
-      ],
     };
   }
 
   nodeInfo(): m.Children {
     if (this.entry === undefined) return undefined;
-    return duneTableEntryInfo(this.entry);
+    return duneTableEntryInfo(this.getTitle(), this.entry);
   }
 
   clone(): QueryNode {
@@ -310,7 +343,9 @@ export class DuneTableSourceNode implements QueryNode {
  * `available()` and the factory without going through the global registry.
  *
  * `hue` and `category` are what put all nine in one "Dune" submenu drawn in one
- * colour, inside the add-node menu's "Sources" section. `showOnLandingPage` is
+ * colour, inside the add-node menu's "Sources" section. The hue is the core
+ * nodes' orange (`#ffe0b2`, see the Data Explorer's
+ * query_builder/graph/node_config.ts). `showOnLandingPage` is
  * off because the landing page is for the handful of core starting points, and
  * nine of these would swamp it.
  */
@@ -328,7 +363,7 @@ export function duneTableSourceDescriptor(
     type: 'source',
     inputs: 'none',
     category: 'Dune',
-    hue: 310,
+    hue: 30,
     showOnLandingPage: false,
     nodeType: duneSourceNodeType(table),
 

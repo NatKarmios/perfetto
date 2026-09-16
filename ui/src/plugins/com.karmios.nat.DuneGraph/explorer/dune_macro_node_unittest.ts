@@ -25,6 +25,7 @@
  * and a minutes-long edge build.
  */
 
+import m from 'mithril';
 import {afterEach, describe, expect, test} from 'vitest';
 import {registerCoreNodes} from '../../dev.perfetto.DataExplorer/query_builder/core_nodes';
 import {nodeRegistry} from '../../dev.perfetto.DataExplorer/query_builder/node_registry';
@@ -116,6 +117,21 @@ function node(
 // The SQL the node generates, which is the whole of what a macro node is.
 function sqlOf(n: DuneMacroNode): string | undefined {
   return n.getStructuredQuery()?.sql?.sql ?? undefined;
+}
+
+// The node's configuration fields, rendered, since what they are labelled is
+// the thing worth asserting and a section's content is opaque mithril.
+function modifyPanel(n: DuneMacroNode): HTMLElement {
+  const el = document.createElement('div');
+  const sections = (n.nodeSpecificModify() as NodeModifyAttrs).sections ?? [];
+  m.render(
+    el,
+    m(
+      'div',
+      sections.map((s) => s.content),
+    ),
+  );
+  return el;
 }
 
 function macroDoc(macro: string) {
@@ -252,6 +268,58 @@ describe('the Dune macro node', () => {
     }
   });
 
+  // The box in the graph reads as the menu entry that made it, rather than as
+  // the macro call the node happens to generate.
+  test('is titled by its menu label', () => {
+    expect(node('dune_children', ['node_id']).getTitle()).toBe('Children');
+    expect(node('dune_blocked', ['src', 'dst']).getTitle()).toBe(
+      'Blocked time',
+    );
+  });
+
+  test('names its configuration fields in prose, not SQL', () => {
+    expect(modifyPanel(node('dune_children', ['node_id'])).textContent).toBe(
+      'Node ids: node_id',
+    );
+    expect(
+      modifyPanel(node('dune_process_cmd', ['slice_id'])).textContent,
+    ).toContain('Process slices');
+
+    const blocked = modifyPanel(node('dune_blocked', ['src', 'dst']));
+    expect(blocked.textContent).toContain('Depending node');
+    expect(blocked.textContent).toContain('Node depended on');
+
+    const bounds = modifyPanel(node('dune_descendants', ['node_id']));
+    const text = bounds.textContent ?? '';
+    expect(text).toContain('Maximum steps');
+    expect(text).toContain('Step through');
+    // The three step kinds as prose, the unset one included.
+    expect(text).toContain('Rules and dependencies');
+    expect(text).toContain('Rules only');
+    expect(text).toContain('Dependencies only');
+    // Empty means an unbounded walk, and only the placeholder says so.
+    expect(bounds.querySelector('input')?.placeholder).toBe('Unbounded');
+    // None of the macro's own argument names are left on show.
+    expect(text).not.toContain('max_steps');
+    expect(text).not.toContain('step_kind');
+  });
+
+  // The panel the core nodes get from their markdown doc files, which is what
+  // makes fenced SQL and code-spanned column names format at all.
+  test('renders its documentation through markdown', () => {
+    const el = document.createElement('div');
+    m.render(el, node('dune_children', ['node_id']).nodeInfo());
+
+    expect(el.querySelector('.pf-node-info')).not.toBeNull();
+    expect(el.querySelector('h1')?.textContent).toBe('Children');
+    expect(el.querySelector('pre code')?.textContent).toContain(
+      'FROM dune_children!(starts)',
+    );
+    expect(
+      Array.from(el.querySelectorAll('code')).map((c) => c.textContent),
+    ).toContain('src');
+  });
+
   test('builds nothing on an input that cannot build itself', () => {
     const n = new DuneMacroNode({macro: 'dune_children'}, {}, fakeController());
     n.primaryInput = upstream(['node_id'], false);
@@ -378,6 +446,8 @@ describe('the Dune macro registry entries', () => {
       expect(d.type).toBe('modification');
       expect(d.inputs).toBe('primary');
       expect(d.category).toBe('Dune');
+      // The source nodes' hue, which is the core nodes' orange (#ffe0b2).
+      expect(d.hue).toBe(30);
     }
   });
 

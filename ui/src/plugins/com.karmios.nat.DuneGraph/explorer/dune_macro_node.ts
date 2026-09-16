@@ -139,10 +139,29 @@ const MACRO_SPECS: ReadonlyArray<DuneMacroSpec> = [
   },
 ];
 
-// `step_kind`'s entire domain. The literal is rendered by matching against this
-// list rather than by quoting whatever `attrs` holds, so no value carried by a
-// saved graph can reach the SQL as anything but one of these two.
-const STEP_KINDS: ReadonlyArray<string> = ['rule', 'dep'];
+// `step_kind`'s entire domain, with what each value is offered as. The literal
+// is rendered by matching against this list rather than by quoting whatever
+// `attrs` holds, so no value carried by a saved graph can reach the SQL as
+// anything but one of these two.
+const STEP_KINDS: ReadonlyArray<readonly [string, string]> = [
+  ['rule', 'Rules only'],
+  ['dep', 'Dependencies only'],
+];
+
+// The unset case, which both macros read as "either kind".
+const EITHER_STEP_KIND = 'Rules and dependencies';
+
+// What each key column is offered as. Keyed by the name the macro's body reads
+// the column under, and those names do not collide across the three shapes: the
+// eight walks read `node_id`, `dune_process_cmd!` reads `slice_id`, and
+// `dune_blocked!` reads both endpoints. The two endpoint labels are how
+// sql/dune_tables.ts describes those columns, so the node and the docs agree.
+const KEY_COL_LABELS: Readonly<Record<string, string>> = {
+  node_id: 'Node ids',
+  slice_id: 'Process slices',
+  src: 'Depending node',
+  dst: 'Node depended on',
+};
 
 /**
  * One entry, with the parts taken from sql/dune_tables.ts: the documentation to
@@ -323,8 +342,11 @@ export class DuneMacroNode implements QueryNode {
     return true;
   }
 
+  // The menu label, not the macro name: this is what is drawn on the node's
+  // box in the graph, and it is also what the missing-column error above names
+  // the node by.
   getTitle(): string {
-    return `${this.macro.macro}!`;
+    return this.macro.label;
   }
 
   nodeDetails(): NodeDetailsAttrs {
@@ -356,7 +378,7 @@ export class DuneMacroNode implements QueryNode {
     if (!names.includes(current)) names.unshift(current);
     return m(
       'label',
-      `${key}: `,
+      `${KEY_COL_LABELS[key] ?? key}: `,
       m(
         Select,
         {
@@ -379,11 +401,13 @@ export class DuneMacroNode implements QueryNode {
     return [
       m(
         'label',
-        'max_steps: ',
+        'Maximum steps: ',
         m(TextInput, {
           type: 'number',
           min: 0,
-          placeholder: 'unbounded',
+          // Empty is the unbounded walk, and the placeholder is the only thing
+          // that says so - an empty box otherwise reads as unconfigured.
+          placeholder: 'Unbounded',
           value: this.attrs.maxSteps ?? '',
           onInput: (value: string) => {
             const steps = Number.parseInt(value, 10);
@@ -395,7 +419,7 @@ export class DuneMacroNode implements QueryNode {
       ),
       m(
         'label',
-        'step_kind: ',
+        'Step through: ',
         m(
           Select,
           {
@@ -405,12 +429,13 @@ export class DuneMacroNode implements QueryNode {
               this.context.onchange?.();
             },
           },
-          ['', ...STEP_KINDS].map((kind) =>
-            m(
-              'option',
-              {value: kind, selected: kind === (this.attrs.stepKind ?? '')},
-              kind === '' ? 'either' : kind,
-            ),
+          [['', EITHER_STEP_KIND] as const, ...STEP_KINDS].map(
+            ([kind, label]) =>
+              m(
+                'option',
+                {value: kind, selected: kind === (this.attrs.stepKind ?? '')},
+                label,
+              ),
           ),
         ),
       ),
@@ -418,7 +443,7 @@ export class DuneMacroNode implements QueryNode {
   }
 
   nodeInfo(): m.Children {
-    return duneTableEntryInfo(this.macro.entry);
+    return duneTableEntryInfo(this.macro.label, this.macro.entry);
   }
 
   clone(): QueryNode {
@@ -435,8 +460,8 @@ export class DuneMacroNode implements QueryNode {
         ? `${this.attrs.maxSteps}`
         : 'NULL';
     }
-    const kind = STEP_KINDS.find((k) => k === this.attrs.stepKind);
-    return kind === undefined ? 'NULL' : `'${kind}'`;
+    const kind = STEP_KINDS.find(([k]) => k === this.attrs.stepKind);
+    return kind === undefined ? 'NULL' : `'${kind[0]}'`;
   }
 
   getStructuredQuery(): protos.PerfettoSqlStructuredQuery | undefined {
@@ -485,7 +510,7 @@ export function duneMacroDescriptor(
     type: 'modification',
     inputs: 'primary',
     category: 'Dune',
-    hue: 310,
+    hue: 30,
     nodeType: duneMacroNodeType(macro.macro),
 
     // Greyed out with its reason until something else builds the edge tier.
