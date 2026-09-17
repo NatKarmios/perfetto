@@ -12,16 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {DashboardTabState, DataExplorerTab} from './data_explorer';
+import type {
+  DashboardTabState,
+  DataExplorerState,
+  DataExplorerTab,
+} from './data_explorer';
 import {
   isSerializedTabExport,
   deserializeDashboardsFromExport,
+  loadExampleGraph,
+  type GraphIODeps,
   type SerializedTabExport,
 } from './graph_io';
 import {
   serializeDashboardsForTab,
   type SerializedDashboard,
 } from './data_explorer_tabs_storage';
+import {serializeState} from './json_handler';
+import {registerCoreNodes} from './query_builder/core_nodes';
+import {SlicesSourceNode} from './query_builder/nodes/sources/slices_source';
+import type {Trace} from '../../public/trace';
+import type {SqlModules} from '../dev.perfetto.SqlModules/sql_modules';
+
+registerCoreNodes();
 
 describe('isSerializedTabExport', () => {
   test('returns true for valid tab export', () => {
@@ -597,5 +610,95 @@ describe('tab export/import round-trip', () => {
     expect(hydrated?.[0].brushFilters.get('n1')).toEqual([
       {column: 'ts', op: '>=', value: 1000},
     ]);
+  });
+});
+
+describe('loadExampleGraph', () => {
+  const deps: GraphIODeps = {
+    trace: {traceInfo: {traceTitle: 'test_trace'}} as Trace,
+    sqlModules: {} as SqlModules,
+    onStateUpdate: () => {},
+    cleanupExistingNodes: async () => {},
+  };
+
+  // A one-node graph, so a tab that loaded nothing looks different from a tab
+  // that loaded the example.
+  function bareGraph(): string {
+    return serializeState({
+      rootNodes: [new SlicesSourceNode({}, {})],
+      selectedNodes: new Set(),
+      nodeLayouts: new Map(),
+      labels: [],
+    });
+  }
+
+  interface CreatedTab {
+    title: string;
+    state: DataExplorerState;
+    dashboards?: DashboardTabState[];
+  }
+
+  test('loads a bare graph into a tab named after the entry', async () => {
+    const tabs: CreatedTab[] = [];
+    await loadExampleGraph(
+      deps,
+      {json: bareGraph()},
+      'Slice Analysis Pipeline',
+      (title, state, dashboards) => tabs.push({title, state, dashboards}),
+    );
+
+    expect(tabs.length).toBe(1);
+    expect(tabs[0].title).toBe('Slice Analysis Pipeline');
+    expect(tabs[0].state.rootNodes.length).toBe(1);
+    expect(tabs[0].state.rootNodes[0]).toBeInstanceOf(SlicesSourceNode);
+    expect(tabs[0].dashboards).toBeUndefined();
+  });
+
+  test('loads a whole-tab export with its nodes and dashboards', async () => {
+    const exported: SerializedTabExport = {
+      version: 1,
+      title: 'Exported Recipe',
+      graph: bareGraph(),
+      dashboards: [
+        {
+          id: 'db1',
+          items: [{kind: 'label', id: 'lbl1', text: 'Hello', col: 1, row: 2}],
+        },
+      ],
+    };
+    const tabs: CreatedTab[] = [];
+    await loadExampleGraph(
+      deps,
+      {json: JSON.stringify(exported)},
+      'Entry Name',
+      (title, state, dashboards) => tabs.push({title, state, dashboards}),
+    );
+
+    expect(tabs.length).toBe(1);
+    expect(tabs[0].title).toBe('Exported Recipe');
+    expect(tabs[0].state.rootNodes.length).toBe(1);
+    expect(tabs[0].state.rootNodes[0]).toBeInstanceOf(SlicesSourceNode);
+    expect(tabs[0].dashboards?.length).toBe(1);
+    expect(tabs[0].dashboards?.[0].id).toBe('db1');
+    expect(tabs[0].dashboards?.[0].items).toEqual([
+      {kind: 'label', id: 'lbl1', text: 'Hello', col: 1, row: 2},
+    ]);
+  });
+
+  test('creates no tab for a malformed example', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const tabs: CreatedTab[] = [];
+    await loadExampleGraph(
+      deps,
+      {json: 'not json at all'},
+      'Broken',
+      (title, state, dashboards) => tabs.push({title, state, dashboards}),
+    );
+
+    expect(tabs).toEqual([]);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });

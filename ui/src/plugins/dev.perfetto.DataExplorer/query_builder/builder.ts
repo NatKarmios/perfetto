@@ -171,7 +171,7 @@ export interface BuilderAttrs {
 
   // Starting templates (when page is empty)
   readonly onLoadEmptyTemplate?: () => void;
-  readonly onLoadExample?: (source: ExampleGraphSource) => void;
+  readonly onLoadExample?: (source: ExampleGraphSource, name: string) => void;
   readonly onLoadDataExplorerTemplate?: () => void;
   readonly onLoadRecentGraph?: (json: string) => void;
 

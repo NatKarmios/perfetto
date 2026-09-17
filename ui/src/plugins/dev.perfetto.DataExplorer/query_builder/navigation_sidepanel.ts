@@ -96,7 +96,7 @@ function renderSectionHeader(title: string): m.Children {
 export interface NavigationSidePanelAttrs {
   readonly selectedNode?: QueryNode;
   readonly onAddSourceNode: (id: string) => void;
-  readonly onLoadExample?: (source: ExampleGraphSource) => void;
+  readonly onLoadExample?: (source: ExampleGraphSource, name: string) => void;
   readonly onLoadDataExplorerTemplate?: () => void;
   readonly onLoadEmptyTemplate?: () => void;
   readonly onLoadRecentGraph?: (json: string) => void;
@@ -144,9 +144,10 @@ export class NavigationSidePanel implements m.ClassComponent<NavigationSidePanel
                 'Node docking, filtering, adding nodes, and multi-child workflows',
               ariaLabel: 'Start Graph 101 tutorial',
               onClick: () =>
-                attrs.onLoadExample?.({
-                  jsonPath: 'assets/data_explorer/examples/learning.json',
-                }),
+                attrs.onLoadExample?.(
+                  {jsonPath: 'assets/data_explorer/examples/learning.json'},
+                  'Graph 101',
+                ),
             }),
             renderListItem({
               icon: 'join_inner',
@@ -154,9 +155,13 @@ export class NavigationSidePanel implements m.ClassComponent<NavigationSidePanel
               description: 'Combine data from multiple sources using joins',
               ariaLabel: 'Start Joins tutorial',
               onClick: () =>
-                attrs.onLoadExample?.({
-                  jsonPath: 'assets/data_explorer/examples/joins_learning.json',
-                }),
+                attrs.onLoadExample?.(
+                  {
+                    jsonPath:
+                      'assets/data_explorer/examples/joins_learning.json',
+                  },
+                  'Joins',
+                ),
             }),
             renderListItem({
               icon: 'schedule',
@@ -164,9 +169,13 @@ export class NavigationSidePanel implements m.ClassComponent<NavigationSidePanel
               description: 'Filter and analyze data using time-based queries',
               ariaLabel: 'Start Time tutorial',
               onClick: () =>
-                attrs.onLoadExample?.({
-                  jsonPath: 'assets/data_explorer/examples/time_learning.json',
-                }),
+                attrs.onLoadExample?.(
+                  {
+                    jsonPath:
+                      'assets/data_explorer/examples/time_learning.json',
+                  },
+                  'Time',
+                ),
             }),
           ),
         ),
@@ -191,7 +200,7 @@ export class NavigationSidePanel implements m.ClassComponent<NavigationSidePanel
                   title: example.name,
                   description: example.description,
                   ariaLabel: `Load ${example.name} example`,
-                  onClick: () => attrs.onLoadExample?.(example),
+                  onClick: () => attrs.onLoadExample?.(example, example.name),
                 }),
               ),
             ),

@@ -731,8 +731,14 @@ export class DataExplorer implements m.ClassComponent<DataExplorerAttrs> {
             };
           });
         },
-        onLoadExample: (source: ExampleGraphSource) =>
-          loadExampleGraph(graphIODeps, state, source, 'Failed to Load'),
+        onLoadExample: (source: ExampleGraphSource, name: string) =>
+          loadExampleGraph(
+            graphIODeps,
+            source,
+            name,
+            (title, newState, dashboards) =>
+              attrs.onTabAddWithState(title, newState, tab.id, dashboards),
+          ),
         onLoadDataExplorerTemplate: async () => {
           if (!(await confirmAndFinalizeCurrentGraph(state))) return;
           await createDataExplorerGraph(graphIODeps);

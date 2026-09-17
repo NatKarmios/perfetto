@@ -141,16 +141,20 @@ export async function importGraph(
 }
 
 // Centralized method to load an example graph, whose JSON either lives at a
-// URL path or is supplied inline.
-// Handles confirmation, fetching, and error handling.
+// URL path or is supplied inline, into a new tab.
+// The JSON is either a bare graph or a whole-tab export, as written by the
+// tab Export button.
 export async function loadExampleGraph(
   deps: GraphIODeps,
-  state: DataExplorerState,
   source: ExampleGraphSource,
+  name: string,
+  onCreateTab: (
+    title: string,
+    state: DataExplorerState,
+    dashboards?: DashboardTabState[],
+  ) => void,
   errorTitle: string = 'Failed to Load',
 ): Promise<void> {
-  if (!(await confirmAndFinalizeCurrentGraph(state))) return;
-
   try {
     let json: string;
     if (source.jsonPath !== undefined) {
@@ -164,7 +168,18 @@ export async function loadExampleGraph(
     } else {
       json = source.json;
     }
-    await loadGraphFromJson(deps, state.rootNodes, json);
+    const parsed: unknown = JSON.parse(json);
+    if (isSerializedTabExport(parsed)) {
+      const newState = deserializeState(
+        parsed.graph,
+        deps.trace,
+        deps.sqlModules,
+      );
+      const dashboards = deserializeDashboardsFromExport(parsed.dashboards);
+      onCreateTab(parsed.title || name, newState, dashboards);
+    } else {
+      onCreateTab(name, deserializeState(json, deps.trace, deps.sqlModules));
+    }
   } catch (error) {
     console.error(
       `Failed to load from ${source.jsonPath ?? 'inline JSON'}:`,
