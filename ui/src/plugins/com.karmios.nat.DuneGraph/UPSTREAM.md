@@ -1,9 +1,9 @@
 # What DuneGraph needed from outside its own directory
 
 This plugin is not self-contained. Making it work meant changing the Data
-Explorer, the DataGrid, the query page and a couple of widgets — 32 commits on
-`main..dune-graph-trace`, and a net footprint of **52 files, +4,889/−1,398**
-(measured 2026-09-16, excluding the plugin directory itself).
+Explorer, the DataGrid, the query page and a couple of widgets — 36 commits on
+`main..dune-graph-trace`, and a net footprint of **63 files, +5,626/−1,499**
+(measured 2026-09-17, excluding the plugin directory itself).
 
 This file is the ledger. It exists for one reason: in six months the _diff_ will
 still be readable and the _motivation_ will not.
@@ -100,6 +100,18 @@ having twice were moved into `components/query_table` rather than copied.
 | `9b40c8a506` key the table list's sections          | `table-list-keyed-sections` | The Dune page's sections arrive at different times — the stdlib catalogue loads asynchronously — and unkeyed sections re-rendered wrongly when one appeared.                                     |
 | `4d6c81f371` share the query page's tab persistence | `tab-persistence-helper`    | The Dune query page remembers its tabs; the core page already did the same thing, privately.                                                                                                     |
 | `8d52c1cddf` share the PerfettoSQL formatter        | none — **needs a branch**   | Format-on-demand in the Dune editor. Also touches `bigtrace/pages` and `dev.perfetto.QueryPage`.                                                                                                 |
+
+### Example graphs
+
+The plugin offers two worked examples in the Data Explorer's "Solutions" list,
+one of them the user's own exported tab. Neither was expressible: the list was a
+fixed array of two entries, and an entry could only name a file in the Data
+Explorer's own asset directory.
+
+| Commit                                               | Branch                    | Why the plugin needed it                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `20259d2871` plugins can register example graphs     | none — **needs a branch** | The list was a fixed array and the assets directory is upstream's, so a plugin had no way to offer an example and no file to offer it from. Entries are now registered, disposable, and may carry their graph inline.                                                      |
+| `ddd3a03063` load an example the way Export wrote it | none — **needs a branch** | A recipe is authored by building it in the UI and pressing Export, which writes the whole-tab shape with its dashboards beside the graph. The loader only took the bare graph, so a recipe lost its dashboards. Examples now open in their own tab, where dashboards live. |
 
 ### The node registry
 
