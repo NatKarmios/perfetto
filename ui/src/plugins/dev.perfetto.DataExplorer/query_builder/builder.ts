@@ -132,6 +132,7 @@ import {getAllDownstreamNodes, getAllNodes} from './graph_utils';
 import {Popup, PopupPosition} from '../../../widgets/popup';
 import type {DataSource} from '../../../components/widgets/datagrid/data_source';
 import {NavigationSidePanel} from './navigation_sidepanel';
+import type {ExampleGraphSource} from '../example_graphs';
 
 // Side panel width - must match --pf-qb-side-panel-width in builder.scss
 const SIDE_PANEL_WIDTH = 60;
@@ -170,7 +171,7 @@ export interface BuilderAttrs {
 
   // Starting templates (when page is empty)
   readonly onLoadEmptyTemplate?: () => void;
-  readonly onLoadExampleByPath?: (jsonPath: string) => void;
+  readonly onLoadExample?: (source: ExampleGraphSource) => void;
   readonly onLoadDataExplorerTemplate?: () => void;
   readonly onLoadRecentGraph?: (json: string) => void;
 
@@ -383,7 +384,7 @@ export class Builder implements m.ClassComponent<BuilderAttrs> {
             m(NavigationSidePanel, {
               selectedNode,
               onAddSourceNode: attrs.graphCallbacks.onAddSourceNode,
-              onLoadExampleByPath: attrs.onLoadExampleByPath,
+              onLoadExample: attrs.onLoadExample,
               onLoadDataExplorerTemplate: attrs.onLoadDataExplorerTemplate,
               onLoadEmptyTemplate: attrs.onLoadEmptyTemplate,
               onLoadRecentGraph: attrs.onLoadRecentGraph,

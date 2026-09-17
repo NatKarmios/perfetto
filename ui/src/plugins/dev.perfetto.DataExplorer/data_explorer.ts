@@ -35,7 +35,7 @@ import {
   importGraph,
   importTab,
   loadGraphFromJson,
-  loadGraphFromPath,
+  loadExampleGraph,
   createDataExplorerGraph,
   type GraphIODeps,
 } from './graph_io';
@@ -74,6 +74,7 @@ import {
 import type {NodeCrudDeps} from './node_crud_operations';
 import {addFilter, addColumnFromJoinid} from './datagrid_node_creation';
 import {showHelp} from './help_modal';
+import type {ExampleGraphSource} from './example_graphs';
 
 import {copySelectedNodes, pasteClipboardNodes} from './clipboard_operations';
 import type {ClipboardResult} from './clipboard_operations';
@@ -730,8 +731,8 @@ export class DataExplorer implements m.ClassComponent<DataExplorerAttrs> {
             };
           });
         },
-        onLoadExampleByPath: (jsonPath: string) =>
-          loadGraphFromPath(graphIODeps, state, jsonPath, 'Failed to Load'),
+        onLoadExample: (source: ExampleGraphSource) =>
+          loadExampleGraph(graphIODeps, state, source, 'Failed to Load'),
         onLoadDataExplorerTemplate: async () => {
           if (!(await confirmAndFinalizeCurrentGraph(state))) return;
           await createDataExplorerGraph(graphIODeps);

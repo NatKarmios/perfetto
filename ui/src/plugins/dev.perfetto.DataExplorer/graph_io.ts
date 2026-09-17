@@ -30,6 +30,7 @@ import {
   showExportWarning,
 } from './query_builder/widgets';
 import {recentGraphsStorage} from './recent_graphs';
+import type {ExampleGraphSource} from './example_graphs';
 import type {DataExplorerState, DashboardTabState} from './data_explorer';
 import type {DataExplorerTab} from './data_explorer';
 import {parsePbtxtToState} from './pbtxt_import';
@@ -139,27 +140,36 @@ export async function importGraph(
   input.click();
 }
 
-// Centralized method to load JSON from a URL path.
+// Centralized method to load an example graph, whose JSON either lives at a
+// URL path or is supplied inline.
 // Handles confirmation, fetching, and error handling.
-export async function loadGraphFromPath(
+export async function loadExampleGraph(
   deps: GraphIODeps,
   state: DataExplorerState,
-  jsonPath: string,
+  source: ExampleGraphSource,
   errorTitle: string = 'Failed to Load',
 ): Promise<void> {
   if (!(await confirmAndFinalizeCurrentGraph(state))) return;
 
   try {
-    const response = await fetch(assetSrc(jsonPath));
-    if (!response.ok) {
-      throw new Error(
-        `Failed to load: ${response.status} ${response.statusText}`,
-      );
+    let json: string;
+    if (source.jsonPath !== undefined) {
+      const response = await fetch(assetSrc(source.jsonPath));
+      if (!response.ok) {
+        throw new Error(
+          `Failed to load: ${response.status} ${response.statusText}`,
+        );
+      }
+      json = await response.text();
+    } else {
+      json = source.json;
     }
-    const json = await response.text();
     await loadGraphFromJson(deps, state.rootNodes, json);
   } catch (error) {
-    console.error(`Failed to load from ${jsonPath}:`, error);
+    console.error(
+      `Failed to load from ${source.jsonPath ?? 'inline JSON'}:`,
+      error,
+    );
     showModal({
       title: errorTitle,
       content: () =>

@@ -14,7 +14,7 @@
 
 import m from 'mithril';
 import {closeModal, showModal} from '../../widgets/modal';
-import {EXAMPLE_GRAPHS, type ExampleGraph} from './example_graphs';
+import {getExampleGraphs, type ExampleGraph} from './example_graphs';
 import {Card} from '../../widgets/card';
 import {Icon} from '../../widgets/icon';
 
@@ -33,7 +33,7 @@ export function showExamplesModal(): Promise<ExampleGraph | undefined> {
           '.pf-examples-modal',
           m(
             '.pf-examples-grid',
-            EXAMPLE_GRAPHS.map((example) =>
+            getExampleGraphs().map((example) =>
               m(
                 Card,
                 {
