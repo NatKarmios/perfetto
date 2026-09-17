@@ -276,7 +276,7 @@ path.
 
 ### Data Explorer — `explorer/`
 
-Three kinds of offer into `dev.perfetto.DataExplorer`, twenty-one in all:
+Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
 
 - Nine **source nodes** in a "Dune" submenu of that plugin's own add-node menu,
   under its "Sources" section, one per queryable table of the mirror, registered
@@ -326,6 +326,26 @@ Three kinds of offer into `dev.perfetto.DataExplorer`, twenty-one in all:
   (waiting, loading, error, no matching nodes), are shared in
   `explorer/chart_node_column.ts` — the two cards say the same thing in those
   states, so they say it in one place.
+- Two **recipes** in that plugin's Solutions list, registered per trace
+  (`explorer/dune_recipes.ts`). The three above each answer "what can I start
+  from"; a recipe answers "and then what", which is the harder question and the
+  one a menu cannot. "Build time by directory" is three nodes — `dune_rule`,
+  grouped by directory with a summed `action_dur_ns` and a count, sorted — and
+  all node tier, so it answers the moment the graph is loaded. "Process
+  Analysis" is twelve nodes over `dune_process` in three branches, each ending
+  in a dashboard node and all three landing on one dashboard of three charts and
+  a grid. It was built in the UI and exported rather than written by hand
+  (`explorer/process_analysis_graph.ts`), which is why it carries the whole-tab
+  export envelope: that dashboard is half of what it is, and only that envelope
+  holds it. One of its branches walks `dune_parents` and so needs the edge tier;
+  the node says so when that tier is missing, and the other two branches run
+  regardless. Both are TypeScript object literals stringified at load, not
+  assets — `ui/src/assets/` is the Data Explorer's own, and an inline `json` is
+  the case `registerExampleGraph` provides for. The trap a recipe carries is
+  that it is static JSON naming node types and column names, so a rename breaks
+  it with nothing failing to compile: `explorer/dune_recipes_unittest.ts` is the
+  answer, and it asserts every node of every recipe deserializes _and validates_
+  rather than merely parsing.
 
 `views/node_cell.ts` additionally teaches **every** DataGrid in the UI to render
 a `JOINID(dune_node.node_id)` column as a node chip and a
@@ -1106,7 +1126,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**764 tests across 36 files** as of 2026-09-16.
+**769 tests across 37 files** as of 2026-09-17.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

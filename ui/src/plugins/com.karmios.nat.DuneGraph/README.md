@@ -158,6 +158,20 @@ edge set — a **Depending node** and a **Node depended on** — and adds
 query, pick the one it should use in the node's panel. The eight walks need the
 edge tier, so like **Node edges** they stay greyed out until you have built it.
 
+Finally, two finished graphs under **Solutions** in the Data Explorer's side
+panel (and in its Example Graphs modal), which open in a new tab with the nodes
+already wired up:
+
+- **Build time by directory** groups every rule by its directory and ranks the
+  directories by how much action time went into each, with the rule count beside
+  it. Three nodes, all node tier, so it answers as soon as the graph is loaded.
+- **Process Analysis** is every process the build ran, three ways: how many were
+  running at once over time, the thirty longest with the rule and command line
+  behind each, and the whole set as a duration histogram — laid out on a
+  dashboard. The branch behind the thirty longest walks **Parents**, so it needs
+  the edge tier; open it without that tier and that one branch says so while the
+  rest still runs.
+
 ## Loading the graph
 
 Most traces load themselves: open one and the graph is there. Reading the graph
