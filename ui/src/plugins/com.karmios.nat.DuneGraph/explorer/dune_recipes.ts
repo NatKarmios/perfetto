@@ -22,13 +22,13 @@
  * The fourth offer into that plugin - **ARCHITECTURE.md, "Data Explorer" lists
  * all of them**.
  *
- * The two are deliberately not alike. "Build time by directory" is three nodes,
- * all node tier, so it answers something the moment a trace opens. "Process
- * Analysis" is twelve nodes over three branches, all three laid out on one
- * dashboard, and one of those branches walks `dune_parents`, which needs the
- * edge tier - a build nobody starts by accident. Opening it before that tier
- * exists is not a failure to hide: the node says what is missing and where to
- * build it, and the other two branches run regardless.
+ * The two are deliberately not alike. "Dune: Build time by directory" is three
+ * nodes, all node tier, so it answers something the moment a trace opens.
+ * "Dune: Process Analysis" is twelve nodes over three branches, all three laid
+ * out on one dashboard, and one of those branches walks `dune_parents`, which
+ * needs the edge tier - a build nobody starts by accident. Opening it before
+ * that tier exists is not a failure to hide: the node says what is missing and
+ * where to build it, and the other two branches run regardless.
  *
  * The risk a recipe carries is that it is static JSON naming node types and
  * column names. Rename either and nothing here stops compiling; the graph
@@ -44,7 +44,9 @@ import type {SerializedGraph} from '../../dev.perfetto.DataExplorer/json_handler
 import {PROCESS_ANALYSIS_GRAPH} from './process_analysis_graph';
 
 /**
- * `dune_rule` grouped by directory, ranked by the action time in it.
+ * `dune_rule` grouped by `dir_id`, ranked by the action time in it. Grouping on
+ * the id rather than a path string is what makes the result's directory column
+ * a chip that joins to `dune_dir`.
  *
  * A bare `SerializedGraph` rather than the whole-tab export shape the other
  * recipe uses: there are no dashboards to carry, and `loadExampleGraph` accepts
@@ -74,7 +76,16 @@ const BUILD_TIME_BY_DIRECTORY: SerializedGraph = {
       // directory whether it ran or not. The difference between the two is the
       // useful part of the answer.
       state: {
-        groupByColumns: [{name: 'dir', type: {kind: 'string'}, checked: true}],
+        groupByColumns: [
+          {
+            name: 'dir_id',
+            type: {
+              kind: 'joinid',
+              source: {table: 'dune_dir', column: 'dir_id'},
+            },
+            checked: true,
+          },
+        ],
         aggregations: [
           {
             column: {name: 'action_dur_ns', type: {kind: 'duration'}},
@@ -106,19 +117,24 @@ const BUILD_TIME_BY_DIRECTORY: SerializedGraph = {
  * The recipes, in the order they appear under the built-in examples. Exported
  * for the test, which needs the entries themselves rather than whatever the
  * global registry happens to hold.
+ *
+ * Both names carry a `Dune: ` prefix, because the Solutions list is shared with
+ * Perfetto's own examples and a bare "Process Analysis" there does not say
+ * whose processes.
  */
 export const DUNE_RECIPES: readonly ExampleGraph[] = [
   {
-    name: 'Build time by directory',
+    name: 'Dune: Build time by directory',
     // One line each, as the built-in examples' are: this is the subtitle on a
     // card, not the documentation.
     description:
       'Every rule grouped by its directory and ranked by the action time in ' +
-      'each. Needs only the node tier.',
+      'each. The grouped column is a directory chip, and joins to the ' +
+      'Directories source. Needs only the node tier.',
     json: JSON.stringify(BUILD_TIME_BY_DIRECTORY),
   },
   {
-    name: 'Process Analysis',
+    name: 'Dune: Process Analysis',
     description:
       'Every process the build ran: how many at once over time, the thirty ' +
       'longest with the rule and command behind each, and a duration ' +

@@ -329,21 +329,26 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
 - Two **recipes** in that plugin's Solutions list, registered per trace
   (`explorer/dune_recipes.ts`). The three above each answer "what can I start
   from"; a recipe answers "and then what", which is the harder question and the
-  one a menu cannot. "Build time by directory" is three nodes — `dune_rule`,
-  grouped by directory with a summed `action_dur_ns` and a count, sorted — and
-  all node tier, so it answers the moment the graph is loaded. "Process
-  Analysis" is twelve nodes over `dune_process` in three branches, each ending
-  in a dashboard node and all three landing on one dashboard of three charts and
-  a grid. It was built in the UI and exported rather than written by hand
+  one a menu cannot. "Dune: Build time by directory" is three nodes —
+  `dune_rule`, grouped by `dir_id` with a summed `action_dur_ns` and a count,
+  sorted — and all node tier, so it answers the moment the graph is loaded.
+  Grouping on the id rather than a path string is what makes the result's
+  directory column a chip that joins to `dune_dir`. "Dune: Process Analysis" is
+  twelve nodes over `dune_process` in three branches, each ending in a dashboard
+  node and all three landing on one dashboard of three charts and a grid. It was
+  built in the UI and exported rather than written by hand
   (`explorer/process_analysis_graph.ts`), which is why it carries the whole-tab
   export envelope: that dashboard is half of what it is, and only that envelope
   holds it. One of its branches walks `dune_parents` and so needs the edge tier;
   the node says so when that tier is missing, and the other two branches run
   regardless. Both are TypeScript object literals stringified at load, not
   assets — `ui/src/assets/` is the Data Explorer's own, and an inline `json` is
-  the case `registerExampleGraph` provides for. The trap a recipe carries is
-  that it is static JSON naming node types and column names, so a rename breaks
-  it with nothing failing to compile: `explorer/dune_recipes_unittest.ts` is the
+  the case `registerExampleGraph` provides for. Both names carry the `Dune: `
+  prefix because that Solutions list is shared with Perfetto's own examples, and
+  an export-shaped recipe carries the name twice: the entry's, and the `title`
+  the tab is named from, which have to agree. The trap a recipe carries is that
+  it is static JSON naming node types and column names, so a rename breaks it
+  with nothing failing to compile: `explorer/dune_recipes_unittest.ts` is the
   answer, and it asserts every node of every recipe deserializes _and validates_
   rather than merely parsing.
 

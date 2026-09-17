@@ -508,7 +508,7 @@ const EXPORT: SerializedTabExport = {
   // Hand-set. The tab this opens in is named from here, and only falls back
   // to the registry entry's name when there is none, so the two have to agree
   // - see `loadExampleGraph` in the Data Explorer's graph_io.ts.
-  title: 'Process Analysis',
+  title: 'Dune: Process Analysis',
   graph: JSON.stringify(GRAPH),
   dashboards: [
     {

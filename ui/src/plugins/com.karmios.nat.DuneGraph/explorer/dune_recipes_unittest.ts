@@ -16,7 +16,7 @@
  * The recipes (dune_recipes.ts), loaded the way the Solutions card loads them.
  *
  * A recipe is static JSON naming node types, macro names and column names,
- * none of which a compiler sees. Rename `dune_rule.dir`, or the node type a
+ * none of which a compiler sees. Rename `dune_rule.dir_id`, or the node type a
  * source registers under, and everything here still builds - the graph loads,
  * and the card fails at query time on a trace nobody has yet opened. So the
  * assertion is not that the JSON parses. It is that every node comes back
@@ -54,8 +54,8 @@ registerCoreNodes();
 // How many nodes each recipe is, asserted rather than derived: a recipe that
 // quietly lost a branch would otherwise still pass everything below.
 const NODE_COUNT: ReadonlyMap<string, number> = new Map([
-  ['Build time by directory', 3],
-  ['Process Analysis', 12],
+  ['Dune: Build time by directory', 3],
+  ['Dune: Process Analysis', 12],
 ]);
 
 // Registrations are global, so anything registered by a test is collected here

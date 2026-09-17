@@ -1357,11 +1357,16 @@ export async function buildNodeMirror(
         ON n.forced_by_kind != ${ruleForcer} AND fs.id = n.forced_by_target_id
       ${timingJoin('n', 't', 's', space)}
     `);
+    // `dir_id` comes off the node row rather than resolving `r.dir_str_id`
+    // against the intern table: the census interns a rule's own `dir` as that
+    // node's directory (see {@link DirCensus.dirId}), so the two are the same
+    // directory by construction, and the id chips and joins where the path
+    // string did neither. The path is one join away, on `dune_dir.path`.
     await engine.query(`
       CREATE PERFETTO VIEW ${RULE_TABLE}(
         node_id LONG,
         rule_id LONG,
-        dir STRING,
+        dir_id JOINID(${DIR_TABLE}.dir_id),
         outcome STRING,
         action_slice_id JOINID(slice.id),
         action_ts LONG,
@@ -1371,13 +1376,12 @@ export async function buildNodeMirror(
         n_dyn_stages LONG,
         deps_unknown LONG
       ) AS
-      SELECT r.node_id, n.orig_id AS rule_id, ds.str AS dir,
+      SELECT r.node_id, n.orig_id AS rule_id, n.dir_id,
         ${codeCase('r.outcome', RULE_OUTCOMES)} AS outcome,
         s.id AS action_slice_id, s.ts AS action_ts, t.dur_ns AS action_dur_ns,
         r.n_targets, r.n_static_deps, r.n_dyn_stages, r.deps_unknown
       FROM ${RAW_RULE_TABLE} r
       JOIN ${RAW_NODE_TABLE} n ON n.node_id = r.node_id
-      LEFT JOIN ${STRING_TABLE} ds ON ds.id = r.dir_str_id
       LEFT JOIN ${TIMING_TABLE} t
         ON t.kind = ${timingKindCode('action')} AND t.key = n.orig_id
       LEFT JOIN slice s ON s.id = coalesce(t.start_slice_id, t.finish_slice_id)

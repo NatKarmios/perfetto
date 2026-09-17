@@ -225,9 +225,11 @@ export const DUNE_TABLES: ReadonlyArray<TableListEntry> = [
       },
       {name: 'rule_id', description: "Dune's own rule id.", type: INT},
       {
-        name: 'dir',
-        description: "The rule's directory, as a path string.",
-        type: STR,
+        name: 'dir_id',
+        description:
+          "The dune_dir row for the rule's own directory - join it for the " +
+          'path, on `dune_dir.path`.',
+        type: DUNE_DIR_JOINID,
       },
       {
         name: 'outcome',
