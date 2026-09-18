@@ -13,11 +13,28 @@
 // limitations under the License.
 
 import type m from 'mithril';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
+
+// `addToGraphConfirmed` goes through the global modal, which needs a DOM to
+// mount into; the tests only care whether it was reached and what its buttons
+// do, so stub it.
+// (`vi.hoisted`, since `vi.mock`'s factory runs before module-level consts.)
+const shownModals = vi.hoisted(() => [] as ModalAttrs[]);
+vi.mock('../../../widgets/modal', () => ({
+  showModal: (attrs: ModalAttrs) => {
+    shownModals.push(attrs);
+    return Promise.resolve();
+  },
+}));
 import type {MenuItemAttrs} from '../../../widgets/menu';
+import type {ModalAttrs} from '../../../widgets/modal';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
-import {addToGraphMenuItems, nodesInGroup} from './node_tree_actions';
+import {
+  addToGraphConfirmed,
+  addToGraphMenuItems,
+  nodesInGroup,
+} from './node_tree_actions';
 import type {
   PathTreeGroup,
   PathTreeLeaf,
@@ -76,12 +93,15 @@ describe('nodesInGroup', () => {
 function fakeController() {
   const added: NodeId[][] = [];
   const asked: string[] = [];
+  shownModals.length = 0;
   const relation = (name: string, answer: NodeId) => () => {
     asked.push(name);
     return [answer];
   };
   const controller = {
     addToGraph: (nodes: Iterable<NodeId>) => added.push([...nodes]),
+    isInGraph: () => false,
+    requestRedraw: () => {},
     parentsOf: relation('parents', 10),
     childrenOf: relation('children', 20),
     ancestorsOf: relation('ancestors', 30),
@@ -139,5 +159,49 @@ describe('addToGraphMenuItems', () => {
 
     click(controller, 'Forcers');
     expect(asked).toEqual(['forcers']);
+  });
+});
+
+describe('addToGraphConfirmed', () => {
+  const nodes = (n: number) =>
+    Array.from({length: n}, (_, i) => (i + 1) as NodeId);
+
+  it('adds straight away when the add is small', () => {
+    const {controller, added} = fakeController();
+    addToGraphConfirmed(controller, nodes(100));
+    expect(added).toEqual([nodes(100)]);
+    expect(shownModals).toHaveLength(0);
+  });
+
+  it('asks first when the add is big, and adds only once confirmed', () => {
+    const {controller, added} = fakeController();
+    addToGraphConfirmed(controller, nodes(101));
+    expect(added).toEqual([]);
+    expect(shownModals).toHaveLength(1);
+    expect(JSON.stringify(shownModals[0].content)).toContain(
+      'This will add 101 nodes',
+    );
+
+    const buttons = shownModals[0].buttons!;
+    expect(buttons.map((b) => b.text)).toEqual(['Continue', 'Cancel']);
+    buttons[0].action!();
+    expect(added).toEqual([nodes(101)]);
+  });
+
+  it('does nothing when cancelled', () => {
+    const {controller, added} = fakeController();
+    addToGraphConfirmed(controller, nodes(500));
+    shownModals[0].buttons!.find((b) => b.text === 'Cancel')!.action?.();
+    expect(added).toEqual([]);
+  });
+
+  it('counts only nodes not already in the graph', () => {
+    // A re-add of an already-visible set changes nothing, so it must not ask.
+    const {controller, added} = fakeController();
+    (controller as unknown as {isInGraph: () => boolean}).isInGraph = () =>
+      true;
+    addToGraphConfirmed(controller, nodes(5000));
+    expect(shownModals).toHaveLength(0);
+    expect(added).toEqual([nodes(5000)]);
   });
 });

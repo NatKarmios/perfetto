@@ -15,6 +15,7 @@
 import m from 'mithril';
 import {Button} from '../../../widgets/button';
 import {MenuItem} from '../../../widgets/menu';
+import {showModal} from '../../../widgets/modal';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
 import type {PathTreeGroup, PathTreeRow} from '../model/path_tree';
@@ -29,8 +30,52 @@ import type {PathTreeGroup, PathTreeRow} from '../model/path_tree';
  * `path_tree_view.ts`, this depends on `DuneGraphController` and the `Button`
  * and `MenuItem` widgets, since it's specifically the add/remove wiring glued
  * onto a tree leaf/group or a menu rather than generic display or tree
- * structure.
+ * structure. It also owns `addToGraphConfirmed`, the one guardrail every bulk
+ * add in the plugin routes through.
  */
+
+/**
+ * Above this many *newly* added nodes, an add asks first. The graph pane draws
+ * every selected node, so one stray "Descendants" on a hot rule can bury it
+ * under thousands of dots - and the only undo is re-selecting by hand.
+ */
+const CONFIRM_ADD_THRESHOLD = 100;
+
+/**
+ * Adds `nodes` to the graph, first asking for confirmation when the add is big
+ * enough to be one the user didn't mean. Only nodes not already in the graph
+ * count towards the threshold, since those are the ones the click changes.
+ *
+ * Used by every bulk add path (the two add-to-graph menus, the tree/directory
+ * ＋all buttons, the query tab's "Add all"); single-node adds go straight to the
+ * controller, as one node is never a surprise.
+ */
+export function addToGraphConfirmed(
+  controller: DuneGraphController,
+  nodes: readonly NodeId[],
+): void {
+  const added = nodes.filter((n) => !controller.isInGraph(n)).length;
+  if (added <= CONFIRM_ADD_THRESHOLD) {
+    controller.addToGraph(nodes);
+    return;
+  }
+  void showModal({
+    title: 'Add to graph',
+    content: m('div', `This will add ${added} nodes. Continue?`),
+    buttons: [
+      {
+        text: 'Continue',
+        primary: true,
+        action: () => {
+          controller.addToGraph(nodes);
+          // Answered between frames, so the graph's own redraw isn't coming.
+          controller.requestRedraw();
+        },
+      },
+      {text: 'Cancel'},
+    ],
+  });
+}
 
 // The ＋/－ toggle for a single node: adds or removes it, reflecting current
 // graph membership.
@@ -79,7 +124,7 @@ export function addToGraphMenuItems(
     m(MenuItem, {
       label,
       icon,
-      onclick: () => controller.addToGraph([node, ...related()]),
+      onclick: () => addToGraphConfirmed(controller, [node, ...related()]),
     });
   return [
     item('This node', 'add', () => []),
@@ -157,7 +202,7 @@ export function bulkNodeActions(
     m(Button, {
       icon: 'add',
       title: `Add all ${count} nodes ${what} to the graph`,
-      onclick: () => act((ns) => controller.addToGraph(ns)),
+      onclick: () => act((ns) => addToGraphConfirmed(controller, [...ns])),
     }),
     m(Button, {
       icon: 'remove',

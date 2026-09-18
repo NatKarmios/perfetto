@@ -63,6 +63,7 @@ import {
   nodePathParts,
 } from './node_display';
 import {
+  addToGraphConfirmed,
   groupBulkActions,
   nodesInGroup,
   nodeToggleButton,
@@ -853,7 +854,7 @@ export class DuneQueryResults {
       m(MenuItem, {
         label: `Add all${suffix}`,
         icon: 'add',
-        onclick: () => this.controller.addToGraph(nodes),
+        onclick: () => addToGraphConfirmed(this.controller, nodes),
       }),
       m(MenuItem, {
         label: `Remove all${suffix}`,
