@@ -87,6 +87,23 @@ narrowing by outcome, resolution, status or duration. A directory row that has a
 `gen-rules` span carries a button that selects it, which is what opens the
 directory panel described above.
 
+The Filters menu's **In flight** submenu narrows to what was running during a
+slice of time, and the slice is the timeline's own: drag an area selection or
+click a slice, and the window is whatever that names. Four readings of it — in
+flight at the moment it starts, overlapping it at all, contained in it, or
+running right across it — and three spans to read it against: the member's own,
+a rule's action, or any process that action spawned. The last two are a rule's
+alone, so asking for either excludes every dependency; the difference between
+them and the first is a rule that spent its time waiting rather than running.
+**Follow timeline selection** keeps the window on whatever is selected, a
+moment after the selection settles; turning it off freezes the window where it
+is, which is how you compare one region against the tree while looking
+somewhere else.
+
+**Copy SQL** puts the current filters on the clipboard as a query over
+`dune_node`, for taking the same question to the query page or a Data Explorer
+node.
+
 ### The timeline
 
 `Dune graph` is a workspace of four tracks — `dep`, `rule`, `rule-action` and

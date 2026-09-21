@@ -626,6 +626,34 @@ export class DuneGraphController {
     return this.resolveSelection()?.dir;
   }
 
+  /**
+   * The time span the timeline selection currently names, for the explorer's
+   * in-flight filter.
+   *
+   * An area selection is the span it covers; a selected event is its own span,
+   * which collapses to an instant for an instant event or a slice that never
+   * finished (`dur` is -1 there, and a negative end is not a span). Undefined
+   * for anything else, which the filter reads as "nothing to follow" rather
+   * than as an empty window.
+   *
+   * Synchronous and query-free, unlike resolveSelection(): both timestamps are
+   * on the selection object itself, whatever track it is on - ours or anyone
+   * else's.
+   */
+  selectedWindow():
+    {readonly startNs: bigint; readonly endNs: bigint} | undefined {
+    const selection = this.trace.selection.selection;
+    if (selection.kind === 'area') {
+      return {startNs: selection.start, endNs: selection.end};
+    }
+    if (selection.kind === 'track_event') {
+      const {ts, dur} = selection;
+      const end = dur === undefined || dur < 0n ? ts : ts + dur;
+      return {startNs: ts, endNs: end};
+    }
+    return undefined;
+  }
+
   // What the current timeline selection resolved to, on either channel -
   // whether that is a real `build-dep` / `exec-rule` / `gen-rules` slice or a
   // projected row on one of our own tracks, which key their events differently,

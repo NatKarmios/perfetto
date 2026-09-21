@@ -36,14 +36,16 @@ import {Intent} from '../../../widgets/common';
 import {Spinner} from '../../../widgets/spinner';
 import type {DuneGraphController} from '../controller';
 import type {DirEntry, MemberEntry} from '../model/dir_explorer';
-import type {MemberFilter} from '../model/dir_explorer';
+import type {MemberFilter, WindowRel, WindowSpan} from '../model/dir_explorer';
 import {
   INLINE_MEMBER_LIMIT,
   MEMBER_PAGE,
   compileFilter,
   filterActive,
+  filterQuerySql,
   fingerprint,
 } from '../model/dir_explorer';
+import {copyToClipboard} from '../../../base/clipboard';
 import type {DirExplorerSource} from './dir_explorer_source';
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../../widgets/text_input';
@@ -84,6 +86,53 @@ const DURATION_THRESHOLDS: ReadonlyArray<readonly [label: string, ns: bigint]> =
     ['≥ 1s', 1_000_000_000n],
     ['≥ 10s', 10_000_000_000n],
   ];
+
+/**
+ * How long the selection has to hold still before a followed window is applied.
+ *
+ * Dragging an area selection changes it every frame, and applying a window
+ * costs the same pair of counting queries any other filter does - so this is
+ * what keeps "follow the timeline" from issuing one per frame of a drag. Long
+ * enough to cover a drag's own stutter, short enough that a click feels
+ * immediate.
+ */
+const FOLLOW_DEBOUNCE_MS = 300;
+
+/** The window relations, in menu order, with what each one asks. */
+const WINDOW_RELS: ReadonlyArray<
+  readonly [rel: WindowRel, label: string, title: string]
+> = [
+  [
+    'at',
+    'At the start',
+    'In flight at the moment the selection starts - what else was running then',
+  ],
+  ['overlaps', 'Overlapping', 'In flight at any point during the selection'],
+  ['within', 'Within', 'Started and finished inside the selection'],
+  ['encloses', 'Around', 'Already running before it and still running after'],
+];
+
+/** The spans a window can be asked about, in menu order. */
+const WINDOW_SPANS: ReadonlyArray<
+  readonly [span: WindowSpan, label: string, title: string]
+> = [
+  [
+    'node',
+    'Own span',
+    "The member's own lifecycle span. The only one a dep has.",
+  ],
+  [
+    'action',
+    'Action span',
+    "A rule's action span, so a rule that spent the window waiting does not " +
+      'match. Rules only - no dep has an action.',
+  ],
+  [
+    'process',
+    'Process spans',
+    'Any process the action spawned. Rules only - no dep has one.',
+  ],
+];
 
 /** The two kinds, in the order the pane lists them. */
 const KINDS: readonly NodeKind[] = ['rule', 'dep'];
@@ -192,6 +241,23 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   private cachedSource?: DirExplorerSource;
   private cachedVersion?: number;
 
+  /**
+   * Whether the window follows the timeline selection, and what it last saw.
+   *
+   * Live and static are not two kinds of filter: the filter always holds a
+   * resolved window, and this only says whether a selection change refills it.
+   * Turning it off therefore freezes the window where it is, which is the
+   * static version, with no second code path behind it.
+   */
+  private followSelection = false;
+  private followKey = '';
+  private followTimer?: ReturnType<typeof setTimeout>;
+  // The relation and span a window is (re)built with - the menu's choice, kept
+  // here rather than read back off the filter so that choosing one while no
+  // window is applied still means something.
+  private windowRel: WindowRel = 'overlaps';
+  private windowSpan: WindowSpan = 'node';
+
   // The directory the pane has been asked to expand to, and the serial of the
   // request it came from - see `expandToward`, which works through it a level
   // per redraw. The serial is what makes asking twice for the same directory
@@ -207,11 +273,59 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       this.reset(attrs);
     }
     this.takeRevealRequest(attrs);
+    this.syncFollowedWindow(attrs);
     return m(
       '.pf-dune-graph.pf-dune-explorer',
       this.renderToolbar(attrs),
       m('.pf-dune-explorer__body', this.renderBody(attrs)),
     );
+  }
+
+  // The debounce is the one thing here that outlives the vnode.
+  onremove(): void {
+    clearTimeout(this.followTimer);
+  }
+
+  /**
+   * Refills the window from the timeline selection, once it has held still.
+   *
+   * Polled from the view rather than hooked onto a selection event: a selection
+   * change already redraws, and there is no event to hook - the controller
+   * polls for its own selection work the same way (see controller.ts's
+   * onFrame). The timer is what makes it a debounce rather than a poll: the
+   * last change of a drag is the only one that reaches `applyWindow`.
+   */
+  private syncFollowedWindow(attrs: DirExplorerPanelAttrs): void {
+    if (!this.followSelection) return;
+    const window = attrs.controller.selectedWindow();
+    const key = window === undefined ? '' : `${window.startNs}-${window.endNs}`;
+    if (key === this.followKey) return;
+    this.followKey = key;
+    clearTimeout(this.followTimer);
+    this.followTimer = setTimeout(() => {
+      this.applyWindow(attrs, window);
+      attrs.controller.requestRedraw();
+    }, FOLLOW_DEBOUNCE_MS);
+  }
+
+  /**
+   * Puts `window` into the filter under the current relation and span, or drops
+   * the window when there is no selection to take one from.
+   *
+   * Only the window changes: everything else the user has selected is a
+   * separate question and survives the timeline moving under it.
+   */
+  private applyWindow(
+    attrs: DirExplorerPanelAttrs,
+    window: {readonly startNs: bigint; readonly endNs: bigint} | undefined,
+  ): void {
+    this.apply(attrs, {
+      ...this.filter,
+      window:
+        window === undefined
+          ? undefined
+          : {...window, rel: this.windowRel, span: this.windowSpan},
+    });
   }
 
   private reset(attrs: DirExplorerPanelAttrs): void {
@@ -273,6 +387,19 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       m(
         '.pf-dune-graph__toolbar-buttons',
         this.renderFilterMenu(attrs),
+        m(Button, {
+          label: 'Copy SQL',
+          icon: 'content_copy',
+          title:
+            'Copy a query for the members the tree is showing, to run on the ' +
+            'query page',
+          disabled: this.visibleKinds().length === 0,
+          onclick: () => {
+            void copyToClipboard(
+              filterQuerySql(this.visibleKinds(), this.filter),
+            );
+          },
+        }),
         m(Button, {
           label: 'Collapse all',
           icon: 'unfold_less',
@@ -402,6 +529,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
           }),
         ),
       ),
+      this.renderWindowSubmenu(attrs, bothHidden),
 
       m(MenuTitle, {label: KIND_LABEL.rule}),
       this.renderKindToggle('rule'),
@@ -452,6 +580,101 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
         },
       }),
     );
+  }
+
+  /**
+   * The in-flight window: which slice of time, read which way, against which
+   * span.
+   *
+   * The window itself is never typed in - it is whatever the timeline
+   * selection names, taken once on click or refilled on every change while
+   * "Follow" is on. That is the whole reason there is no third input in this
+   * panel: the timeline already *is* a time picker, and a better one.
+   */
+  private renderWindowSubmenu(
+    attrs: DirExplorerPanelAttrs,
+    bothHidden: boolean,
+  ): m.Children {
+    const window = this.filter.window;
+    const selected = attrs.controller.selectedWindow();
+    // Nothing to take a window from, and nothing to follow either.
+    const noSelection = selected === undefined;
+    const active = WINDOW_RELS.find(([rel]) => rel === window?.rel);
+    const items: m.Children[] = [
+      m(MenuItem, {
+        label: 'Follow timeline selection',
+        icon: this.followSelection ? 'check_box' : 'check_box_outline_blank',
+        title:
+          'Refill the window whenever the timeline selection changes. Turn ' +
+          'it off to freeze the window where it is.',
+        closePopupOnClick: false,
+        onclick: () => {
+          this.followSelection = !this.followSelection;
+          if (!this.followSelection) return;
+          // Applied now rather than on the next selection change, which may
+          // never come: the box is ticked to mean "use what is selected".
+          this.followKey =
+            selected === undefined
+              ? ''
+              : `${selected.startNs}-${selected.endNs}`;
+          this.applyWindow(attrs, selected);
+        },
+      }),
+      m(MenuDivider),
+      ...WINDOW_RELS.map(([rel, label, title]) =>
+        m(MenuItem, {
+          label,
+          title: noSelection
+            ? 'Select a slice, or drag a time range on the timeline, first'
+            : title,
+          icon: window?.rel === rel ? 'check' : undefined,
+          disabled: noSelection && window?.rel !== rel,
+          closePopupOnClick: false,
+          onclick: () => {
+            // Clicking the active relation clears the window, so the submenu
+            // is its own off switch - the same shape the Duration one has.
+            if (window?.rel === rel) {
+              this.followSelection = false;
+              this.apply(attrs, {...this.filter, window: undefined});
+              return;
+            }
+            this.windowRel = rel;
+            this.applyWindow(attrs, selected);
+          },
+        }),
+      ),
+      m(MenuDivider),
+      ...WINDOW_SPANS.map(([span, label, title]) =>
+        m(MenuItem, {
+          label,
+          title,
+          icon: this.windowSpan === span ? 'check' : undefined,
+          closePopupOnClick: false,
+          onclick: () => {
+            this.windowSpan = span;
+            // Re-applied against the window already in force, not against the
+            // selection: the span is what is being changed, not when.
+            if (window === undefined) return;
+            this.apply(attrs, {...this.filter, window: {...window, span}});
+          },
+        }),
+      ),
+    ];
+    return m(
+      MenuItem,
+      {
+        label: active === undefined ? 'In flight' : `In flight (${active[1]})`,
+        icon: 'schedule',
+        disabled: bothHidden,
+      },
+      items,
+    );
+  }
+
+  // Which kinds are on screen, which is what a copied query has to ask for -
+  // the kind toggles are the pane's own and are not part of `MemberFilter`.
+  private visibleKinds(): readonly NodeKind[] {
+    return KINDS.filter((k) => this.show[k]);
   }
 
   // The *first* item under each heading, and what everything below it is gated
@@ -530,6 +753,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       depsUnknown,
       minDurNs,
       forcedBy,
+      window,
     } = this.filter;
     return [
       path !== undefined,
@@ -539,6 +763,7 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
       depsUnknown === true,
       minDurNs !== undefined,
       forcedBy !== undefined,
+      window !== undefined,
     ].filter(Boolean).length;
   }
 
@@ -646,6 +871,10 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
   /** Drops the filter entirely, box and all. */
   private clearFilter(): void {
     this.draft = '';
+    // Otherwise the next selection change quietly reinstates a window the user
+    // just cleared.
+    this.followSelection = false;
+    clearTimeout(this.followTimer);
     this.filter = {};
     this.tree = undefined;
     this.ruleDirs = undefined;

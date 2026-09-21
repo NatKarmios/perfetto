@@ -40,6 +40,7 @@ import {
   dirIdForNode,
   dirMemberIds,
   dirMembers,
+  filterQuerySql,
   rootDirs,
   allDirs,
   compileFilter,
@@ -706,9 +707,197 @@ describe('fingerprint', () => {
         {minDurNs: 5n},
         {minDurNs: 6n},
         {forcedBy: new Set(['RULE' as const])},
+        {
+          window: {
+            startNs: 1n,
+            endNs: 9n,
+            rel: 'at' as const,
+            span: 'node' as const,
+          },
+        },
+        {
+          window: {
+            startNs: 1n,
+            endNs: 9n,
+            rel: 'overlaps' as const,
+            span: 'node' as const,
+          },
+        },
+        {
+          window: {
+            startNs: 1n,
+            endNs: 9n,
+            rel: 'overlaps' as const,
+            span: 'action' as const,
+          },
+        },
+        {
+          window: {
+            startNs: 2n,
+            endNs: 9n,
+            rel: 'overlaps' as const,
+            span: 'node' as const,
+          },
+        },
       ].map(fingerprint),
     );
-    expect(seen.size).toBe(9);
+    expect(seen.size).toBe(13);
+  });
+});
+
+describe('the in-flight window', () => {
+  const window = (
+    rel: 'at' | 'overlaps' | 'within' | 'encloses',
+    span: 'node' | 'action' | 'process',
+  ) => ({window: {startNs: 100n, endNs: 200n, rel, span}});
+
+  it('reads an unfinished span as running to the end of the trace', async () => {
+    // Otherwise a build that was interrupted - or a node still in flight when
+    // the trace ended - silently matches nothing, which is the opposite of
+    // what "in flight" was asked.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, 'dep', 500, 0, window('overlaps', 'node'));
+    expect(has(sql[0], 'coalesce(n.ts + n.dur_ns, trace_end())')).toBe(true);
+  });
+
+  it('asks about an instant for `at`, and half-open ranges otherwise', async () => {
+    const at = stubEngine([]);
+    await dirMembers(at.engine, 9, 'dep', 500, 0, window('at', 'node'));
+    expect(
+      has(
+        at.sql[0],
+        'n.ts <= 100 AND coalesce(n.ts + n.dur_ns, trace_end()) > 100',
+      ),
+    ).toBe(true);
+
+    const overlaps = stubEngine([]);
+    await dirMembers(
+      overlaps.engine,
+      9,
+      'dep',
+      500,
+      0,
+      window('overlaps', 'node'),
+    );
+    expect(
+      has(
+        overlaps.sql[0],
+        'n.ts < 200 AND coalesce(n.ts + n.dur_ns, trace_end()) > 100',
+      ),
+    ).toBe(true);
+
+    const within = stubEngine([]);
+    await dirMembers(within.engine, 9, 'dep', 500, 0, window('within', 'node'));
+    expect(
+      has(
+        within.sql[0],
+        'n.ts >= 100 AND coalesce(n.ts + n.dur_ns, trace_end()) <= 200',
+      ),
+    ).toBe(true);
+
+    const encloses = stubEngine([]);
+    await dirMembers(
+      encloses.engine,
+      9,
+      'dep',
+      500,
+      0,
+      window('encloses', 'node'),
+    );
+    expect(
+      has(
+        encloses.sql[0],
+        'n.ts <= 100 AND coalesce(n.ts + n.dur_ns, trace_end()) >= 200',
+      ),
+    ).toBe(true);
+  });
+
+  it('treats a zero-width window as an instant whatever the relation', async () => {
+    // A clicked instant event gives one, and `overlaps`' strict inequalities
+    // would answer "nothing" to all of them.
+    const {engine, sql} = stubEngine([]);
+    await dirMembers(engine, 9, 'dep', 500, 0, {
+      window: {startNs: 100n, endNs: 100n, rel: 'overlaps', span: 'node'},
+    });
+    expect(
+      has(
+        sql[0],
+        'n.ts <= 100 AND coalesce(n.ts + n.dur_ns, trace_end()) > 100',
+      ),
+    ).toBe(true);
+  });
+
+  it("asks a rule's action and processes about their own spans", async () => {
+    const action = stubEngine([]);
+    await dirMembers(
+      action.engine,
+      9,
+      'rule',
+      500,
+      0,
+      window('overlaps', 'action'),
+    );
+    expect(has(action.sql[0], 'r.action_ts < 200')).toBe(true);
+    expect(
+      has(
+        action.sql[0],
+        'coalesce(r.action_ts + r.action_dur_ns, trace_end()) > 100',
+      ),
+    ).toBe(true);
+
+    const process = stubEngine([]);
+    await dirMembers(
+      process.engine,
+      9,
+      'rule',
+      500,
+      0,
+      window('overlaps', 'process'),
+    );
+    // EXISTS rather than a join, so a rule with twenty processes is one row.
+    expect(
+      has(
+        process.sql[0],
+        'EXISTS (SELECT 1 FROM dune_process p WHERE p.node_id = n.node_id',
+      ),
+    ).toBe(true);
+  });
+
+  it('excludes every dep when the window asks about an action or a process', async () => {
+    // A dep has neither, so there is no honest answer for it - and falling back
+    // to its own span would answer a different question from the one asked.
+    for (const span of ['action', 'process'] as const) {
+      const {engine, sql} = stubEngine([]);
+      await dirMembers(engine, 9, undefined, 500, 0, window('overlaps', span));
+      expect(has(sql[0], "(n.kind = 'dep' AND (0))")).toBe(true);
+      expect(has(sql[0], "(n.kind = 'rule' AND (0))")).toBe(false);
+    }
+  });
+});
+
+describe('filterQuerySql', () => {
+  it('spells the rule path test as a subquery, so the text stands alone', () => {
+    // A member query is told the answer for its one directory and the counting
+    // query inlines the ids it read; neither can be pasted anywhere.
+    const sql = filterQuerySql(['rule', 'dep'], {
+      path: {text: 'lib', pattern: '*lib*'},
+    });
+    expect(
+      has(
+        sql,
+        "n.dir_id IN (SELECT dir_id FROM dune_dir WHERE path GLOB '*lib*')",
+      ),
+    ).toBe(true);
+    expect(has(sql, "n.label GLOB '*lib*'")).toBe(true);
+  });
+
+  it('asks only for the kinds on screen, and carries the joins its filter needs', () => {
+    const sql = filterQuerySql(['rule'], {
+      outcomes: new Set(['failed-action' as const]),
+    });
+    expect(has(sql, "n.kind = 'dep'")).toBe(false);
+    expect(has(sql, 'LEFT JOIN dune_rule r USING (node_id)')).toBe(true);
+    expect(has(sql, "r.outcome IN ('failed-action')")).toBe(true);
   });
 });
 

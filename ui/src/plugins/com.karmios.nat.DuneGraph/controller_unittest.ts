@@ -816,3 +816,52 @@ describe('goToDir', () => {
     );
   });
 });
+
+describe('selectedWindow', () => {
+  test('an area selection is the span it covers', () => {
+    const h = makeHarness();
+    h.selection = {kind: 'area', start: 10n, end: 40n, trackUris: []};
+    expect(h.controller.selectedWindow()).toEqual({startNs: 10n, endNs: 40n});
+  });
+
+  test("a selected event is its own span, and an instant's is zero-width", () => {
+    const h = makeHarness();
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 't',
+      eventId: 1,
+      ts: 10n,
+      dur: 5n,
+    };
+    expect(h.controller.selectedWindow()).toEqual({startNs: 10n, endNs: 15n});
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 't',
+      eventId: 1,
+      ts: 10n,
+      dur: 0n,
+    };
+    expect(h.controller.selectedWindow()).toEqual({startNs: 10n, endNs: 10n});
+  });
+
+  test('a slice that never finished collapses to its start', () => {
+    // Perfetto's -1 for a DNF slice: a negative end is not a span, and the
+    // filter's own SQL is what extends an unfinished one to the trace's end.
+    const h = makeHarness();
+    h.selection = {
+      kind: 'track_event',
+      trackUri: 't',
+      eventId: 1,
+      ts: 10n,
+      dur: -1n,
+    };
+    expect(h.controller.selectedWindow()).toEqual({startNs: 10n, endNs: 10n});
+  });
+
+  test('nothing selected is no window, rather than an empty one', () => {
+    const h = makeHarness();
+    expect(h.controller.selectedWindow()).toBeUndefined();
+    h.selection = {kind: 'note', id: 'n1'};
+    expect(h.controller.selectedWindow()).toBeUndefined();
+  });
+});

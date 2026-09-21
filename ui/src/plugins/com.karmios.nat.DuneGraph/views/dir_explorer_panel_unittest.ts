@@ -55,6 +55,9 @@ function fakeController(
     requestRedraw: () => {},
     nodeForNodeId: () => undefined,
     goToDir: async () => {},
+    // Nothing selected on the timeline, so the in-flight filter has no window
+    // to take - read on every render, hence here rather than per test.
+    selectedWindow: () => undefined,
     ...over,
   } as unknown as DuneGraphController;
 }
@@ -582,6 +585,7 @@ describe('DirExplorerPanel revealing a directory', () => {
       requestRedraw: () => {},
       nodeForNodeId: () => undefined,
       goToDir: async () => {},
+      selectedWindow: () => undefined,
       dirPath: (id: number) => PATHS.get(id),
       explorerRevealRequest: undefined as
         {dirId: number; serial: number} | undefined,

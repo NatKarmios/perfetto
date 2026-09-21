@@ -106,6 +106,8 @@ function fakeController(over: Partial<DuneGraphController> = {}) {
     nodeMirrorReady: false,
     busy: false,
     requestRedraw: () => {},
+    // Read on every render by the pane's in-flight filter.
+    selectedWindow: () => undefined,
     ...over,
   } as unknown as DuneGraphController;
 }

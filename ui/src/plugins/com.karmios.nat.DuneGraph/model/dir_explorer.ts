@@ -170,6 +170,46 @@ export function compileFilter(text: string): PathFilter | undefined {
   return {text: trimmed, pattern: glob ? body : `*${body}*`};
 }
 
+/**
+ * How a member's span has to sit against the window: in flight at the moment it
+ * starts, overlapping it at all, contained in it, or containing it.
+ *
+ * `at` is why the window is not simply a range with three relations: a clicked
+ * slice gives a *range*, and "what else was running when this started" is a
+ * question about an instant, so the instant has to be askable of a range rather
+ * than only arriving as one.
+ */
+export type WindowRel = 'at' | 'overlaps' | 'within' | 'encloses';
+
+/**
+ * Which of a member's spans the window is asked about.
+ *
+ * `node` is its own lifecycle span and is the only one a dep has. The other two
+ * are a rule's: the span of its action, and the spans of the processes that
+ * action spawned - "the rule was in flight" and "the rule was *running
+ * something*" are different questions on a rule that spent its time waiting.
+ */
+export type WindowSpan = 'node' | 'action' | 'process';
+
+/**
+ * A time window the member has to have been in flight for.
+ *
+ * `startNs === endNs` is an instant - an instant event, or the `at` relation's
+ * own reading of a range. Handled as its own case rather than left to the range
+ * relations, which are strict on one side or the other and so would all answer
+ * "nothing" to a zero-width window.
+ *
+ * The window is always a resolved pair of timestamps, even while the pane is
+ * following the timeline selection - "live" re-derives this and re-applies,
+ * rather than being a second kind of filter (see dir_explorer_panel.ts).
+ */
+export interface TimeWindow {
+  readonly startNs: bigint;
+  readonly endNs: bigint;
+  readonly rel: WindowRel;
+  readonly span: WindowSpan;
+}
+
 // Everything the pane can narrow its members by. All per-kind, and **a kind
 // whose attributes nothing selects matches all of its members** - see the
 // README for why that combining rule rather than the stricter one.
@@ -188,6 +228,9 @@ export interface MemberFilter {
   // Both kinds, against `dune_node.forced_by_kind`: what pulled the node into
   // the build. Every node has a forcer, which is why this is not per-kind.
   readonly forcedBy?: ReadonlySet<ForcedByKind>;
+  // Both kinds, though only a rule has an `action` or a `process` span: asking
+  // for one of those excludes every dep, the same way `outcomes` does.
+  readonly window?: TimeWindow;
 }
 
 /** Whether anything at all is selected. */
@@ -212,6 +255,10 @@ export function fingerprint(filter: MemberFilter): string {
     filter.depsUnknown === true ? 'du' : '',
     filter.minDurNs === undefined ? '' : String(filter.minDurNs),
     set(filter.forcedBy),
+    filter.window === undefined
+      ? ''
+      : `${filter.window.span}:${filter.window.rel}:` +
+        `${filter.window.startNs}-${filter.window.endNs}`,
   ];
   // Empty when nothing is selected, so `filterActive` is a comparison against
   // '' rather than a second walk over the same fields.
@@ -248,11 +295,68 @@ function nodeAttrs(filter: MemberFilter): (string | undefined)[] {
   ];
 }
 
+/**
+ * "This span was in flight during the window", as SQL over one start/duration
+ * pair.
+ *
+ * The end is `coalesce(start + dur, trace_end())`: a NULL duration means the
+ * span never finished, so it runs to the end of the trace - the same reading
+ * `dune_span` gives it (see sql_graph.ts). A NULL *start* is an untimed node,
+ * and every comparison below is then NULL and so excludes it, which is the
+ * reading `minDurNs` already has: an unmeasured span has not made any claim.
+ *
+ * Half-open throughout, so a window that ends exactly where a span begins does
+ * not overlap it.
+ */
+function inFlight(w: TimeWindow, start: string, dur: string): string {
+  const end = `coalesce(${start} + ${dur}, trace_end())`;
+  // An instant, either asked for or arrived at: the window's start.
+  if (w.rel === 'at' || w.startNs === w.endNs) {
+    return `${start} <= ${w.startNs} AND ${end} > ${w.startNs}`;
+  }
+  // `at` is gone by here, which is why it is not one of these.
+  switch (w.rel) {
+    case 'overlaps':
+      return `${start} < ${w.endNs} AND ${end} > ${w.startNs}`;
+    case 'within':
+      return `${start} >= ${w.startNs} AND ${end} <= ${w.endNs}`;
+    case 'encloses':
+      return `${start} <= ${w.startNs} AND ${end} >= ${w.endNs}`;
+  }
+}
+
+// The window against a *rule*: its own span, its action's, or any one of the
+// processes that action spawned. The last is an EXISTS rather than a join so a
+// rule with twenty processes is still one row.
+function ruleWindow(w: TimeWindow): string {
+  switch (w.span) {
+    case 'node':
+      return inFlight(w, 'n.ts', 'n.dur_ns');
+    case 'action':
+      return inFlight(w, 'r.action_ts', 'r.action_dur_ns');
+    case 'process':
+      return (
+        'EXISTS (SELECT 1 FROM dune_process p WHERE p.node_id = n.node_id' +
+        ` AND ${inFlight(w, 'p.ts', 'p.dur_ns')})`
+      );
+  }
+}
+
+// The window against a *dep*, which has only its own span: asking about an
+// action or a process is asking about something a dep does not have, so no dep
+// answers it. A literal `0` rather than a silent omission, because the
+// alternative reading - deps falling back to their own span - would answer a
+// different question from the one the menu asked.
+function depWindow(w: TimeWindow): string | undefined {
+  return w.span === 'node' ? inFlight(w, 'n.ts', 'n.dur_ns') : '0';
+}
+
 // The predicates that apply to a *rule*, other than the path.
 function ruleAttrs(filter: MemberFilter): string[] {
   const preds = [
     inList('r.outcome', filter.outcomes),
     filter.depsUnknown === true ? 'r.deps_unknown = 1' : undefined,
+    filter.window === undefined ? undefined : ruleWindow(filter.window),
     ...nodeAttrs(filter),
   ];
   return preds.filter((p): p is string => p !== undefined);
@@ -263,6 +367,7 @@ function depAttrs(filter: MemberFilter): string[] {
   const preds = [
     inList('d.resolution', filter.resolutions),
     inList('d.status', filter.statuses),
+    filter.window === undefined ? undefined : depWindow(filter.window),
     ...nodeAttrs(filter),
   ];
   return preds.filter((p): p is string => p !== undefined);
@@ -351,6 +456,36 @@ export function memberFilterWhere(
 ): string {
   const rulePath = dirPathMatches ? undefined : '0';
   return `n.dir_id = ${id} AND (${memberKindArms(kinds, filter, rulePath)})`;
+}
+
+/**
+ * The active filter as a standalone query, for the pane's "Copy SQL" button.
+ *
+ * The rows the tree is showing, flattened - every matching member of every
+ * directory, rather than the per-directory counts the tree is drawn from: the
+ * counts are already on screen, and this is for taking the same question
+ * somewhere the pane cannot go (the query page, a Data Explorer node).
+ *
+ * The one thing it does not share with a member query is how the rule path is
+ * spelt: {@link memberFilterWhere} is told the answer for its one directory,
+ * and {@link matchingCounts} inlines the ids it already read, but neither is
+ * something that can be pasted somewhere else - so this embeds
+ * {@link ruleDirsQuery} as a subquery and stays self-contained.
+ */
+export function filterQuerySql(
+  kinds: readonly NodeKind[],
+  filter: MemberFilter,
+): string {
+  const rulePath =
+    filter.path === undefined
+      ? undefined
+      : `n.dir_id IN (${ruleDirsQuery(filter.path)})`;
+  return [
+    'SELECT n.node_id, n.kind, n.label, n.dir_id, n.ts, n.dur_ns',
+    MEMBER_FROM.trim(),
+    `WHERE ${memberKindArms(kinds, filter, rulePath)}`,
+    'ORDER BY n.kind DESC, n.label',
+  ].join('\n');
 }
 
 /**
