@@ -46,6 +46,10 @@ const QUERY_TAB_URI = `${PLUGIN_ID}#Query`;
 const QUERY_PAGE_ROUTE = '/dune_query';
 // Omnibox trigger for the Dune-graph SQL mode (':' and '>' are already taken).
 const QUERY_TRIGGER = '@';
+// The `lwt` example build, converted with `dune trace perfetto`.
+const EXAMPLE_DUNE_TRACE_URL =
+  'https://gist.githubusercontent.com/NatKarmios/127df1262bfed7f4858df20c0c9a74a9/raw/' +
+  '5db180c9d44de1cf6ea3aa413362fbf1b3c3d83d/lwt.perfetto';
 
 export default class implements PerfettoPlugin {
   static readonly id = PLUGIN_ID;
@@ -65,6 +69,26 @@ export default class implements PerfettoPlugin {
   // a setting would vanish off the settings page whenever no trace was open -
   // exactly when someone would go looking for it after being made to wait.
   static async onActivate(app: App): Promise<void> {
+    // One-click way in for someone who has no Dune trace of their own: the
+    // `lwt` build, the smallest example that still has a real graph in it.
+    // Hosted rather than checked in, because a trace is a multi-megabyte blob
+    // and this plugin is the only thing that would read it.
+    const OPEN_EXAMPLE_COMMAND_ID = `${PLUGIN_ID}#OpenExampleTrace`;
+    app.commands.registerCommand({
+      id: OPEN_EXAMPLE_COMMAND_ID,
+      name: 'Open Dune example',
+      callback: () => {
+        app.analytics.logEvent('Trace Actions', 'Open example trace');
+        app.openTraceFromUrl(EXAMPLE_DUNE_TRACE_URL);
+      },
+    });
+    app.sidebar.addMenuItem({
+      section: 'trace_files',
+      commandId: OPEN_EXAMPLE_COMMAND_ID,
+      icon: 'landscape',
+      sortOrder: 5,
+    });
+
     app.settings.register({
       id: AUTO_LOAD_ROW_LIMIT_SETTING,
       name: 'Dune graph: load without asking below (edge rows)',
