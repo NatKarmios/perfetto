@@ -126,10 +126,35 @@ export function addToGraphMenuItems(
       icon,
       onclick: () => addToGraphConfirmed(controller, [node, ...related()]),
     });
+  // While rules are hidden, a one-hop relation that lands on a rule would add
+  // nothing visible, so it keeps going through rules to the deps beyond them.
+  // The rules stepped through are added too, for when rules are shown again.
+  const hop = (step: (n: NodeId) => readonly NodeId[]) => () => {
+    if (!controller.hideRules) return step(node);
+    const seen = new Set<NodeId>([node]);
+    const stack = [node];
+    while (stack.length > 0) {
+      for (const next of step(stack.pop()!)) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        if (controller.graph.isRule(next)) stack.push(next);
+      }
+    }
+    seen.delete(node);
+    return [...seen];
+  };
   return [
     item('This node', 'add', () => []),
-    item('Parents', 'arrow_upward', () => controller.parentsOf(node)),
-    item('Children', 'arrow_downward', () => controller.childrenOf(node)),
+    item(
+      'Parents',
+      'arrow_upward',
+      hop((n) => controller.parentsOf(n)),
+    ),
+    item(
+      'Children',
+      'arrow_downward',
+      hop((n) => controller.childrenOf(n)),
+    ),
     item('Ancestors', 'keyboard_double_arrow_up', () =>
       controller.ancestorsOf(node),
     ),
