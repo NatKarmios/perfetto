@@ -478,6 +478,130 @@ class Viz(TestSuite):
         "lexicographic_parent",3
         """))
 
+  def test_ordering_process_children_explicit(self):
+    return DiffTestBlueprint(
+        trace=TextProto(r"""
+        packet {
+          track_descriptor {
+            uuid: 1
+            process {
+              pid: 1
+              process_name: "p1"
+            }
+            child_ordering: EXPLICIT
+            sibling_order_rank: 10
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 11
+            parent_uuid: 1
+            name: "a"
+            sibling_order_rank: 2
+          }
+        }
+        packet {
+          timestamp: 11
+          trusted_packet_sequence_id: 1
+          track_event {
+            type: TYPE_INSTANT
+            track_uuid: 11
+            name: "ev"
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 12
+            parent_uuid: 1
+            name: "b"
+            sibling_order_rank: 1
+          }
+        }
+        packet {
+          timestamp: 12
+          trusted_packet_sequence_id: 1
+          track_event {
+            type: TYPE_INSTANT
+            track_uuid: 12
+            name: "ev"
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 13
+            parent_uuid: 1
+            name: "c"
+            sibling_order_rank: -1
+          }
+        }
+        packet {
+          timestamp: 13
+          trusted_packet_sequence_id: 1
+          track_event {
+            type: TYPE_INSTANT
+            track_uuid: 13
+            name: "ev"
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 2
+            process {
+              pid: 2
+              process_name: "p2"
+            }
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 21
+            parent_uuid: 2
+            name: "y"
+          }
+        }
+        packet {
+          timestamp: 21
+          trusted_packet_sequence_id: 1
+          track_event {
+            type: TYPE_INSTANT
+            track_uuid: 21
+            name: "ev"
+          }
+        }
+        packet {
+          track_descriptor {
+            uuid: 22
+            parent_uuid: 2
+            name: "x"
+          }
+        }
+        packet {
+          timestamp: 22
+          trusted_packet_sequence_id: 1
+          track_event {
+            type: TYPE_INSTANT
+            track_uuid: 22
+            name: "ev"
+          }
+        }
+        """),
+        query="""
+        INCLUDE PERFETTO MODULE viz.summary.track_event;
+        SELECT upid, name, order_id
+        FROM _track_event_tracks_ordered_groups
+        ORDER BY upid, order_id;
+        """,
+        out=Csv("""
+        "upid","name","order_id"
+        1,"c",1
+        1,"[NULL]",2
+        1,"b",3
+        1,"a",4
+        2,"[NULL]",1
+        2,"x",2
+        2,"y",3
+        """))
+
   def test_ordered_tracks_description(self):
     return DiffTestBlueprint(
         trace=TextProto(r"""

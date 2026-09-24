@@ -22,22 +22,46 @@ WITH
       t.id,
       t.name,
       t.parent_id,
+      extract_arg(t.dimension_arg_set_id, 'upid') AS upid,
+      extract_arg(t.dimension_arg_set_id, 'utid') AS utid,
+      extract_arg(t.source_arg_set_id, 'is_root_in_scope') AS is_root_in_scope,
       extract_arg(t.source_arg_set_id, 'child_ordering') AS ordering,
       extract_arg(t.source_arg_set_id, 'sibling_order_rank') AS rank,
       extract_arg(t.source_arg_set_id, 'description') AS description
     FROM track AS t
     WHERE
       t.type GLOB '*_track_event'
+  ),
+  process_roots AS (
+    SELECT upid, min(id) AS id
+    FROM extracted
+    WHERE
+      is_root_in_scope
+      AND upid IS NOT NULL
+      AND utid IS NULL
+    GROUP BY
+      upid
   )
+-- Children of a process descriptor have no parent_id (for backcompat, see
+-- track_event_tracker.cc), so they are ordered as siblings of the process's
+-- own track, by the process descriptor's child_ordering.
 SELECT
   t.id,
   t.name,
   t.parent_id,
+  coalesce(t.parent_id, r.id) AS ordering_parent_id,
   p.ordering AS parent_ordering,
-  coalesce(t.rank, 0) AS rank,
+  -- A process track's own sibling_order_rank orders it among processes, not
+  -- among its children.
+  iif(t.id = r.id, 0, coalesce(t.rank, 0)) AS rank,
   t.description
 FROM extracted AS t
-LEFT JOIN extracted AS p ON t.parent_id = p.id;
+LEFT JOIN process_roots AS r
+  ON t.parent_id IS NULL
+  AND t.utid IS NULL
+  AND t.upid = r.upid
+LEFT JOIN extracted AS p
+  ON p.id = coalesce(t.parent_id, r.id);
 
 CREATE PERFETTO TABLE _min_ts_per_track AS
 SELECT track_id AS id, min(ts) AS min_ts
@@ -70,7 +94,7 @@ WITH
   lexicographic_and_none AS (
     SELECT
       id,
-      row_number() OVER (PARTITION BY parent_id ORDER BY name) AS order_id
+      row_number() OVER (PARTITION BY ordering_parent_id ORDER BY name) AS order_id
     FROM _track_event_tracks_unordered AS t
     WHERE
       t.parent_ordering = 'lexicographic'
@@ -79,7 +103,7 @@ WITH
   explicit AS (
     SELECT
       id,
-      row_number() OVER (PARTITION BY parent_id ORDER BY rank) AS order_id
+      row_number() OVER (PARTITION BY ordering_parent_id ORDER BY rank) AS order_id
     FROM _track_event_tracks_unordered AS t
     WHERE
       t.parent_ordering = 'explicit'
@@ -87,7 +111,7 @@ WITH
   chronological AS (
     SELECT
       t.id,
-      row_number() OVER (PARTITION BY t.parent_id ORDER BY m.min_ts) AS order_id
+      row_number() OVER (PARTITION BY t.ordering_parent_id ORDER BY m.min_ts) AS order_id
     FROM _track_event_tracks_unordered AS t
     LEFT JOIN _min_ts_per_track AS m USING (id)
     WHERE
