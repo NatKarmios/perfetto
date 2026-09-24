@@ -42,6 +42,7 @@ in hand.
 | `components/query_table`              | the table list, tab persistence, the SQL formatter (all moved _into_ here from the query page) |
 | `plugins/dev.perfetto.QueryPage`      | the other half of those moves                                                                  |
 | `bigtrace/pages`, `widgets/grid.scss` | one-line follow-ons                                                                            |
+| `trace_processor` stdlib              | track ordering for the tracks directly under a process                                         |
 | `core/embedder`                       | the temporary enable and the local plugin-list trim, neither of which must be upstreamed       |
 
 ## The ledger
@@ -132,6 +133,12 @@ integration line still has and then undoes — see "Not for upstream".
 | `e333cc491c` plugins can register node types           | `data-explorer-node-registry` | The core requirement. `register()` returned void with no duplicate guard, and the allowed-children list froze when `registerCoreNodes()` finished, so a later registration got no `+` menu and no incoming edges.                               |
 | `bde9e34387` a node type can report itself unavailable | `data-explorer-node-registry` | Nine of the nineteen Dune nodes read the edge tier, which takes minutes to build and refuses outright past a hard cap. They are greyed out with a reason until it exists, rather than hidden or offering to start that build from a menu click. |
 
+### Trace processor
+
+| Commit                                                         | Branch                            | Why the plugin needed it                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `40f1c300c7` order process descriptor children by its ordering | `process-child-explicit-ordering` | The `dune-graph` blob track is noise on the timeline, and the only trace-side way to move it is `sibling_order_rank`. Tracks directly under a process descriptor get no `parent_id` (backcompat), so `viz/summary/track_event.sql` never saw the process's `child_ordering` and always sorted them by name. Needs the exporter to set `child_ordering: EXPLICIT` on the `dune` process descriptor before it does anything. |
+
 ### Not for upstream
 
 | Commit                                                                      | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -143,7 +150,7 @@ integration line still has and then undoes — see "Not for upstream".
 
 ## Branch status
 
-18 topic branches exist, stacked on whichever branch introduced the code they
+19 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
 four. The four commits with no branch are called out above: `5280bf7452` and
 `b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
@@ -159,6 +166,7 @@ dev/nat/chart-no-self-brush           dev/nat/tab-persistence-helper
 dev/nat/chart-surface-drag            dev/nat/table-list-component
 dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
 dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
+dev/nat/process-child-explicit-ordering
 ```
 
 Nothing is pushed. No PR has been raised for any of them.
