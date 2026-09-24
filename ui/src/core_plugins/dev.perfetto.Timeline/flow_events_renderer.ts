@@ -44,6 +44,9 @@ const HIGHLIGHTED_FLOW_INTENSITY = 45;
 const FOCUSED_FLOW_INTENSITY = 55;
 const DEFAULT_FLOW_INTENSITY = 70;
 
+const FLOW_HALO_COLOR = 'rgba(0, 0, 0, 0.8)';
+const FLOW_HALO_BLUR = 3;
+
 type VerticalEdgeOrPoint =
   ({kind: 'vertical_edge'} & Point2D) | ({kind: 'point'} & Point2D);
 
@@ -259,5 +262,10 @@ function drawArrow(
     };
   }
 
+  // A dark halo keeps the pale arrow legible over slices of similar lightness.
+  ctx.save();
+  ctx.shadowColor = FLOW_HALO_COLOR;
+  ctx.shadowBlur = FLOW_HALO_BLUR;
   drawBezierArrow(ctx, start, end, BEZIER_OFFSET, startStyle, endStyle);
+  ctx.restore();
 }
