@@ -109,10 +109,11 @@ one of them the user's own exported tab. Neither was expressible: the list was a
 fixed array of two entries, and an entry could only name a file in the Data
 Explorer's own asset directory.
 
-| Commit                                               | Branch                    | Why the plugin needed it                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `20259d2871` plugins can register example graphs     | none — **needs a branch** | The list was a fixed array and the assets directory is upstream's, so a plugin had no way to offer an example and no file to offer it from. Entries are now registered, disposable, and may carry their graph inline.                                                      |
-| `ddd3a03063` load an example the way Export wrote it | none — **needs a branch** | A recipe is authored by building it in the UI and pressing Export, which writes the whole-tab shape with its dashboards beside the graph. The loader only took the bare graph, so a recipe lost its dashboards. Examples now open in their own tab, where dashboards live. |
+| Commit                                               | Branch                    | Why the plugin needed it                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `20259d2871` plugins can register example graphs     | none — **needs a branch** | The list was a fixed array and the assets directory is upstream's, so a plugin had no way to offer an example and no file to offer it from. Entries are now registered, disposable, and may carry their graph inline.                                                                                                                                                                             |
+| `ddd3a03063` load an example the way Export wrote it | none — **needs a branch** | A recipe is authored by building it in the UI and pressing Export, which writes the whole-tab shape with its dashboards beside the graph. The loader only took the bare graph, so a recipe lost its dashboards. Examples now open in their own tab, where dashboards live.                                                                                                                        |
+| `892a17d521` an Overlap Count node                   | `overlap-count-node`      | The "Process Analysis" recipe (`explorer/process_analysis_graph.ts`) charts how many processes were running at once, which is `intervals_overlap_count!()` over the process slices. The Data Explorer had no node for it. A core node, not a Dune one: it wraps a stdlib macro and knows nothing about Dune. Does not round-trip through pbtxt import, which turns it back into a plain SQL node. |
 
 ### The node registry
 
@@ -150,7 +151,7 @@ integration line still has and then undoes — see "Not for upstream".
 
 ## Branch status
 
-19 topic branches exist, stacked on whichever branch introduced the code they
+20 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
 four. The four commits with no branch are called out above: `5280bf7452` and
 `b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
@@ -166,7 +167,7 @@ dev/nat/chart-no-self-brush           dev/nat/tab-persistence-helper
 dev/nat/chart-surface-drag            dev/nat/table-list-component
 dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
 dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
-dev/nat/process-child-explicit-ordering
+dev/nat/process-child-explicit-ordering dev/nat/overlap-count-node
 ```
 
 Nothing is pushed. No PR has been raised for any of them.
