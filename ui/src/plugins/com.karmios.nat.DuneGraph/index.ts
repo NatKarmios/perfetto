@@ -19,11 +19,13 @@ import type {PerfettoPlugin} from '../../public/plugin';
 import type {Trace} from '../../public/trace';
 import DataExplorerPlugin from '../dev.perfetto.DataExplorer';
 import SqlModulesPlugin from '../dev.perfetto.SqlModules';
+import TrackEventPlugin from '../dev.perfetto.TrackEvent';
 import {
   AUTO_LOAD_ROW_LIMIT_SETTING,
   DEFAULT_AUTO_LOAD_ROW_LIMIT,
   DuneGraphController,
 } from './controller';
+import {BLOB_TRACK} from './model/graph_blob';
 import {registerIdColumnRenderers} from './views/node_cell';
 import {registerDirExplorerChart} from './explorer/dir_explorer_chart';
 import {registerDuneMacroNodes} from './explorer/dune_macro_node';
@@ -46,6 +48,7 @@ const QUERY_TAB_URI = `${PLUGIN_ID}#Query`;
 const QUERY_PAGE_ROUTE = '/dune_query';
 // Omnibox trigger for the Dune-graph SQL mode (':' and '>' are already taken).
 const QUERY_TRIGGER = '@';
+const HIDE_BLOB_TRACK_SETTING = `${PLUGIN_ID}#HideBlobTrack`;
 // The `lwt` example build, converted with `dune trace perfetto`.
 const EXAMPLE_DUNE_TRACE_URL =
   'https://gist.githubusercontent.com/NatKarmios/127df1262bfed7f4858df20c0c9a74a9/raw/' +
@@ -58,12 +61,17 @@ export default class implements PerfettoPlugin {
   // DataExplorerPlugin is for the registrations below, which add node types and
   // chart types to that plugin's own registries; SqlModulesPlugin is for the
   // query page's "Tables" sidebar, which lists the trace's stdlib alongside our
-  // own `dune_*` surface. Declaring either orders its onTraceLoad before ours
-  // but does *not* enable it, which is why the query page checks before
-  // reaching for SqlModules.
-  static readonly dependencies = [DataExplorerPlugin, SqlModulesPlugin];
+  // own `dune_*` surface; TrackEventPlugin is so the `dune-graph` track is
+  // already in the workspace when onTraceLoad hides it. Declaring any of them
+  // orders its onTraceLoad before ours but does *not* enable it, which is why
+  // the query page checks before reaching for SqlModules.
+  static readonly dependencies = [
+    DataExplorerPlugin,
+    SqlModulesPlugin,
+    TrackEventPlugin,
+  ];
 
-  // The two settings, here rather than in `onTraceLoad` for two reasons:
+  // The settings, here rather than in `onTraceLoad` for two reasons:
   // `init()` and the query page both read a value while the trace is loading,
   // and a trace-scoped registration lives in the trace's `DisposableStack`, so
   // a setting would vanish off the settings page whenever no trace was open -
@@ -124,9 +132,26 @@ export default class implements PerfettoPlugin {
       schema: z.boolean(),
       defaultValue: false,
     });
+
+    app.settings.register({
+      id: HIDE_BLOB_TRACK_SETTING,
+      name: 'Dune graph: hide the graph blob track',
+      description:
+        `Leave the '${BLOB_TRACK}' track out of the timeline. Its events are ` +
+        'the build graph encoded as text, which this plugin reads and nobody ' +
+        'else needs to see. Takes effect the next time a trace is opened.',
+      schema: z.boolean(),
+      defaultValue: true,
+    });
   }
 
   async onTraceLoad(trace: Trace): Promise<void> {
+    if (trace.settings.get<boolean>(HIDE_BLOB_TRACK_SETTING)?.get() ?? true) {
+      for (const node of trace.defaultWorkspace.flatTracks) {
+        if (node.name === BLOB_TRACK) node.remove();
+      }
+    }
+
     const controller = new DuneGraphController(trace);
     // Registers the "Dune graph" timeline track + workspace once, so the
     // graph pane's "Timeline" button is just a switchWorkspace() away.

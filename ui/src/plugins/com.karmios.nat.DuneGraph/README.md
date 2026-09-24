@@ -115,6 +115,10 @@ and the processes the action spawned.
 The graph pane's "Timeline" button switches to it; the ordinary workspace
 switcher gets you back.
 
+The trace's own `dune-graph` track, which holds the graph as text, is left out
+of the ordinary workspace. `Dune graph: hide the graph blob track` in the
+settings brings it back from the next trace you open.
+
 ### The query page
 
 SQL over the mirror, in two places:
