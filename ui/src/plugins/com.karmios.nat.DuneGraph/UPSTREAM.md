@@ -43,6 +43,7 @@ in hand.
 | `plugins/dev.perfetto.QueryPage`      | the other half of those moves                                                                  |
 | `bigtrace/pages`, `widgets/grid.scss` | one-line follow-ons                                                                            |
 | `trace_processor` stdlib              | track ordering for the tracks directly under a process                                         |
+| `core_plugins/dev.perfetto.Timeline`  | a halo behind flow arrows                                                                      |
 | `core/embedder`                       | the temporary enable and the local plugin-list trim, neither of which must be upstreamed       |
 
 ## The ledger
@@ -140,6 +141,12 @@ integration line still has and then undoes — see "Not for upstream".
 | -------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `40f1c300c7` order process descriptor children by its ordering | `process-child-explicit-ordering` | The `dune-graph` blob track is noise on the timeline, and the only trace-side way to move it is `sibling_order_rank`. Tracks directly under a process descriptor get no `parent_id` (backcompat), so `viz/summary/track_event.sql` never saw the process's `child_ordering` and always sorted them by name. Needs the exporter to set `child_ordering: EXPLICIT` on the `dune` process descriptor before it does anything. |
 
+### Timeline
+
+| Commit                                           | Branch            | Why the plugin needed it                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `d1876c70e7` draw a dark halo behind flow arrows | `flow-arrow-halo` | The Dune converter stamps one flow per span, linking its lifecycle instants, so a Dune trace is dense with flow arrows. They were drawn at 70% lightness, the same range as the slice colours, and vanished into the slices they crossed. A dark canvas shadow keeps the line and its heads legible over any slice colour. Not Dune-specific. |
+
 ### Not for upstream
 
 | Commit                                                                      | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -151,7 +158,7 @@ integration line still has and then undoes — see "Not for upstream".
 
 ## Branch status
 
-20 topic branches exist, stacked on whichever branch introduced the code they
+21 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
 four. The four commits with no branch are called out above: `5280bf7452` and
 `b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
@@ -168,6 +175,7 @@ dev/nat/chart-surface-drag            dev/nat/table-list-component
 dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
 dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
 dev/nat/process-child-explicit-ordering dev/nat/overlap-count-node
+dev/nat/flow-arrow-halo
 ```
 
 Nothing is pushed. No PR has been raised for any of them.
