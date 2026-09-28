@@ -975,7 +975,10 @@ export function joinDir(dir: string | undefined, rel: string): string {
 // sibling of it (`default`, in both `_build/default/src` and
 // `_build/.actions/default/src`), which spots it without hardcoding `_build` or
 // `default` - neither of which a `--build-dir` or non-default-context build
-// would give us. Only observed prefixes are returned.
+// would give us. A build dir with no role tree to confirm against (a small
+// project, whose rules all sit in `_build/default`) takes every name directly
+// under it as a context: a rule's dir is always inside the build dir, so its
+// first segment is the build dir. Only observed prefixes are returned.
 function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
   // Names seen one and two levels under each build root. Kept per root so a
   // rule dir that isn't in a build tree at all can only ever produce a context
@@ -995,12 +998,19 @@ function deriveBuildRoots(dirs: Iterable<string>): readonly string[] {
     add(depth1, segs[0], segs[1]);
     if (segs.length > 2) add(depth2, segs[0], segs[2]);
   }
+  // Build dirs where some context recurs under a role, so the recurrence can
+  // be demanded of every context there.
+  const hasRoles = new Set<string>();
+  for (const [root, names] of depth1) {
+    const deeper = depth2.get(root);
+    if ([...names].some((n) => deeper?.has(n))) hasRoles.add(root);
+  }
   const roots = new Set<string>();
   for (const segs of split) {
     if (segs.length < 2) continue;
     const isContext = (name: string) =>
       (depth1.get(segs[0])?.has(name) ?? false) &&
-      (depth2.get(segs[0])?.has(name) ?? false);
+      (!hasRoles.has(segs[0]) || (depth2.get(segs[0])?.has(name) ?? false));
     // Shortest prefix ending at a context, so a role-less dir stops at the
     // context and never at a package dir that happens to share its name. No
     // two prefixes can nest: a dir whose depth-1 name is a context stops

@@ -471,9 +471,10 @@ describe('buildRoots', () => {
     expect(roots(g)).toEqual(['out/.actions/prod', 'out/prod']);
   });
 
-  // Nothing recurs one level deeper, so there is no context to find and no
-  // prefix any path is allowed to lose.
-  it('derives nothing from a single-level layout', () => {
+  // Nothing recurs one level deeper, so there is no role tree to confirm a
+  // context against: each name under the build dir is taken as one. The
+  // shape a small project's trace has.
+  it('takes every name as a context in a role-less layout', () => {
     const g = testGraph([
       rule('1', {dir: '_build/default/src'}),
       rule('2', {dir: '_build/default/bin'}),
@@ -482,7 +483,7 @@ describe('buildRoots', () => {
       rule('5'),
     ]);
 
-    expect(roots(g)).toEqual([]);
+    expect(roots(g)).toEqual(['_build/default']);
   });
 
   // A package dir sharing a context's name doesn't extend the prefix past the
