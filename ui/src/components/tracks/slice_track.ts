@@ -1420,17 +1420,16 @@ export class SliceTrack<T extends RowSchema> implements TrackRenderer {
     };
   }
 
+  setCollapsed(collapsed: boolean): void {
+    this.sliceLayout = {...this.sliceLayout, collapsed};
+  }
+
   getTrackShellButtons(): m.Children {
     const collapseButton =
       this.rowCount > 1
         ? m(Button, {
             className: 'pf-visible-on-hover',
-            onclick: () => {
-              this.sliceLayout = {
-                ...this.sliceLayout,
-                collapsed: !this.sliceLayout.collapsed,
-              };
-            },
+            onclick: () => this.setCollapsed(!this.sliceLayout.collapsed),
             icon: this.sliceLayout.collapsed
               ? Icons.UnfoldMore
               : Icons.UnfoldLess,

@@ -253,6 +253,15 @@ export interface TrackRenderer {
    */
   getSliceVerticalBounds?(depth: number): VerticalBounds | undefined;
   getHeight?(): number;
+
+  /**
+   * Optional: fold or unfold the track's own rows, for tracks with a compact
+   * layout of their own (e.g. SliceTrack's `sliceLayout.collapsed`). This is
+   * separate from the TrackNode's collapsed state, which only hides children.
+   * Called by "Expand all" / "Collapse all".
+   */
+  setCollapsed?(collapsed: boolean): void;
+
   getTrackShellButtons?(): m.Children;
   onMouseMove?(event: TrackMouseEvent): void;
   onMouseClick?(event: TrackMouseEvent): boolean;
