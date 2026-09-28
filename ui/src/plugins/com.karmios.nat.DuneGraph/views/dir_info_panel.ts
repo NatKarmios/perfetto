@@ -48,6 +48,11 @@ import {dirLabel} from './dir_explorer_panel';
 import {dirAnchor, renderNodeCell, renderNodeCellActions} from './node_cell';
 import {decorateDepPath, formatDurNs} from './node_display';
 
+// At or under this many members, the list is read as soon as the directory's
+// count lands rather than behind a button. A guess at "a screenful or two", not
+// a measurement.
+const AUTOLOAD_MEMBERS = 100;
+
 interface DirInfoPanelAttrs {
   readonly controller: DuneGraphController;
   // For the queries below; everything else this panel shows comes off the
@@ -66,9 +71,10 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
   private children?: readonly DirEntry[];
   // Members are count-first: the count is already on the directory's row, and
   // `t_deps` runs to six figures on a real build, so the list is not read until
-  // it is asked for. The same rule the Explorer pane follows for the same
-  // reason (see ARCHITECTURE.md, "Counts and members are bounded differently,
-  // because they are different sizes").
+  // it is asked for - unless there are at most `AUTOLOAD_MEMBERS`, where the
+  // read is cheap and the button would only be a click. The same rule the
+  // Explorer pane follows for the same reason (see ARCHITECTURE.md, "Counts and
+  // members are bounded differently, because they are different sizes").
   private members?: readonly MemberEntry[];
   private membersAsked = false;
 
@@ -111,6 +117,10 @@ export class DirInfoPanel implements m.ClassComponent<DirInfoPanelAttrs> {
     void dirDetails(trace.engine, dirId).then((details) => {
       if (this.key !== key) return; // selection moved on meanwhile
       this.details = details;
+      const total = details === undefined ? 0 : details.nRules + details.nDeps;
+      if (total > 0 && total <= AUTOLOAD_MEMBERS) {
+        this.loadMembers(attrs);
+      }
       controller.requestRedraw();
     });
     void childDirs(trace.engine, dirId).then((children) => {

@@ -26,9 +26,9 @@
  *   one and a directory inheriting an ancestor's come back through the same
  *   column pair, distinguished only by an id comparison - get it backwards and
  *   every panel claims a file that is not its own.
- * - the members list staying unread until asked for. `t_deps` runs to six
- *   figures, so a panel that read it on open would hang on the directories
- *   most worth opening.
+ * - the members list staying unread until asked for past a small count.
+ *   `t_deps` runs to six figures, so a panel that read it on open would hang
+ *   on the directories most worth opening.
  * - the directory links actually calling `goToDir`, which is the whole of the
  *   second selection channel.
  */
@@ -417,9 +417,9 @@ describe('DirInfoPanel', () => {
     expect(asked).toEqual([7]);
   });
 
-  test('the members list is counted first and read only when asked for', async () => {
+  test('a large members list is counted first and read only when asked for', async () => {
     const {engine, sql} = stubEngine([
-      {match: DETAILS, rows: [detailsRow()]},
+      {match: DETAILS, rows: [detailsRow({n_rules: 3, n_deps: 400})]},
       {
         match: MEMBERS,
         rows: [
@@ -431,8 +431,8 @@ describe('DirInfoPanel', () => {
     const controller = fakeController();
     const root = await renderPanel(controller, engine);
 
-    // 3 rules + 4 deps, off the directory's own row - no member query yet.
-    const section = sectionWithSummary(root, 'Members (7)');
+    // 3 rules + 400 deps, off the directory's own row - no member query yet.
+    const section = sectionWithSummary(root, 'Members (403)');
     expect(section).not.toBeUndefined();
     expect(sql.some((q) => q.includes(MEMBERS))).toBe(false);
 
@@ -442,9 +442,32 @@ describe('DirInfoPanel', () => {
     );
 
     expect(sql.some((q) => q.includes(MEMBERS))).toBe(true);
-    expect(sectionWithSummary(root, 'Members (7)')?.textContent).toContain(
+    expect(sectionWithSummary(root, 'Members (403)')?.textContent).toContain(
       '11',
     );
+  });
+  test('a small members list reads on open', async () => {
+    const {engine, sql} = stubEngine([
+      {match: DETAILS, rows: [detailsRow()]},
+      {
+        match: MEMBERS,
+        rows: [
+          {node_id: 10, kind: 'rule', label: 'lib/foo'},
+          {node_id: 11, kind: 'dep', label: '_build/default/lib/foo/a.ml'},
+        ],
+      },
+    ]);
+    const controller = fakeController();
+    // Details land, which starts the members read, which lands a frame later.
+    const root = await renderPanel(controller, engine);
+    await rerender(root, () =>
+      m(DirInfoPanel, {controller, trace: fakeTrace(engine), dirId: 7}),
+    );
+
+    expect(sql.some((q) => q.includes(MEMBERS))).toBe(true);
+    const section = sectionWithSummary(root, 'Members (7)');
+    expect(section?.querySelector('button')).toBeNull();
+    expect(section?.textContent).toContain('11');
   });
 });
 

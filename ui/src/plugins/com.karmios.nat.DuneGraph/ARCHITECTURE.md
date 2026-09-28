@@ -104,10 +104,10 @@ one of the controller's two channels: a node renders there, and a _directory_ �
 a `gen-rules` span, which belongs to no node — renders in
 `views/dir_info_panel.ts`. That panel is the directory's path, its span, the
 `dune` file behind it, its parent and child directories, and its members behind
-a count. The link back is the `dir` line under a node's title, which reads
-`dune_node.dir_id`; both directions go through `controller.goToDir`, so clicking
-either re-points the panel rather than opening a second surface. The route on
-from there is "Show in Explorer" — see
+a count (read on open when there are at most 100). The link back is the `dir`
+line under a node's title, which reads `dune_node.dir_id`; both directions go
+through `controller.goToDir`, so clicking either re-points the panel rather than
+opening a second surface. The route on from there is "Show in Explorer" — see
 [Revealing a directory in the tree](#revealing-a-directory-in-the-tree).
 
 **Explorer** (`views/dir_explorer_panel.ts`) is a second tab rather than a third
