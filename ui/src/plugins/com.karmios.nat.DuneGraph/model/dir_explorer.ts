@@ -265,15 +265,17 @@ export function fingerprint(filter: MemberFilter): string {
   return parts.every((p) => p === '') ? '' : parts.join('|');
 }
 
-// A `col IN (...)` over a selection, or undefined when nothing is selected -
+// A `col IN (...)` (or `col = x` for one value) over a selection, or undefined when nothing is selected -
 // which means "no opinion", not "nothing matches".
 function inList(col: string, values?: ReadonlySet<string>): string | undefined {
   if (values === undefined || values.size === 0) return undefined;
   // Sorted, so the same selection always generates the same SQL however it was
   // clicked together - which keeps the statements readable in a log and makes
   // them testable without depending on Set insertion order.
-  const list = [...values].sort().map(sqlValue).join(', ');
-  return `${col} IN (${list})`;
+  const list = [...values].sort().map(sqlValue);
+  return list.length === 1
+    ? `${col} = ${list[0]}`
+    : `${col} IN (${list.join(', ')})`;
 }
 
 /**
@@ -388,17 +390,25 @@ function conjunction(preds: readonly string[]): string {
 // The dep half needs no such choice - always a predicate on `label`, the
 // expensive column, which in a member query is only ever ANDed onto the
 // `dir_id` probe and so tested against the handful of rows it already found.
+function memberPreds(
+  filter: MemberFilter,
+  rulePath?: string,
+): {rule: string[]; dep: string[]} {
+  const rule = ruleAttrs(filter);
+  const dep = depAttrs(filter);
+  if (filter.path !== undefined) {
+    if (rulePath !== undefined) rule.unshift(rulePath);
+    dep.unshift(`n.label GLOB ${sqlValue(filter.path.pattern)}`);
+  }
+  return {rule, dep};
+}
+
 function memberArms(
   filter: MemberFilter,
   rulePath?: string,
 ): {rule: string; dep: string} {
-  const rulePreds = ruleAttrs(filter);
-  const depPreds = depAttrs(filter);
-  if (filter.path !== undefined) {
-    if (rulePath !== undefined) rulePreds.unshift(rulePath);
-    depPreds.unshift(`n.label GLOB ${sqlValue(filter.path.pattern)}`);
-  }
-  return {rule: conjunction(rulePreds), dep: conjunction(depPreds)};
+  const preds = memberPreds(filter, rulePath);
+  return {rule: conjunction(preds.rule), dep: conjunction(preds.dep)};
 }
 
 /**
@@ -480,11 +490,59 @@ export function filterQuerySql(
     filter.path === undefined
       ? undefined
       : `n.dir_id IN (${ruleDirsQuery(filter.path)})`;
+  const preds = memberPreds(filter, rulePath);
+  // A kind whose arm has a literal `0` can match nothing, so it is left out
+  // rather than written as a dead arm.
+  const arms = kinds
+    .map((k) => ({k, preds: k === 'rule' ? preds.rule : preds.dep}))
+    .filter((a) => !a.preds.includes('0'));
+  // Unlike a member query, this is read by a person, so it is written the way
+  // one would: a predicate every arm has is said once, outside the kind split,
+  // and the split itself goes when nothing is left to split on.
+  const shared = (arms[0]?.preds ?? []).filter((p) =>
+    arms.every((a) => a.preds.includes(p)),
+  );
+  const rests = arms.map((a) => ({
+    k: a.k,
+    preds: a.preds.filter((p) => !shared.includes(p)),
+  }));
+  const where = [...shared];
+  if (rests.length === 0) {
+    where.push('0');
+  } else if (rests.length === 1) {
+    where.unshift(`n.kind = '${rests[0].k}'`);
+  } else if (rests.some((a) => a.preds.length > 0)) {
+    const parts = rests.map((a) =>
+      a.preds.length === 0
+        ? `n.kind = '${a.k}'`
+        : `(n.kind = '${a.k}' AND ${a.preds.join(' AND ')})`,
+    );
+    where.push(`(${parts.join(' OR ')})`);
+  }
+  const text = where.join(' AND ');
+  // ponytail: a GLOB pattern containing `r.` or `d.` also matches, which only
+  // costs a redundant join.
+  const from = ['FROM dune_node n'];
+  if (/\br\./.test(text)) from.push('  LEFT JOIN dune_rule r USING (node_id)');
+  if (/\bd\./.test(text)) from.push('  LEFT JOIN dune_dep d USING (node_id)');
+  // With nothing joined the alias only adds noise, except to the process
+  // window's EXISTS, whose `node_id` alone would be `p`'s. Quoted literals are
+  // left alone, since a GLOB pattern can contain `n.`.
+  if (from.length === 1 && !text.includes('EXISTS')) {
+    const bare = text
+      .split(/('(?:[^']|'')*')/)
+      .map((s, i) => (i % 2 === 0 ? s.replace(/\bn\./g, '') : s))
+      .join('');
+    return [
+      'SELECT *',
+      'FROM dune_node',
+      ...(bare === '' ? [] : [`WHERE ${bare}`]),
+    ].join('\n');
+  }
   return [
-    'SELECT n.node_id, n.kind, n.label, n.dir_id, n.ts, n.dur_ns',
-    MEMBER_FROM.trim(),
-    `WHERE ${memberKindArms(kinds, filter, rulePath)}`,
-    'ORDER BY n.kind DESC, n.label',
+    'SELECT n.*',
+    ...from,
+    ...(text === '' ? [] : [`WHERE ${text}`]),
   ].join('\n');
 }
 

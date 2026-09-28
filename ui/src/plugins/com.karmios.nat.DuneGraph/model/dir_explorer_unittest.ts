@@ -599,8 +599,8 @@ describe('filtered member queries', () => {
       resolutions: new Set(['source' as const]),
       statuses: new Set(['failed' as const, 'cancelled' as const]),
     });
-    expect(has(sql[0], "r.outcome IN ('failed-action')")).toBe(true);
-    expect(has(sql[0], "d.resolution IN ('source')")).toBe(true);
+    expect(has(sql[0], "r.outcome = 'failed-action'")).toBe(true);
+    expect(has(sql[0], "d.resolution = 'source'")).toBe(true);
     expect(has(sql[0], "d.status IN ('cancelled', 'failed')")).toBe(true);
   });
 
@@ -885,10 +885,10 @@ describe('filterQuerySql', () => {
     expect(
       has(
         sql,
-        "n.dir_id IN (SELECT dir_id FROM dune_dir WHERE path GLOB '*lib*')",
+        "dir_id IN (SELECT dir_id FROM dune_dir WHERE path GLOB '*lib*')",
       ),
     ).toBe(true);
-    expect(has(sql, "n.label GLOB '*lib*'")).toBe(true);
+    expect(has(sql, "label GLOB '*lib*'")).toBe(true);
   });
 
   it('asks only for the kinds on screen, and carries the joins its filter needs', () => {
@@ -897,7 +897,62 @@ describe('filterQuerySql', () => {
     });
     expect(has(sql, "n.kind = 'dep'")).toBe(false);
     expect(has(sql, 'LEFT JOIN dune_rule r USING (node_id)')).toBe(true);
-    expect(has(sql, "r.outcome IN ('failed-action')")).toBe(true);
+    expect(has(sql, "r.outcome = 'failed-action'")).toBe(true);
+    expect(has(sql, 'dune_dep')).toBe(false);
+  });
+
+  it('says a predicate both kinds share once, with no kind split or joins', () => {
+    const sql = filterQuerySql(['rule', 'dep'], {
+      forcedBy: new Set(['REQUEST' as const]),
+    });
+    expect(sql).toBe(
+      ['SELECT *', 'FROM dune_node', "WHERE forced_by_kind = 'REQUEST'"].join(
+        '\n',
+      ),
+    );
+  });
+
+  it('keeps the split for a kind with its own predicates', () => {
+    const sql = filterQuerySql(['rule', 'dep'], {
+      outcomes: new Set(['failed-action' as const]),
+      minDurNs: 5n,
+    });
+    expect(has(sql, 'WHERE n.dur_ns >= 5 AND')).toBe(true);
+    expect(
+      has(
+        sql,
+        "((n.kind = 'rule' AND r.outcome = 'failed-action') OR n.kind = 'dep')",
+      ),
+    ).toBe(true);
+  });
+
+  it('drops a kind the window rules out', () => {
+    const sql = filterQuerySql(['rule', 'dep'], {
+      window: {startNs: 1n, endNs: 2n, rel: 'overlaps', span: 'action'},
+    });
+    expect(has(sql, "n.kind = 'rule' AND r.action_ts")).toBe(true);
+    expect(has(sql, "'dep'")).toBe(false);
+  });
+
+  it('drops the alias without touching a quoted pattern', () => {
+    const sql = filterQuerySql(['dep'], {
+      path: {text: 'n.ml', pattern: '*n.ml*'},
+    });
+    expect(sql).toBe(
+      [
+        'SELECT *',
+        'FROM dune_node',
+        "WHERE kind = 'dep' AND label GLOB '*n.ml*'",
+      ].join('\n'),
+    );
+  });
+
+  it("keeps the alias for the process window's correlated EXISTS", () => {
+    const sql = filterQuerySql(['rule'], {
+      window: {startNs: 1n, endNs: 2n, rel: 'overlaps', span: 'process'},
+    });
+    expect(has(sql, 'FROM dune_node n')).toBe(true);
+    expect(has(sql, 'p.node_id = n.node_id')).toBe(true);
   });
 });
 

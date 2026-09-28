@@ -396,7 +396,7 @@ describe('ChartDirExplorerSource under a member filter', () => {
         counts,
         "WHERE (n.kind = 'rule' AND (n.dir_id IN (SELECT dir_id FROM " +
           "dune_dir WHERE path GLOB '*lib*') " +
-          "AND r.outcome IN ('failed-action') " +
+          "AND r.outcome = 'failed-action' " +
           'AND n.dur_ns >= 10000000))',
       ),
     ).toBe(true);
@@ -518,7 +518,7 @@ describe('ChartDirExplorerSource under a member filter', () => {
       has(
         ids,
         "WHERE n.dir_id = 2 AND ((n.kind = 'rule' AND " +
-          "(r.outcome IN ('failed-action') AND n.dur_ns >= 10000000))) " +
+          "(r.outcome = 'failed-action' AND n.dur_ns >= 10000000))) " +
           'AND n.node_id IN (SELECT "node_id" FROM (SELECT * FROM results_1))',
       ),
     ).toBe(true);

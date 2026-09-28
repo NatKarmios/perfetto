@@ -46,6 +46,7 @@ import {
   fingerprint,
 } from '../model/dir_explorer';
 import {copyToClipboard} from '../../../base/clipboard';
+import {formatPerfettoSql} from '../../../components/query_table/sql_formatter';
 import type {DirExplorerSource} from './dir_explorer_source';
 import {FilteredTree} from './dir_filter';
 import {TextInput} from '../../../widgets/text_input';
@@ -394,10 +395,11 @@ export class DirExplorerPanel implements m.ClassComponent<DirExplorerPanelAttrs>
             'Copy a query for the members the tree is showing, to run on the ' +
             'query page',
           disabled: this.visibleKinds().length === 0,
-          onclick: () => {
-            void copyToClipboard(
-              filterQuerySql(this.visibleKinds(), this.filter),
-            );
+          onclick: async () => {
+            // Laid out the way the query page's Format button would, falling
+            // back to the raw text if the formatter fails to load.
+            const sql = filterQuerySql(this.visibleKinds(), this.filter);
+            await copyToClipboard((await formatPerfettoSql(sql)) ?? sql);
           },
         }),
         m(Button, {
