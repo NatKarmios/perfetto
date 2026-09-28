@@ -56,7 +56,7 @@ export class TimelineToolbar implements m.ClassComponent<TimelineToolbarAttrs> {
       m(Button, {
         onclick: (e: Event) => {
           e.preventDefault();
-          trace.currentWorkspace.flatTracks.forEach((track) => track.expand());
+          trace.commands.runCommand('dev.perfetto.ExpandAllGroups');
         },
         title: 'Expand all',
         icon: 'unfold_more',
@@ -65,9 +65,7 @@ export class TimelineToolbar implements m.ClassComponent<TimelineToolbarAttrs> {
       m(Button, {
         onclick: (e: Event) => {
           e.preventDefault();
-          trace.currentWorkspace.flatTracks.forEach((track) =>
-            track.collapse(),
-          );
+          trace.commands.runCommand('dev.perfetto.CollapseAllGroups');
         },
         title: 'Collapse all',
         icon: 'unfold_less',

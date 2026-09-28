@@ -369,7 +369,11 @@ export default class CoreCommands implements PerfettoPlugin {
       id: 'dev.perfetto.ExpandAllGroups',
       name: 'Expand all track groups',
       callback: () => {
-        ctx.currentWorkspace.flatTracks.forEach((track) => track.expand());
+        ctx.currentWorkspace.flatTracks.forEach((node) => {
+          node.expand();
+          if (node.uri === undefined) return;
+          ctx.tracks.getTrack(node.uri)?.renderer.setCollapsed?.(false);
+        });
       },
     });
 
@@ -377,7 +381,11 @@ export default class CoreCommands implements PerfettoPlugin {
       id: 'dev.perfetto.CollapseAllGroups',
       name: 'Collapse all track groups',
       callback: () => {
-        ctx.currentWorkspace.flatTracks.forEach((track) => track.collapse());
+        ctx.currentWorkspace.flatTracks.forEach((node) => {
+          node.collapse();
+          if (node.uri === undefined) return;
+          ctx.tracks.getTrack(node.uri)?.renderer.setCollapsed?.(true);
+        });
       },
     });
 
