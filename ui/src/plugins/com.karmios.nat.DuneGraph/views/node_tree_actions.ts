@@ -14,7 +14,7 @@
 
 import m from 'mithril';
 import {Button} from '../../../widgets/button';
-import {MenuItem} from '../../../widgets/menu';
+import {MenuDivider, MenuItem, MenuTitle} from '../../../widgets/menu';
 import {showModal} from '../../../widgets/modal';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
@@ -24,11 +24,11 @@ import type {PathTreeGroup, PathTreeRow} from '../model/path_tree';
  * Graph-membership interactivity shared by both `PathTreeView` trees - the
  * current-selection panel's Dependants/Dependencies lists
  * (`selection_info_panel.ts`) and the query tab's results tree
- * (`query_results.ts`) - plus the item list shared by the two add-to-graph
+ * (`query_results.ts`) - plus the item list shared by the two graph
  * menus (the selection panel's button and the graph pane's dot menu, in
  * `graph_panel.ts`). Unlike `node_display.ts` / `path_tree.ts` /
  * `path_tree_view.ts`, this depends on `DuneGraphController` and the `Button`
- * and `MenuItem` widgets, since it's specifically the add/remove wiring glued
+ * and menu widgets, since it's specifically the add/remove wiring glued
  * onto a tree leaf/group or a menu rather than generic display or tree
  * structure. It also owns `addToGraphConfirmed`, the one guardrail every bulk
  * add in the plugin routes through.
@@ -46,7 +46,7 @@ const CONFIRM_ADD_THRESHOLD = 100;
  * enough to be one the user didn't mean. Only nodes not already in the graph
  * count towards the threshold, since those are the ones the click changes.
  *
- * Used by every bulk add path (the two add-to-graph menus, the tree/directory
+ * Used by every bulk add path (the two graph menus, the tree/directory
  * ＋all buttons, the query tab's "Add all"); single-node adds go straight to the
  * controller, as one node is never a surprise.
  */
@@ -96,39 +96,26 @@ export function nodeToggleButton(
 }
 
 /**
- * The items of the add-to-graph menu, shared by the two menus that offer them:
- * the selection panel's "Add to graph" button and the right-click menu on a
- * graph pane dot.
+ * The items of the graph menu, shared by the two menus that offer them: the
+ * selection panel's "Graph" button and the right-click menu on a graph
+ * pane dot.
  *
  * "Parents"/"ancestors" are nodes that directly/transitively depend on this
  * one; "children"/"descendants" are nodes it directly/transitively depends on;
  * "forcers" is the chain of nodes that transitively forced this one into the
- * build. Every option adds the current node itself alongside the relation, so
- * the added nodes stay connected to something already visible.
- *
- * Add-only: the pane's menu appends its own "Remove from graph", which the
- * panel's button does not offer.
+ * build. The menu offers each relation twice, once under "Add to graph" and
+ * once under "Remove from graph". An add includes the current node itself, so
+ * the added nodes stay connected to something already visible. A remove
+ * (other than "This node") keeps it, so pruning a relation never loses the
+ * node the menu was opened on.
  */
-export function addToGraphMenuItems(
+export function graphMenuItems(
   controller: DuneGraphController,
   node: NodeId,
 ): m.Children[] {
-  // One item: adds `node` plus whatever `related` returns. `related` is only
-  // called on click, since some relations (e.g. descendants of a hot node) can
-  // be expensive to walk.
-  const item = (
-    label: string,
-    icon: string,
-    related: () => readonly NodeId[],
-  ) =>
-    m(MenuItem, {
-      label,
-      icon,
-      onclick: () => addToGraphConfirmed(controller, [node, ...related()]),
-    });
   // While rules are hidden, a one-hop relation that lands on a rule would add
   // nothing visible, so it keeps going through rules to the deps beyond them.
-  // The rules stepped through are added too, for when rules are shown again.
+  // The rules stepped through are included too, for when rules are shown again.
   const hop = (step: (n: NodeId) => readonly NodeId[]) => () => {
     if (!controller.hideRules) return step(node);
     const seen = new Set<NodeId>([node]);
@@ -143,25 +130,41 @@ export function addToGraphMenuItems(
     seen.delete(node);
     return [...seen];
   };
+  // `related` is only called on click, since some relations (e.g. descendants
+  // of a hot node) can be expensive to walk.
+  const relations: [string, string, () => readonly NodeId[]][] = [
+    ['Parents', 'arrow_upward', hop((n) => controller.parentsOf(n))],
+    ['Children', 'arrow_downward', hop((n) => controller.childrenOf(n))],
+    [
+      'Ancestors',
+      'keyboard_double_arrow_up',
+      () => controller.ancestorsOf(node),
+    ],
+    [
+      'Descendants',
+      'keyboard_double_arrow_down',
+      () => controller.descendantsOf(node),
+    ],
+    ['Forcers', 'priority_high', () => controller.forcersOf(node)],
+  ];
+  const item = (label: string, icon: string, onclick: () => void) =>
+    m(MenuItem, {label, icon, onclick});
   return [
-    item('This node', 'add', () => []),
-    item(
-      'Parents',
-      'arrow_upward',
-      hop((n) => controller.parentsOf(n)),
+    m(MenuTitle, {label: 'Add to graph'}),
+    item('This node', 'add', () => controller.addToGraph([node])),
+    ...relations.map(([label, icon, related]) =>
+      item(label, icon, () =>
+        addToGraphConfirmed(controller, [node, ...related()]),
+      ),
     ),
-    item(
-      'Children',
-      'arrow_downward',
-      hop((n) => controller.childrenOf(n)),
+    m(MenuDivider),
+    m(MenuTitle, {label: 'Remove from graph'}),
+    item('This node', 'remove', () => controller.removeFromGraph([node])),
+    ...relations.map(([label, icon, related]) =>
+      item(label, icon, () =>
+        controller.removeFromGraph(related().filter((n) => n !== node)),
+      ),
     ),
-    item('Ancestors', 'keyboard_double_arrow_up', () =>
-      controller.ancestorsOf(node),
-    ),
-    item('Descendants', 'keyboard_double_arrow_down', () =>
-      controller.descendantsOf(node),
-    ),
-    item('Forcers', 'priority_high', () => controller.forcersOf(node)),
   ];
 }
 

@@ -42,7 +42,7 @@ import {
   outcomeLabel,
 } from './node_display';
 import {
-  addToGraphMenuItems,
+  graphMenuItems,
   groupBulkActions,
   nodesInGroup,
   nodeToggleButton,
@@ -289,15 +289,16 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
             },
             `#${nodeId}`,
           ),
-        this.renderAddMenu(controller, node.nodeId),
+        this.renderGraphMenu(controller, node.nodeId),
       ),
     );
   }
 
   // Dropdown to add the node - or one of its relations - to the graph
-  // selection. The items are `addToGraphMenuItems` (node_tree_actions.ts),
-  // shared with the graph pane's right-click menu on a dot.
-  private renderAddMenu(
+  // selection, or remove them from it. The items are `graphMenuItems`
+  // (node_tree_actions.ts), shared with the graph pane's right-click menu on a
+  // dot.
+  private renderGraphMenu(
     controller: DuneGraphController,
     node: NodeId,
   ): m.Children {
@@ -305,12 +306,12 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
       PopupMenu,
       {
         trigger: m(Button, {
-          label: 'Add to graph',
+          label: 'Graph',
           icon: 'account_tree',
           rightIcon: Icons.ContextMenu,
         }),
       },
-      addToGraphMenuItems(controller, node),
+      graphMenuItems(controller, node),
     );
   }
 

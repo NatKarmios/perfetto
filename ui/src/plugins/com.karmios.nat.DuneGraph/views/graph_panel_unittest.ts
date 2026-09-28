@@ -444,9 +444,8 @@ describe('the graph pane between a pan and a click', () => {
 });
 
 /**
- * The right-click menu on a dot, which is the add-to-graph menu the selection
- * panel's button offers (one shared item list, see node_tree_actions.ts) plus a
- * "Remove from graph" the pane appends for a node already in the graph.
+ * The right-click menu on a dot, which is the add/remove menu the selection
+ * panel's button offers (one shared item list, see node_tree_actions.ts).
  *
  * Its items are pinned in `node_tree_actions_unittest.ts`, where they are plain
  * vnodes; what is worth pinning here is the wiring - that a right-click opens
@@ -490,7 +489,7 @@ describe('the graph pane on a right-clicked dot', () => {
     );
   }
 
-  test('opens the shared add menu over the dot, plus Remove', () => {
+  test('opens the shared add/remove menu over the dot', () => {
     const {controller} = fakeController({selection: [g.id('a')]});
     render({controller});
     stubGeometry();
@@ -507,7 +506,12 @@ describe('the graph pane on a right-clicked dot', () => {
       'Ancestors',
       'Descendants',
       'Forcers',
-      'Remove from graph',
+      'This node',
+      'Parents',
+      'Children',
+      'Ancestors',
+      'Descendants',
+      'Forcers',
     ]);
   });
 
@@ -531,37 +535,13 @@ describe('the graph pane on a right-clicked dot', () => {
     stubGeometry();
     rightClickDot();
     render({controller});
-    const item = Array.from(document.body.querySelectorAll('button')).find(
-      (b) => label(b) === 'Remove from graph',
-    );
+    // The second "This node" is the one under "Remove from graph".
+    const item = Array.from(document.body.querySelectorAll('button')).filter(
+      (b) => label(b) === 'This node',
+    )[1];
     (item as HTMLElement).click();
 
     expect(state.removed).toEqual([[g.id('a')]]);
-  });
-
-  test('offers no Remove for a node that is not in the graph', () => {
-    // Removal is gated on membership, separately from the pane's own
-    // side-panel-only gate. Today the two coincide - the pane draws the
-    // selection, so every dot in it is in the graph - which is why this asks
-    // the controller to say otherwise rather than arranging it through the
-    // pane. The add items are unaffected.
-    const {controller, state} = fakeController({selection: [g.id('a')]});
-    (controller as unknown as {isInGraph: () => boolean}).isInGraph = () =>
-      false;
-    render({controller});
-    stubGeometry();
-    rightClickDot();
-    render({controller});
-
-    expect(menuItems()).toEqual([
-      'This node',
-      'Parents',
-      'Children',
-      'Ancestors',
-      'Descendants',
-      'Forcers',
-    ]);
-    expect(state.removed).toEqual([]);
   });
 
   test('has no menu at all in the injected mode', () => {

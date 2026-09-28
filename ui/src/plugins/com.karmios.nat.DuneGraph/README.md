@@ -62,8 +62,10 @@ the set of nodes you have collected, drawn as a layered node graph you can pan
 and zoom. It opens fitted to the pane, and "Fit" is the way back to that view
 after panning or zooming. Every node in the UI carries a ＋/－ toggle that adds
 it to or removes it from that set. Right-clicking a node in that graph offers
-the same menu the selected node's "Add to graph" button does — the node, its
-parents, children, ancestors, descendants or forcers — plus "Remove from graph".
+the same menu the selected node's "Graph" button does — the node, its parents,
+children, ancestors, descendants or forcers, each under both "Add to graph" and
+"Remove from graph". An add includes the node itself; a remove of a relation
+leaves the node in place.
 
 Select a `gen-rules` slice and the same area shows the **directory** behind it
 instead: how long the span took, the `dune` file it read (or, when it recorded
@@ -95,10 +97,10 @@ running right across it — and three spans to read it against: the member's own
 a rule's action, or any process that action spawned. The last two are a rule's
 alone, so asking for either excludes every dependency; the difference between
 them and the first is a rule that spent its time waiting rather than running.
-**Follow timeline selection** keeps the window on whatever is selected, a
-moment after the selection settles; turning it off freezes the window where it
-is, which is how you compare one region against the tree while looking
-somewhere else.
+**Follow timeline selection** keeps the window on whatever is selected, a moment
+after the selection settles; turning it off freezes the window where it is,
+which is how you compare one region against the tree while looking somewhere
+else.
 
 **Copy SQL** puts the current filters on the clipboard as a query over
 `dune_node`, for taking the same question to the query page or a Data Explorer

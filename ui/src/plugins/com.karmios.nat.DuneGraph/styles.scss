@@ -233,7 +233,7 @@
     unicode-bidi: isolate;
   }
 
-  // Node id + "Add to graph" menu: wraps onto its own line once
+  // Node id + "Graph" menu: wraps onto its own line once
   // `__info-main` has shrunk to its floor and the two still don't fit.
   &__info-actions {
     display: flex;

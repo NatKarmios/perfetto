@@ -26,13 +26,13 @@ vi.mock('../../../widgets/modal', () => ({
     return Promise.resolve();
   },
 }));
-import type {MenuItemAttrs} from '../../../widgets/menu';
+import {MenuDivider, MenuItem, type MenuItemAttrs} from '../../../widgets/menu';
 import type {ModalAttrs} from '../../../widgets/modal';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
 import {
   addToGraphConfirmed,
-  addToGraphMenuItems,
+  graphMenuItems,
   nodesInGroup,
 } from './node_tree_actions';
 import type {
@@ -85,13 +85,14 @@ describe('nodesInGroup', () => {
 });
 
 /**
- * Everything `addToGraphMenuItems` touches, recording both what it added and
+ * Everything `graphMenuItems` touches, recording what it added and removed and
  * which relation walks were asked for - the latter is what the laziness test
  * below is about. Each relation answers with one distinct node so the
  * assertions can tell them apart.
  */
 function fakeController() {
   const added: NodeId[][] = [];
+  const removed: NodeId[][] = [];
   const asked: string[] = [];
   shownModals.length = 0;
   const relation = (name: string, answer: NodeId) => () => {
@@ -100,6 +101,7 @@ function fakeController() {
   };
   const controller = {
     addToGraph: (nodes: Iterable<NodeId>) => added.push([...nodes]),
+    removeFromGraph: (nodes: Iterable<NodeId>) => removed.push([...nodes]),
     isInGraph: () => false,
     requestRedraw: () => {},
     parentsOf: relation('parents', 10),
@@ -111,54 +113,88 @@ function fakeController() {
   return {
     controller: controller as unknown as DuneGraphController,
     added,
+    removed,
     asked,
   };
 }
 
 const NODE: NodeId = 1;
 
-function items(controller: DuneGraphController) {
-  return addToGraphMenuItems(controller, NODE) as m.Vnode<MenuItemAttrs>[];
+// The menu's MenuItems, split at the divider into its two sections. The
+// section titles and the divider are dropped.
+function sections(controller: DuneGraphController) {
+  const all = graphMenuItems(controller, NODE) as m.Vnode<MenuItemAttrs>[];
+  const isItem = (v: m.Vnode<MenuItemAttrs>) => v.tag === MenuItem;
+  const split = all.findIndex((v) => v.tag === MenuDivider);
+  return {
+    add: all.slice(0, split).filter(isItem),
+    remove: all.slice(split).filter(isItem),
+  };
 }
 
-function click(controller: DuneGraphController, label: string): void {
-  const item = items(controller).find((i) => i.attrs.label === label);
+function click(
+  controller: DuneGraphController,
+  section: 'add' | 'remove',
+  label: string,
+): void {
+  const item = sections(controller)[section].find(
+    (i) => i.attrs.label === label,
+  );
   expect(item, `no "${label}" item`).toBeDefined();
   (item!.attrs.onclick as () => void)();
 }
 
-describe('addToGraphMenuItems', () => {
-  it('offers the six relations, in order', () => {
+const LABELS = [
+  'This node',
+  'Parents',
+  'Children',
+  'Ancestors',
+  'Descendants',
+  'Forcers',
+];
+
+describe('graphMenuItems', () => {
+  it('offers the six relations, in order, under both add and remove', () => {
     const {controller} = fakeController();
-    expect(items(controller).map((i) => i.attrs.label)).toEqual([
-      'This node',
-      'Parents',
-      'Children',
-      'Ancestors',
-      'Descendants',
-      'Forcers',
-    ]);
+    const {add, remove} = sections(controller);
+    expect(add.map((i) => i.attrs.label)).toEqual(LABELS);
+    expect(remove.map((i) => i.attrs.label)).toEqual(LABELS);
   });
 
   it('adds the node itself alongside the relation', () => {
-    // Every item does, so the added nodes stay connected to something visible.
+    // Every add does, so the added nodes stay connected to something visible.
     const {controller, added} = fakeController();
-    click(controller, 'This node');
-    click(controller, 'Parents');
-    click(controller, 'Descendants');
+    click(controller, 'add', 'This node');
+    click(controller, 'add', 'Parents');
+    click(controller, 'add', 'Descendants');
 
     expect(added).toEqual([[NODE], [NODE, 10], [NODE, 40]]);
+  });
+
+  it('removes the relation but keeps the node itself', () => {
+    // Only "This node" removes the node the menu was opened on.
+    const {controller, removed} = fakeController();
+    (controller as unknown as {childrenOf: () => NodeId[]}).childrenOf = () => [
+      NODE,
+      20,
+    ];
+    click(controller, 'remove', 'This node');
+    click(controller, 'remove', 'Children');
+    click(controller, 'remove', 'Forcers');
+
+    expect(removed).toEqual([[NODE], [20], [50]]);
   });
 
   it('does not walk a relation until its item is clicked', () => {
     // The documented laziness: some walks (descendants of a hot node) are
     // expensive, so building the menu must not perform any of them.
     const {controller, asked} = fakeController();
-    items(controller);
+    sections(controller);
     expect(asked).toEqual([]);
 
-    click(controller, 'Forcers');
-    expect(asked).toEqual(['forcers']);
+    click(controller, 'add', 'Forcers');
+    click(controller, 'remove', 'Ancestors');
+    expect(asked).toEqual(['forcers', 'ancestors']);
   });
 });
 

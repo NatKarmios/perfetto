@@ -92,11 +92,12 @@ selection, and `views/graph_panel.ts` for the set of nodes chosen for the graph.
 The selection panel's body is three accordion sections — `processes`, then
 `dependants` and `dependencies` as path-grouped trees.
 
-The pane's dots carry the same add-to-graph menu on right-click, from the one
-item list both use (`addToGraphMenuItems` in `views/node_tree_actions.ts`, with
-"Remove from graph" appended by the pane alone). It is side-panel-only for the
-same reason "Timeline" and "Clear" are: it acts on the graph _selection_, which
-is not what the pane is drawing when a node set is handed to it.
+The pane's dots carry the same add/remove menu on right-click, from the one item
+list both use (`graphMenuItems` in `views/node_tree_actions.ts`: each relation
+once under "Add to graph", which includes the node itself, and once under
+"Remove from graph", which keeps it). It is side-panel-only for the same reason
+"Timeline" and "Clear" are: it acts on the graph _selection_, which is not what
+the pane is drawing when a node set is handed to it.
 
 The selection panel is a two-way branch, because a selection settles on exactly
 one of the controller's two channels: a node renders there, and a _directory_ —

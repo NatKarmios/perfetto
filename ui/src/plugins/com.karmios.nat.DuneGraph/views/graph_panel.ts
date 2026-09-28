@@ -18,13 +18,13 @@ import {clamp} from '../../../base/math_utils';
 import {SimpleResizeObserver} from '../../../base/resize_observer';
 import {Button} from '../../../widgets/button';
 import {EmptyState} from '../../../widgets/empty_state';
-import {MenuDivider, MenuItem, PopupMenu} from '../../../widgets/menu';
+import {PopupMenu} from '../../../widgets/menu';
 import {PopupPosition} from '../../../widgets/popup';
 import type {DuneGraphController} from '../controller';
 import type {NodeId} from '../model/graph';
 import {inducedEdges, plural} from '../model/graph';
 import {decorateNode} from './node_display';
-import {addToGraphMenuItems} from './node_tree_actions';
+import {graphMenuItems} from './node_tree_actions';
 import type {GraphLayout, LayoutEdge, LayoutNode} from './graph_layout';
 import {
   ARROW_GAP,
@@ -543,20 +543,7 @@ export class GraphPanel implements m.ClassComponent<GraphPanelAttrs> {
         position: PopupPosition.BottomStart,
         showArrow: false,
       },
-      addToGraphMenuItems(controller, node),
-      // The one item the selection panel's button does not offer, so the
-      // shared list stays add-only and the pane appends this itself. The
-      // membership check is belt and braces today - the pane draws the
-      // selection, so every dot it can right-click is in the graph - but it is
-      // what keeps the item honest if that ever stops being true.
-      controller.isInGraph(node) && [
-        m(MenuDivider),
-        m(MenuItem, {
-          label: 'Remove from graph',
-          icon: 'remove',
-          onclick: () => controller.removeFromGraph([node]),
-        }),
-      ],
+      graphMenuItems(controller, node),
     );
   }
 
