@@ -67,10 +67,7 @@ export class PathTreeView<T> implements m.ClassComponent<PathTreeViewAttrs<T>> {
       m(
         '.pf-dune-tree__group-header',
         {onclick: () => attrs.onToggleGroup(key)},
-        m(Icon, {
-          icon: collapsed ? 'chevron_right' : 'expand_more',
-          className: 'pf-dune-tree__group-caret',
-        }),
+        foldCaret(!collapsed),
         `${row.label}/`,
         m('span.pf-dune-tree__group-count', `(${countLeaves(row)})`),
         attrs.groupActions !== undefined &&
@@ -87,4 +84,19 @@ export class PathTreeView<T> implements m.ClassComponent<PathTreeViewAttrs<T>> {
         ),
     );
   }
+}
+
+/**
+ * The caret a group header leads with. Exported for rows that fold something
+ * other than a path group; those pass `onclick`, since the row itself is not
+ * the toggle.
+ */
+export function foldCaret(open: boolean, onclick?: () => void): m.Children {
+  return m(Icon, {
+    icon: open ? 'expand_more' : 'chevron_right',
+    className: onclick
+      ? 'pf-dune-tree__group-caret pf-dune-tree__fold'
+      : 'pf-dune-tree__group-caret',
+    onclick,
+  });
 }

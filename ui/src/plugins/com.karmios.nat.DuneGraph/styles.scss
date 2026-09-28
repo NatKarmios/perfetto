@@ -701,6 +701,11 @@
     font-size: 14px;
   }
 
+  // A caret that is its own toggle, on a row that is not.
+  &__fold {
+    cursor: pointer;
+  }
+
   &__group-count {
     margin-left: auto;
     padding-left: 8px;

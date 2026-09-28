@@ -57,15 +57,18 @@ Two tabs, **Dune** and **Explorer**.
 
 **Dune** is the node-centric view. It shows the build-graph node behind whatever
 is selected on the timeline — what the rule actually ran, what depends on it,
-and what it depends on, the last two as trees grouped by path. Under that sits
-the set of nodes you have collected, drawn as a layered node graph you can pan
-and zoom. It opens fitted to the pane, and "Fit" is the way back to that view
-after panning or zooming. Every node in the UI carries a ＋/－ toggle that adds
-it to or removes it from that set. Right-clicking a node in that graph offers
-the same menu the selected node's "Graph" button does — the node, its parents,
-children, ancestors, descendants or forcers, each under both "Add to graph" and
-"Remove from graph". An add includes the node itself; a remove of a relation
-leaves the node in place.
+and what it depends on, the last two as trees grouped by path. A rule in either
+tree lists its own dependants or dependencies indented under it, so a dep's
+panel shows the deps one rule away on each side. Those nested lists start
+folded; the rule's caret opens them. Under that sits the set of nodes you have
+collected, drawn as a layered node graph you can pan and zoom. It opens fitted
+to the pane, and "Fit" is the way back to that view after panning or zooming.
+Every node in the UI carries a ＋/－ toggle that adds it to or removes it from
+that set. Right-clicking a node in that graph offers the same menu the selected
+node's "Graph" button does — the node, its parents, children, ancestors,
+descendants or forcers, each under both "Add to graph" and "Remove from graph".
+An add includes the node itself; a remove of a relation leaves the node in
+place.
 
 Select a `gen-rules` slice and the same area shows the **directory** behind it
 instead: how long the span took, the `dune` file it read (or, when it recorded

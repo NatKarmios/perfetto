@@ -50,7 +50,7 @@ import {
 import type {ProcessDetails} from '../sql/process_sql';
 import type {PathTreeItem, PathTreeLeaf} from '../model/path_tree';
 import {buildPathTree} from '../model/path_tree';
-import {PathTreeView} from './path_tree_view';
+import {PathTreeView, foldCaret} from './path_tree_view';
 import type {Trace} from '../../../public/trace';
 import {dirIdForNode} from '../model/dir_explorer';
 import {dirPathLabel} from '../model/dir_tree';
@@ -464,24 +464,68 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
             // Dependencies folds independently.
             keyPrefix: title,
             collapsed: this.collapsed,
-            onToggleGroup: (key) => {
-              if (this.collapsed.has(key)) this.collapsed.delete(key);
-              else this.collapsed.add(key);
-            },
-            renderLeaf: (row) => this.renderRef(controller, row),
+            onToggleGroup: (key) => this.toggleCollapsed(key),
+            renderLeaf: (row) => this.renderRuleRefs(controller, title, row),
             groupActions: (row) =>
               groupBulkActions(controller, nodesInGroup(row)),
           }),
     );
   }
 
+  // A rule in either list is only a step on the way to the deps either side of
+  // it, so its own dependants (in Dependants) or dependencies (in Dependencies)
+  // are listed under it, one level deep, folded until its caret opens them -
+  // so on the `expanded` set, like a process entry. Unmarked as forced: whether
+  // the rule forced its neighbour is not the selected node's business, and an
+  // icon a level down reads as though it were.
+  private renderRuleRefs(
+    controller: DuneGraphController,
+    title: string,
+    row: PathTreeLeaf<Ref>,
+  ): m.Children {
+    const ref = row.item;
+    if (ref.node === undefined || ref.kind !== 'rule') {
+      return this.renderRef(controller, row);
+    }
+    const refs = (
+      title === 'Dependants'
+        ? this.dependants(controller, ref.node)
+        : this.dependencies(controller, ref.node)
+    ).map((r) => ({...r, forced: false}));
+    if (refs.length === 0) return this.renderRef(controller, row);
+    const key = `${title}:rule:${ref.node}`;
+    const open = this.expanded.has(key);
+    return [
+      this.renderRef(
+        controller,
+        row,
+        foldCaret(open, () => this.toggleExpanded(key)),
+      ),
+      open &&
+        m(
+          '.pf-dune-tree__children',
+          m(PathTreeView<Ref>, {
+            rows: buildPathTree(refs.map(refPathItem)),
+            keyPrefix: key,
+            collapsed: this.collapsed,
+            onToggleGroup: (k) => this.toggleCollapsed(k),
+            renderLeaf: (leaf) => this.renderRef(controller, leaf),
+            groupActions: (group) =>
+              groupBulkActions(controller, nodesInGroup(group)),
+          }),
+        ),
+    ];
+  }
+
   private renderRef(
     controller: DuneGraphController,
     row: PathTreeLeaf<Ref>,
+    caret?: m.Children,
   ): m.Children {
     const {item: ref, prefix, label} = row;
     return m(
       '.pf-dune-graph__ref',
+      caret,
       // Forced edges lead with an icon.
       ref.forced &&
         m(Icon, {
@@ -648,6 +692,11 @@ export class SelectionInfoPanel implements m.ClassComponent<SelectionInfoPanelAt
           p.args.map((arg) => m('.pf-dune-graph__proc-arg', arg)),
         ),
     );
+  }
+
+  private toggleCollapsed(key: string): void {
+    if (this.collapsed.has(key)) this.collapsed.delete(key);
+    else this.collapsed.add(key);
   }
 
   // Flips one `expanded` key. The mirror image of the path tree's

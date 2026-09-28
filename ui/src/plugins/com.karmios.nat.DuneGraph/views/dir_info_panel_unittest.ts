@@ -39,6 +39,7 @@ import type {Trace} from '../../../public/trace';
 import {TimestampFormat} from '../../../public/timeline';
 import type {Engine} from '../../../trace_processor/engine';
 import type {DuneGraphController} from '../controller';
+import {ReverseIndex, directParents} from '../model/graph';
 import {dep, rule, testGraph} from '../model/graph_test_helper';
 import {DirInfoPanel} from './dir_info_panel';
 import {SelectionInfoPanel} from './selection_info_panel';
@@ -468,6 +469,56 @@ describe('DirInfoPanel', () => {
     const section = sectionWithSummary(root, 'Members (7)');
     expect(section?.querySelector('button')).toBeNull();
     expect(section?.textContent).toContain('11');
+  });
+});
+
+describe("SelectionInfoPanel's rule refs", () => {
+  test('a rule in either list lists its own refs under it', async () => {
+    // user -> r0 -> a -> r1 -> b: selecting `a`, r0 is a dependant and r1 a
+    // dependency, and each carries the next hop out. `b` is forced by r1, which
+    // the nested row must not mark.
+    const g = testGraph([
+      dep('user', {resolvedRule: 'r0'}),
+      rule('r0', {staticDeps: ['a']}),
+      dep('a', {resolvedRule: 'r1'}),
+      rule('r1', {staticDeps: ['b']}),
+      dep('b', {forcedBy: {rule: 'r1'}}),
+    ]);
+    const reverse = ReverseIndex.build(g.graph);
+    const {engine} = stubEngine([]);
+    const controller = fakeController({
+      graph: g.graph,
+      nodeForSelection: () => g.id('a'),
+      dirForSelection: () => undefined,
+      timingFor: async () => ({}),
+      processesForRule: async () => [],
+      parentsOf: (n: number) => directParents(reverse, n),
+      selectedProcessSlice: () => undefined,
+    });
+
+    const root = document.createElement('div');
+    await rerender(root, () =>
+      m(SelectionInfoPanel, {controller, trace: fakeTrace(engine)}),
+    );
+
+    const nested = (title: string) =>
+      sectionWithSummary(root, title)?.querySelector('.pf-dune-tree__children');
+    // Folded by default; each rule's caret opens its own.
+    expect(nested('Dependants')).toBeNull();
+    expect(nested('Dependencies')).toBeNull();
+    for (const title of ['Dependants', 'Dependencies']) {
+      sectionWithSummary(root, title)
+        ?.querySelector<HTMLElement>('.pf-dune-tree__fold')
+        ?.click();
+    }
+    await rerender(root, () =>
+      m(SelectionInfoPanel, {controller, trace: fakeTrace(engine)}),
+    );
+    expect(nested('Dependants')?.textContent).toContain('user');
+    expect(nested('Dependencies')?.textContent).toContain('b');
+    expect(
+      nested('Dependencies')?.querySelector('.pf-dune-graph__forced-icon'),
+    ).toBeNull();
   });
 });
 
