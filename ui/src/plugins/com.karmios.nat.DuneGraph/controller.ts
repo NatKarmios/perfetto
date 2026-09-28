@@ -33,6 +33,7 @@ import {
 } from './model/graph';
 import type {LifecycleKey} from './sql/lifecycle_sql';
 import {lifecycleKeysForSliceIds} from './sql/lifecycle_sql';
+import {writeSelection} from './sql/selection_sql';
 import type {ArrowConnection} from '../../components/related_events/arrow_visualiser';
 import {RelatedEventsOverlay} from '../../components/related_events/related_events_overlay';
 import type {GraphTrackKind} from './model/graph_tracks';
@@ -277,6 +278,10 @@ export class DuneGraphController {
   // `version` as of the last sync, so the tree and the arrows are only rebuilt
   // when the selection actually changed (see onFrame()).
   private syncedVersion = -1;
+  // `dune_selected()`'s backing table is being rewritten, and whether the
+  // selection changed again since that write started (see syncSelectionSql()).
+  private selectionWriting = false;
+  private selectionDirty = false;
   // The workspace as of the last onFrame() poll, so a change can be detected
   // (see installTimeline()/onFrame()). There is no workspace-change event in
   // Perfetto - not even switchWorkspace() itself is the only way the current
@@ -388,6 +393,26 @@ export class DuneGraphController {
     this.syncedVersion = this.version;
     this.seatTracks();
     void this.rebuildFamilyIndex(this.version);
+    void this.syncSelectionSql();
+  }
+
+  // Copies the selection into `dune_selected()`'s table (see
+  // sql/selection_sql.ts). One write at a time; a change landing mid-write is
+  // picked up by one more pass rather than a second concurrent write.
+  private async syncSelectionSql(): Promise<void> {
+    this.selectionDirty = true;
+    if (this.selectionWriting) return;
+    this.selectionWriting = true;
+    try {
+      while (this.selectionDirty) {
+        this.selectionDirty = false;
+        await writeSelection(this.trace.engine, this.selectedNodes);
+      }
+    } catch (e) {
+      console.error('Syncing dune_selected() failed:', e);
+    } finally {
+      this.selectionWriting = false;
+    }
   }
 
   // The family currently under the cursor, if any.

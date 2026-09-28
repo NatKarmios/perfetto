@@ -47,6 +47,7 @@ const ALL_SQL = [
   SQL_GRAPH,
   read('lifecycle_sql.ts'),
   read('process_sql.ts'),
+  read('selection_sql.ts'),
 ].join('\n');
 
 // The `CREATE PERFETTO VIEW ${CONST}( ... ) AS` blocks, keyed by the *constant*
@@ -198,13 +199,18 @@ describe('dune_tables matches sql_graph', () => {
     const extras = DUNE_FUNCTIONS.filter(
       (f) => !RELATION_FUNCTIONS.includes(f),
     );
-    expect(extras.map((f) => f.name)).toEqual(['dune_process_cmd(slice_id)']);
+    expect(extras.map((f) => f.name)).toEqual([
+      'dune_process_cmd(slice_id)',
+      'dune_selected()',
+    ]);
 
     // ...and each one is really created, under the name it is documented by.
     expect(ALL_SQL).toContain("const PROCESS_CMD_MACRO = 'dune_process_cmd'");
     expect(ALL_SQL).toMatch(
       /PERFETTO FUNCTION \$\{PROCESS_CMD_MACRO\}\(slice_id LONG\)/,
     );
+    expect(ALL_SQL).toContain("const SELECTED_FUNCTION = 'dune_selected'");
+    expect(ALL_SQL).toContain('PERFETTO FUNCTION ${SELECTED_FUNCTION}()');
   });
 
   it('documents a list-macro wrapper for every relation function', () => {

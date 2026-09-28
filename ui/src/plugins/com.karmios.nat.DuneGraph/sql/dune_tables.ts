@@ -771,12 +771,38 @@ const PROCESS_CMD_FUNCTION: TableListEntry = {
 };
 
 /**
- * The functions. Eight relation walks plus `dune_process_cmd`; each has a
- * same-named `!` macro documented in {@link DUNE_MACROS}.
+ * `dune_selected`, the graph selection. Not a relation function either, and
+ * with no `!` form: it takes nothing to map over.
+ */
+const SELECTED_FUNCTION: TableListEntry = {
+  name: 'dune_selected()',
+  description:
+    'The nodes currently in the graph selection - what the Graph tab shows ' +
+    'and the timeline workspace projects - one row per node, in no ' +
+    'particular order. Rules are included even while "Hide rules" is on. ' +
+    'Follows the selection as it changes, so rerunning a query picks up the ' +
+    'latest one. Pass `(SELECT node_id FROM dune_selected())` to a `!` ' +
+    'macro to walk from the whole selection.',
+  exampleQuery: [
+    '-- The selected nodes, longest first.',
+    'SELECT n.node_id, n.kind, n.label, n.dur_ns',
+    'FROM dune_selected() s',
+    'JOIN dune_node n USING (node_id)',
+    'ORDER BY n.dur_ns DESC',
+  ].join('\n'),
+  columns: [
+    {name: 'node_id', description: NODE_ID_DESC, type: DUNE_NODE_JOINID},
+  ],
+};
+
+/**
+ * The functions. Eight relation walks plus `dune_process_cmd` (each with a
+ * same-named `!` macro documented in {@link DUNE_MACROS}) and `dune_selected`.
  */
 export const DUNE_FUNCTIONS: ReadonlyArray<TableListEntry> = [
   ...RELATION_FUNCTIONS,
   PROCESS_CMD_FUNCTION,
+  SELECTED_FUNCTION,
 ];
 
 /**

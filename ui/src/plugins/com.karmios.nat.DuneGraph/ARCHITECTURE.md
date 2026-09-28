@@ -1017,6 +1017,17 @@ The function is created after `dune_process`, which is load-bearing: a function
 body is resolved at CREATE time where a macro's is expanded, so the order
 matters for one and not the other.
 
+### The selection — `sql/selection_sql.ts`
+
+`dune_selected()` is the graph selection, which lives in the controller and so
+is invisible to SQL. The controller copies it into `_dune_selected` from the
+same per-frame poll that re-seats the timeline tracks, so it follows
+every ＋/－within a frame. Writes are serialized, and a change that lands
+mid-write is picked up by one more pass. The table holds bare node ids and joins
+nothing, so it belongs to neither mirror tier: it exists (empty) from the first
+frame and survives a reload, which clears the selection and so rewrites it
+empty. A query that runs during a rewrite can see it half-written.
+
 ## Performance
 
 The reference trace throughout is `monorepo.perfetto` — 52 MB gzipped, ~378 MB
@@ -1132,7 +1143,7 @@ cd ui && node_modules/.bin/eslint src/plugins/com.karmios.nat.DuneGraph
 cd ui && node_modules/.bin/prettier --check src/plugins/com.karmios.nat.DuneGraph
 ```
 
-**786 tests across 37 files** as of 2026-09-28.
+**793 tests across 38 files** as of 2026-09-28.
 
 `docs_unittest.ts` is the other structural test beside `layering_unittest.ts`:
 it checks that every `README.md, "X"` / `ARCHITECTURE.md, "X"` pointer in the

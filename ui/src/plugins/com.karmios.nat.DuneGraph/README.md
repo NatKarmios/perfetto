@@ -272,6 +272,16 @@ SELECT * FROM dune_forcers(42);
 SELECT * FROM dune_forced(42);
 ```
 
+`dune_selected()` returns the `node_id` of every node in the graph selection,
+rules included while "Hide rules" is on. It follows the selection, so a rerun
+query sees the latest one:
+
+```sql
+SELECT n.* FROM dune_selected() JOIN dune_node n USING (node_id);
+-- Everything the selection transitively needs.
+SELECT * FROM dune_all_descendants!((SELECT node_id FROM dune_selected()));
+```
+
 And `dune_process_cmd`, for the question the argv view is awkward to answer by
 hand - what a process actually ran:
 
