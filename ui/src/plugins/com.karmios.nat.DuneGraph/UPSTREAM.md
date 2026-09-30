@@ -1,14 +1,14 @@
 # What DuneGraph needed from outside its own directory
 
 This plugin is not self-contained. Making it work meant changing the Data
-Explorer, the DataGrid, the query page and a couple of widgets — 36 commits on
-`main..dune-graph-trace`, and a net footprint of **63 files, +5,626/−1,499**
-(measured 2026-09-17, excluding the plugin directory itself).
+Explorer, the DataGrid, the query page and a couple of widgets — 40 commits on
+`main..dune-graph-trace`, and a net footprint of **73 files, +5,835/−1,534**
+(measured 2026-09-30, excluding the plugin directory itself).
 
 This file is the ledger. It exists for one reason: in six months the _diff_ will
 still be readable and the _motivation_ will not.
 
-Every change here is upstreamable and intended to be upstreamed, with three
+Every change here is upstreamable and intended to be upstreamed, with four
 explicit exceptions marked below.
 
 ## The one dependency
@@ -35,16 +35,17 @@ in hand.
 
 ## Where the changes land
 
-| Area                                  | Roughly                                                                                        |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `plugins/dev.perfetto.DataExplorer`   | the bulk — dashboards, the chart-type registry, brush filters                                  |
-| `components/widgets/datagrid`         | metadata-driven cell renderers                                                                 |
-| `components/query_table`              | the table list, tab persistence, the SQL formatter (all moved _into_ here from the query page) |
-| `plugins/dev.perfetto.QueryPage`      | the other half of those moves                                                                  |
-| `bigtrace/pages`, `widgets/grid.scss` | one-line follow-ons                                                                            |
-| `trace_processor` stdlib              | track ordering for the tracks directly under a process                                         |
-| `core_plugins/dev.perfetto.Timeline`  | a halo behind flow arrows                                                                      |
-| `core/embedder`                       | the temporary enable and the local plugin-list trim, neither of which must be upstreamed       |
+| Area                                                        | Roughly                                                                                        |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `plugins/dev.perfetto.DataExplorer`                         | the bulk — dashboards, the chart-type registry, brush filters                                  |
+| `components/widgets/datagrid`                               | metadata-driven cell renderers                                                                 |
+| `components/query_table`                                    | the table list, tab persistence, the SQL formatter (all moved _into_ here from the query page) |
+| `plugins/dev.perfetto.QueryPage`                            | the other half of those moves                                                                  |
+| `bigtrace/pages`, `widgets/grid.scss`                       | one-line follow-ons                                                                            |
+| `trace_processor` stdlib                                    | track ordering for the tracks directly under a process                                         |
+| `core_plugins/dev.perfetto.Timeline`                        | a halo behind flow arrows; Expand/Collapse all folding slice tracks                            |
+| `core_plugins/dev.perfetto.CoreCommands`, `public/track.ts` | the other half of that Expand/Collapse fix                                                     |
+| `core/embedder`                                             | the temporary enable and the local plugin-list trim, neither of which must be upstreamed       |
 
 ## The ledger
 
@@ -143,9 +144,16 @@ integration line still has and then undoes — see "Not for upstream".
 
 ### Timeline
 
-| Commit                                           | Branch            | Why the plugin needed it                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `d1876c70e7` draw a dark halo behind flow arrows | `flow-arrow-halo` | The Dune converter stamps one flow per span, linking its lifecycle instants, so a Dune trace is dense with flow arrows. They were drawn at 70% lightness, the same range as the slice colours, and vanished into the slices they crossed. A dark canvas shadow keeps the line and its heads legible over any slice colour. Not Dune-specific. |
+| Commit                                             | Branch                  | Why the plugin needed it                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `d1876c70e7` draw a dark halo behind flow arrows   | `flow-arrow-halo`       | The Dune converter stamps one flow per span, linking its lifecycle instants, so a Dune trace is dense with flow arrows. They were drawn at 70% lightness, the same range as the slice colours, and vanished into the slices they crossed. A dark canvas shadow keeps the line and its heads legible over any slice colour. Not Dune-specific. |
+| `827779ba17` Expand/Collapse all fold slice tracks | `fold-all-slice-tracks` | A Dune trace's timeline is plain slice tracks, and a leaf `SliceTrack`'s fold was reachable only through its own shell button. Expand all / Collapse all only toggled `TrackNode` state, which affects nodes with children, so on a Dune trace both did nothing. Adds an optional `TrackRenderer.setCollapsed()`. Not Dune-specific.          |
+
+### Data Explorer fixes
+
+| Commit                                                       | Branch                 | Why the plugin needed it                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `5dfe2d000d` Union node queries referencing unregistered ids | `union-embed-wrappers` | Unioning a Dune walk (e.g. Parents, with `src` taken as `node_id`) back onto its source failed with "Shared query with id 'X' not found". The bug is not Dune-specific: `UnionNode` wraps each input in a `SELECT` of the common columns, and `withUnion` kept only an id reference to each wrapper, which trace processor never saw. Every union failed. The wrappers are now embedded, under stable ids. |
 
 ### Not for upstream
 
@@ -153,12 +161,13 @@ integration line still has and then undoes — see "Not for upstream".
 | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `2ea839aae1` **[TEMP] Enable plugin by default**                            | Edits `core/embedder/default_plugins.ts` so the plugin loads locally. **Must never be upstreamed.** Drop it when splitting branches.                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **[TEMP] Trim the default plugin list**                                     | Deletes 62 entries from the same `default_plugins.ts`, leaving the 26 a Dune trace can use: the core UI, generic track rendering, the query surfaces and DuneGraph's own closure. Purely local ergonomics — a Dune trace has no ftrace, sched, Android, Chrome, GPU or power data for the rest to bind to, but they still run their `onTraceLoad()` on every open. **Must never be upstreamed.** Note that `core_plugins/` are gated by this same list — `isCore` only groups them in the settings page — so the core UI entries are load-bearing, not cosmetic. |
+| `532f4099d7` build and publish the Dune UI and prebuilts on push            | Adds `.github/workflows/dune-deploy.yml`, the fork's own deploy. Nothing upstream would run it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `fb440d6a97` revert the dashboards hook and rename `dir_tree_graph.ts`      | Reverts an earlier commit on this branch. The net upstream diff of `DataExplorer/index.ts` is therefore **zero** — the file does not appear in the net diffstat at all. Nothing to upstream; nothing to do.                                                                                                                                                                                                                                                                                                                                                      |
 | `b4111b6790` nested menu categories, `2b046f716b` a plugin's own menu group | Both are undone later on the line by `0ed9bf51fe` "put the Dune nodes in the existing menu sections", which puts the Dune entries in the existing type sections instead. Their net diff is zero, and `data-explorer-node-registry` was rebuilt without them. Nothing to upstream; nothing to do.                                                                                                                                                                                                                                                                 |
 
 ## Branch status
 
-21 topic branches exist, stacked on whichever branch introduced the code they
+23 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
 four. The four commits with no branch are called out above: `5280bf7452` and
 `b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
@@ -175,7 +184,8 @@ dev/nat/chart-surface-drag            dev/nat/table-list-component
 dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
 dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
 dev/nat/process-child-explicit-ordering dev/nat/overlap-count-node
-dev/nat/flow-arrow-halo
+dev/nat/flow-arrow-halo               dev/nat/fold-all-slice-tracks
+dev/nat/union-embed-wrappers
 ```
 
 Nothing is pushed. No PR has been raised for any of them.
