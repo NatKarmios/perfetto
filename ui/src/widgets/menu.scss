@@ -19,6 +19,15 @@
   .pf-popup-content {
     padding: 0;
   }
+
+  // Scroll a menu taller than the viewport rather than running off it. The
+  // popup's preventOverflow padding (8px each side) plus the menu's margins
+  // and border is what the 32px leaves room for. Submenus are portals, so
+  // this clips nothing but the menu's own items.
+  .pf-menu {
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
 }
 
 .pf-menu {

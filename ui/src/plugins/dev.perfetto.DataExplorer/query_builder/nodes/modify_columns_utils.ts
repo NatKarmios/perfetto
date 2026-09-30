@@ -24,19 +24,43 @@ import {
 import type {ColumnInfo} from '../column_info';
 import type {SqlModules} from '../../../dev.perfetto.SqlModules/sql_modules';
 
+interface JoinidTarget {
+  readonly tableName: string;
+  readonly columnName: string;
+}
+
 /**
- * Gets list of tables with columns that have a pure ID type
- * Returns array of {tableName, columnName} pairs
+ * Extra targets offered in the JOINID submenu, for tables a plugin creates at
+ * runtime and so are not in the SqlModules catalogue. Registrations are global
+ * and outlive a trace, so register from onTraceLoad into the trace's trash:
+ *
+ *   trace.trash.use(joinidTargets.register('my_table', 'id'));
+ */
+class JoinidTargetRegistry {
+  private readonly targets = new Set<JoinidTarget>();
+
+  register(tableName: string, columnName: string): Disposable {
+    const target = {tableName, columnName};
+    this.targets.add(target);
+    return {[Symbol.dispose]: () => this.targets.delete(target)};
+  }
+
+  list(): ReadonlyArray<JoinidTarget> {
+    return [...this.targets];
+  }
+}
+
+export const joinidTargets = new JoinidTargetRegistry();
+
+/**
+ * Gets list of tables with columns that have a pure ID type, plus the
+ * registered joinidTargets. Returns array of {tableName, columnName} pairs
  */
 function getTablesWithIdColumn(
   sqlModules: SqlModules | undefined,
-): Array<{tableName: string; columnName: string}> {
-  if (!sqlModules) {
-    return [];
-  }
-
-  const tablesWithId: Array<{tableName: string; columnName: string}> = [];
-  const tables = sqlModules.listTables();
+): JoinidTarget[] {
+  const tablesWithId: JoinidTarget[] = [...joinidTargets.list()];
+  const tables = sqlModules?.listTables() ?? [];
 
   for (const table of tables) {
     for (const col of table.columns) {
