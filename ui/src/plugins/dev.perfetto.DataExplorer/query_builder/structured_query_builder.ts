@@ -664,7 +664,7 @@ export class StructuredQueryBuilder {
 
   /**
    * Creates a structured query with a union operation.
-   * References the input queries by ID (not embedded).
+   * References input nodes by ID; embeds input query protos.
    *
    * @param queries Array of queries to union (can be QueryNodes or structured queries)
    * @param useUnionAll Whether to use UNION ALL instead of UNION
@@ -680,7 +680,14 @@ export class StructuredQueryBuilder {
 
     const refQueries: protos.PerfettoSqlStructuredQuery[] = [];
     for (let i = 0; i < queries.length; i++) {
-      const queryId = extractQueryId(queries[i]);
+      // A query proto (not a node) is not registered with TP under its id,
+      // so it has to be embedded rather than referenced.
+      const q = queries[i];
+      if (q instanceof protos.PerfettoSqlStructuredQuery) {
+        refQueries.push(q);
+        continue;
+      }
+      const queryId = extractQueryId(q);
       if (!queryId) return undefined;
       refQueries.push(this.createRef(queryId, `${actualNodeId}_union_${i}`));
     }

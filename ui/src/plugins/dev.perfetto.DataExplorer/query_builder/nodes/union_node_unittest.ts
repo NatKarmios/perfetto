@@ -625,21 +625,17 @@ describe('UnionNode', () => {
       const queries = sq?.experimentalUnion?.queries;
       expect(queries?.length).toBe(2);
 
-      // Each union query is a reference to the wrapped SELECT query.
-      // Verify:
-      // 1. Each query has an ID and innerQueryId
-      // 2. The innerQueryIds are unique (different SELECT queries for each input)
-      const queryIds = new Set<string>();
-      const innerQueryIds = new Set<string>();
-      queries?.forEach((query) => {
-        expect(query.id).toBeDefined();
-        expect(query.innerQueryId).toBeDefined();
-        queryIds.add(query.id!);
-        innerQueryIds.add(query.innerQueryId!);
-      });
-      // Should have 2 unique query IDs and 2 unique innerQueryIds
-      expect(queryIds.size).toBe(2);
-      expect(innerQueryIds.size).toBe(2);
+      // Each union query is the SELECT of the common columns itself, embedded
+      // rather than referenced by an id TP never sees.
+      expect(queries?.map((q) => q.innerQueryId)).toEqual(['node1', 'node2']);
+      expect(
+        queries?.map((q) =>
+          q.selectColumns?.map((c) => c.columnNameOrExpression),
+        ),
+      ).toEqual([
+        ['id', 'ts'],
+        ['id', 'ts'],
+      ]);
     });
   });
 

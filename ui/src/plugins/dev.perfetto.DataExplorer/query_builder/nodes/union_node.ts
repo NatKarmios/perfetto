@@ -288,11 +288,12 @@ export class UnionNode implements QueryNode {
     // Create wrapper queries for each input that selects only the common columns
     // Pass the query protos directly to withUnion (not nodes)
     const wrappedQueries: protos.PerfettoSqlStructuredQuery[] = [];
-    for (const inputNode of this.inputNodesList) {
+    for (const [i, inputNode] of this.inputNodesList.entries()) {
       const selectQuery = StructuredQueryBuilder.withSelectColumns(
         inputNode,
         columnSpecs,
         undefined,
+        `${this.nodeId}_union_${i}`,
       );
       if (!selectQuery) return undefined;
       wrappedQueries.push(selectQuery);
