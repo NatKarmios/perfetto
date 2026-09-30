@@ -1,8 +1,8 @@
 # What DuneGraph needed from outside its own directory
 
 This plugin is not self-contained. Making it work meant changing the Data
-Explorer, the DataGrid, the query page and a couple of widgets — 40 commits on
-`main..dune-graph-trace`, and a net footprint of **73 files, +5,835/−1,534**
+Explorer, the DataGrid, the query page and a couple of widgets — 41 commits on
+`main..dune-graph-trace`, and a net footprint of **75 files, +5,877/−1,543**
 (measured 2026-09-30, excluding the plugin directory itself).
 
 This file is the ledger. It exists for one reason: in six months the _diff_ will
@@ -151,9 +151,10 @@ integration line still has and then undoes — see "Not for upstream".
 
 ### Data Explorer fixes
 
-| Commit                                                       | Branch                 | Why the plugin needed it                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `5dfe2d000d` Union node queries referencing unregistered ids | `union-embed-wrappers` | Unioning a Dune walk (e.g. Parents, with `src` taken as `node_id`) back onto its source failed with "Shared query with id 'X' not found". The bug is not Dune-specific: `UnionNode` wraps each input in a `SELECT` of the common columns, and `withUnion` kept only an id reference to each wrapper, which trace processor never saw. Every union failed. The wrappers are now embedded, under stable ids. |
+| Commit                                                               | Branch                         | Why the plugin needed it                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `5dfe2d000d` Union node queries referencing unregistered ids         | `union-embed-wrappers`         | Unioning a Dune walk (e.g. Parents, with `src` taken as `node_id`) back onto its source failed with "Shared query with id 'X' not found". The bug is not Dune-specific: `UnionNode` wraps each input in a `SELECT` of the common columns, and `withUnion` kept only an id reference to each wrapper, which trace processor never saw. Every union failed. The wrappers are now embedded, under stable ids.                                                                   |
+| `b5a1c2a3bf` plugin-registered JOINID targets; scrolling popup menus | `data-explorer-joinid-targets` | The column-type menu's JOINID submenu listed only the `SqlModules` catalogue's id columns, and the mirror's tables are created at runtime, so a column of node or directory ids could not be retyped into a chip. `joinidTargets` in `modify_columns_utils.ts` takes disposable registrations. The same submenu is taller than the viewport on a full stdlib, so `widgets/menu.scss` now caps popup menus at the viewport height and scrolls them. Neither is Dune-specific. |
 
 ### Not for upstream
 
@@ -167,7 +168,7 @@ integration line still has and then undoes — see "Not for upstream".
 
 ## Branch status
 
-23 topic branches exist, stacked on whichever branch introduced the code they
+24 topic branches exist, stacked on whichever branch introduced the code they
 fix. All carry one commit except `data-explorer-node-registry`, which carries
 four. The four commits with no branch are called out above: `5280bf7452` and
 `b8abfef93f` want squashing/splitting into `data-explorer-dashboard-grid`,
@@ -185,7 +186,7 @@ dev/nat/chart-switch-default-column   dev/nat/table-list-keyed-sections
 dev/nat/chart-type-registry            dev/nat/data-explorer-node-registry
 dev/nat/process-child-explicit-ordering dev/nat/overlap-count-node
 dev/nat/flow-arrow-halo               dev/nat/fold-all-slice-tracks
-dev/nat/union-embed-wrappers
+dev/nat/union-embed-wrappers          dev/nat/data-explorer-joinid-targets
 ```
 
 Nothing is pushed. No PR has been raised for any of them.

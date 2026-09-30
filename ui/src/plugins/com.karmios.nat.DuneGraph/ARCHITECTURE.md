@@ -294,7 +294,10 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
   differently, which is the only interesting part: a node-tier entry's
   `preCreate` builds that tier, while `dune_edge` is shown greyed out by an
   `available()` that reads `edgeMirrorReady` on every menu render — nothing
-  starts a minutes-long edge build from a menu click.
+  starts a minutes-long edge build from a menu click. The same registration also
+  offers `dune_node.node_id` and `dune_dir.dir_id` in the column-type menu's
+  JOINID submenu (`joinidTargets`), which otherwise lists only the `SqlModules`
+  catalogue's id columns, so a column of ids can be retyped into a chip.
 - Eleven **macro nodes** in a "Dune" submenu of that menu's "Modifications"
   section, one per `dune_*` macro, registered the same way
   (`explorer/dune_macro_node.ts`). Again one class over a name, and again the

@@ -46,6 +46,7 @@ import type {
 import {nextNodeId} from '../../dev.perfetto.DataExplorer/query_node';
 import type {ColumnInfo} from '../../dev.perfetto.DataExplorer/query_builder/column_info';
 import {StructuredQueryBuilder} from '../../dev.perfetto.DataExplorer/query_builder/structured_query_builder';
+import {joinidTargets} from '../../dev.perfetto.DataExplorer/query_builder/nodes/modify_columns_utils';
 import {setValidationError} from '../../dev.perfetto.DataExplorer/query_builder/node_issues';
 import {NodeTitle} from '../../dev.perfetto.DataExplorer/query_builder/node_styling_widgets';
 import type {
@@ -57,7 +58,13 @@ import type {TableListEntry} from '../../../components/query_table/table_list';
 import {perfettoSqlTypeToString} from '../../../trace_processor/perfetto_sql_type';
 import type {Trace} from '../../../public/trace';
 import type {DuneGraphController} from '../controller';
-import {DUNE_TABLES} from '../sql/dune_tables';
+import {
+  DUNE_DIR_ID_COLUMN,
+  DUNE_DIR_TABLE,
+  DUNE_NODE_ID_COLUMN,
+  DUNE_NODE_TABLE,
+  DUNE_TABLES,
+} from '../sql/dune_tables';
 
 /**
  * The tables offered, in menu order, with the label each is offered under.
@@ -434,4 +441,8 @@ export function registerDuneSourceNodes(
       ),
     );
   }
+  // And the two id columns as JOINID targets in the column-type menu, so a
+  // column of node or directory ids can be retyped to render as a chip.
+  trace.trash.use(joinidTargets.register(DUNE_NODE_TABLE, DUNE_NODE_ID_COLUMN));
+  trace.trash.use(joinidTargets.register(DUNE_DIR_TABLE, DUNE_DIR_ID_COLUMN));
 }
