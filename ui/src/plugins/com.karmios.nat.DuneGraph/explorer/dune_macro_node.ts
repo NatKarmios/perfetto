@@ -302,9 +302,14 @@ export class DuneMacroNode implements QueryNode {
     }));
     if (this.macro.columns === 'replace') return own;
     // The wrap selects only the key columns, so it is also what narrows what
-    // `dune_blocked!`'s `e.*` can pass through.
+    // `dune_blocked!`'s `e.*` can pass through. A renamed column keeps its
+    // source's type, which is what its cells render by.
     const through = this.wrapped
-      ? this.macro.keyCols.map((key) => ({name: key, checked: true}))
+      ? this.macro.keyCols.map((key) => ({
+          name: key,
+          type: this.sourceCols.find((c) => c.name === this.colFor(key))?.type,
+          checked: true,
+        }))
       : this.sourceCols;
     return [...through, ...own];
   }

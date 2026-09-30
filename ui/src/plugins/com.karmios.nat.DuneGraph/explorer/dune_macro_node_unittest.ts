@@ -47,6 +47,7 @@ import {
   duneMacroNodeType,
   registerDuneMacroNodes,
 } from './dune_macro_node';
+import {DUNE_NODE_JOINID} from '../sql/dune_tables';
 
 // As in dune_table_source_unittest.ts: the registry is populated as a side
 // effect of the Data Explorer's own module load, which a unit test importing
@@ -212,6 +213,17 @@ describe('the Dune macro node', () => {
       'src',
       'dst',
       'blocked_ns',
+    ]);
+  });
+
+  // Cells render by type, so a column renamed into the macro still has to be
+  // a Dune node id to come back as a node chip.
+  test("keeps a renamed column's type", () => {
+    const n = node('dune_leaves', ['src'], {cols: {node_id: 'src'}});
+    n.primaryInput!.finalCols[0].type = DUNE_NODE_JOINID;
+
+    expect(n.finalCols).toEqual([
+      {name: 'node_id', type: DUNE_NODE_JOINID, checked: true},
     ]);
   });
 
