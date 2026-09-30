@@ -615,7 +615,7 @@ describe('DuneQueryResults.buildSchema', () => {
 
     const node = cell(schema, 'node_id', g.id('a/b/dep1.ml'));
     expect(node.querySelector('.pf-dune-graph__chip')?.textContent).toBe('dep');
-    expect(node.textContent).toContain('a/b/dep1.ml');
+    expect(node.textContent).toContain('dep1.ml');
 
     const dir = cell(schema, 'dir_id', 2);
     expect(dir.querySelector('.pf-dune-graph__chip')?.textContent).toBe('dir');

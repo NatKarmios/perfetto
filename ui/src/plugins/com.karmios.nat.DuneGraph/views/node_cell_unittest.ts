@@ -172,7 +172,10 @@ describe('renderNodeCell', () => {
     const chip = root.querySelector('.pf-dune-graph__chip');
     expect(chip?.textContent).toBe('dep');
     expect(chip?.classList.contains('pf-dune-graph__chip--dep')).toBe(true);
-    expect(root.textContent).toContain('a/b/dep1.ml');
+    // `a/b` is the build root `rule('42')`'s dir derives, so the path is shown
+    // with that prefix folded into the leading build icon.
+    expect(root.textContent).toContain('dep1.ml');
+    expect(root.textContent).not.toContain('a/b');
 
     const anchor = root.querySelector('a');
     expect(anchor).not.toBeNull();
@@ -453,7 +456,7 @@ describe('registerIdColumnRenderers', () => {
       DUNE_NODE_JOINID,
       'node_id',
     ).cellRenderer;
-    expect(render(withFirst?.(node, {})).textContent).toContain('a/b/dep1.ml');
+    expect(render(withFirst?.(node, {})).textContent).toContain('dep1.ml');
     traceA.unload();
 
     const traceB = fakeTrace();
