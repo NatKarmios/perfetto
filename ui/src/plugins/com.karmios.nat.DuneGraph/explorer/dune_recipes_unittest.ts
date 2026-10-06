@@ -55,7 +55,7 @@ registerCoreNodes();
 // quietly lost a branch would otherwise still pass everything below.
 const NODE_COUNT: ReadonlyMap<string, number> = new Map([
   ['Dune: Build time by directory', 3],
-  ['Dune: Process Analysis', 12],
+  ['Dune: Process Analysis', 13],
 ]);
 
 // Registrations are global, so anything registered by a test is collected here

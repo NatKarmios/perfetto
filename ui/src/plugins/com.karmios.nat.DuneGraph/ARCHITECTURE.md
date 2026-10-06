@@ -338,7 +338,7 @@ Four kinds of offer into `dev.perfetto.DataExplorer`, twenty-four in all:
   sorted — and all node tier, so it answers the moment the graph is loaded.
   Grouping on the id rather than a path string is what makes the result's
   directory column a chip that joins to `dune_dir`. "Dune: Process Analysis" is
-  twelve nodes over `dune_process` in three branches, each ending in a dashboard
+  thirteen nodes over `dune_process` in three branches, each ending in a dashboard
   node and all three landing on one dashboard of three charts and a grid. It was
   built in the UI and exported rather than written by hand
   (`explorer/process_analysis_graph.ts`), which is why it carries the whole-tab

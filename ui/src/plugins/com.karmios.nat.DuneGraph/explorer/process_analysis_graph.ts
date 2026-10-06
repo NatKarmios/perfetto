@@ -34,23 +34,23 @@
  * that directory belongs to that plugin, and this one ships no assets. Carrying
  * the JSON inline is the case `ExampleGraph.json` exists for.
  *
- * Three things were changed in the export by hand, and they are the only
- * three.
+ * `GRAPH` is a later, graph-only export of the recipe as loaded and tweaked:
+ * a column selection after the last join, which renames `src` to `node_id` and
+ * keeps the duration and command line. The dashboards come from the first,
+ * whole-tab export.
  *
- * The `dur_ns > 1s` filter that sat between the source and the sort is gone,
- * and the sort takes the source directly. Sorting by duration and taking
- * thirty already yields the thirty longest, so the filter only hid short
- * builds - on a build where nothing ran for a second it emptied that branch
- * entirely. The rewiring is what deleting the node in the UI does: the child
- * reconnects to the deleted node's primary parent, inherits its layout because
- * it had none of its own, and the deleted node leaves `rootNodeIds`.
+ * Three things were changed by hand, and they are the only three.
+ *
+ * The directory-tree chart on "30 longest processes" reads `node_id`, not
+ * `src`. The graph-only export carries no dashboards, and the rename upstream
+ * of that chart would otherwise leave it naming a column that is gone.
  *
  * `title` was changed from the tab's working name, for the reason given where
  * it is set below.
  *
- * `selectedNodeId` was set to the terminal join, so that the recipe opens
- * showing a result rather than an empty panel. Nothing was selected when the
- * tab was exported.
+ * `selectedNodeId` was set to the node feeding "30 longest processes", so that
+ * the recipe opens showing a result rather than an empty panel. Nothing was
+ * selected when the graph was exported.
  */
 
 import type {SerializedTabExport} from '../../dev.perfetto.DataExplorer/graph_io';
@@ -89,7 +89,7 @@ const GRAPH: SerializedGraph = {
         exportName: '30 longest processes',
       },
       nextNodes: [],
-      primaryInputId: '12265',
+      primaryInputId: '12266',
     },
     {
       nodeId: '12263',
@@ -277,7 +277,7 @@ const GRAPH: SerializedGraph = {
               },
             },
             description: "The process's slice on the timeline.",
-            checked: true,
+            checked: false,
           },
           {
             name: 'dur_ns',
@@ -320,7 +320,7 @@ const GRAPH: SerializedGraph = {
               kind: 'string',
             },
             description: 'The program, from `dune_process.prog`.',
-            checked: false,
+            checked: true,
           },
           {
             name: 'args',
@@ -329,11 +329,11 @@ const GRAPH: SerializedGraph = {
             },
             description:
               'The argv, space-joined in `idx` order, NOT including the program. NULL when the process took no arguments.',
-            checked: false,
+            checked: true,
           },
         ],
       },
-      nextNodes: ['12251'],
+      nextNodes: ['12266'],
       secondaryInputIds: {
         '0': '12263',
         '1': '12264',
@@ -451,11 +451,54 @@ const GRAPH: SerializedGraph = {
       nextNodes: ['12262'],
       primaryInputId: '12243',
     },
+    {
+      nodeId: '12266',
+      type: 'modify_columns',
+      state: {
+        selectedColumns: [
+          {
+            name: 'src',
+            type: {
+              kind: 'joinid',
+              source: {
+                table: 'dune_node',
+                column: 'node_id',
+              },
+            },
+            checked: true,
+            alias: 'node_id',
+          },
+          {
+            name: 'dur_ns',
+            type: {
+              kind: 'duration',
+            },
+            checked: true,
+          },
+          {
+            name: 'prog',
+            type: {
+              kind: 'string',
+            },
+            checked: true,
+          },
+          {
+            name: 'args',
+            type: {
+              kind: 'string',
+            },
+            checked: true,
+          },
+        ],
+      },
+      nextNodes: ['12251'],
+      primaryInputId: '12265',
+    },
   ],
   rootNodeIds: ['12241', '12243', '12249', '12251', '12263', '12265', '12264'],
-  // Hand-set to the join that feeds the "30 longest processes" dashboard; the
+  // Hand-set to the node that feeds the "30 longest processes" dashboard; the
   // export had nothing selected.
-  selectedNodeId: '12265',
+  selectedNodeId: '12266',
   nodeLayouts: {
     '1039': {
       x: 426.28450017884524,
@@ -472,10 +515,6 @@ const GRAPH: SerializedGraph = {
     '12249': {
       x: 0,
       y: 455.77076445702846,
-    },
-    '12251': {
-      x: 508.143889766846,
-      y: 732.179139420773,
     },
     '12253': {
       x: 440.5648017695184,
@@ -546,7 +585,7 @@ const EXPORT: SerializedTabExport = {
           sourceNodeId: '12251',
           config: {
             id: 'chart-13824b17-263e-4cbf-87b8-1ef9df1936b7',
-            column: 'src',
+            column: 'node_id',
             chartType: 'dune-dir-tree',
           },
           col: 13,

@@ -24,7 +24,7 @@
  *
  * The two are deliberately not alike. "Dune: Build time by directory" is three
  * nodes, all node tier, so it answers something the moment a trace opens.
- * "Dune: Process Analysis" is twelve nodes over three branches, all three laid
+ * "Dune: Process Analysis" is thirteen nodes over three branches, all three laid
  * out on one dashboard, and one of those branches walks `dune_parents`, which
  * needs the edge tier - a build nobody starts by accident. Opening it before
  * that tier exists is not a failure to hide: the node says what is missing and
